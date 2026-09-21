@@ -8,7 +8,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
-from typing import TYPE_CHECKING, Generic, Literal, TypeVar
+from typing import TYPE_CHECKING, Literal
 
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
@@ -18,8 +18,6 @@ from .context import ensure_request_id
 if TYPE_CHECKING:
     from .errors import ErrorCode
 
-T = TypeVar("T")
-
 
 class ResponseMeta(BaseModel):
     """响应的追踪信息。"""
@@ -27,7 +25,7 @@ class ResponseMeta(BaseModel):
     request_id: str = Field(description="本次请求的唯一标识，可用于检索服务端日志。")
 
 
-class ApiResponse(BaseModel, Generic[T]):
+class ApiResponse[T](BaseModel):
     """成功响应包装。
 
     路由显式返回本模型，使 OpenAPI 能完整描述 `data` 的结构。
@@ -67,7 +65,7 @@ class ApiErrorResponse(BaseModel):
     meta: ResponseMeta = Field(description="追踪信息。")
 
 
-def success(data: T) -> ApiResponse[T]:
+def success[T](data: T) -> ApiResponse[T]:
     """构造成功响应。
 
     参数:

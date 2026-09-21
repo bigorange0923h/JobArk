@@ -12,14 +12,14 @@
 import logging
 import re
 from time import perf_counter
-from typing import TYPE_CHECKING
 
 from starlette.datastructures import MutableHeaders
 
-from .context import new_request_id, reset_request_id, set_request_id
+# ASGI 类型在运行期导入：函数签名中的标注会被求值，且 starlette 已是本项目的硬依赖，
+# 放在 TYPE_CHECKING 分支只会迫使所有标注写成字符串字面量。
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
-if TYPE_CHECKING:
-    from starlette.types import ASGIApp, Message, Receive, Scope, Send
+from .context import new_request_id, reset_request_id, set_request_id
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ REQUEST_ID_HEADER = "X-Request-ID"
 _REQUEST_ID_STATE_KEY = "request_id"
 
 
-def resolve_request_id(scope: "Scope") -> str:
+def resolve_request_id(scope: Scope) -> str:
     """确定本次请求使用的标识。
 
     参数:
@@ -50,7 +50,7 @@ def resolve_request_id(scope: "Scope") -> str:
 class RequestContextMiddleware:
     """为每个 HTTP 请求建立可追踪的上下文与访问日志。"""
 
-    def __init__(self, app: "ASGIApp") -> None:
+    def __init__(self, app: ASGIApp) -> None:
         """初始化中间件。
 
         参数:
@@ -58,7 +58,7 @@ class RequestContextMiddleware:
         """
         self.app = app
 
-    async def __call__(self, scope: "Scope", receive: "Receive", send: "Send") -> None:
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
         """处理一次 ASGI 调用。
 
         参数:
@@ -82,7 +82,7 @@ class RequestContextMiddleware:
         started_at = perf_counter()
         status_code: int | None = None
 
-        async def send_with_request_id(message: "Message") -> None:
+        async def send_with_request_id(message: Message) -> None:
             nonlocal status_code
             if message["type"] == "http.response.start":
                 status_code = message["status"]

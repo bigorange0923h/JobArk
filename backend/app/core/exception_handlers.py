@@ -172,11 +172,7 @@ async def http_exception_handler(request: Request, exc: StarletteHTTPException) 
         Response: 与错误码表一致的失败响应。
     """
     code = _STATUS_CODE_TO_ERROR_CODE.get(exc.status_code, ErrorCode.INTERNAL_ERROR)
-    message = (
-        _FALLBACK_MESSAGES.get(exc.status_code)
-        or _usable_detail_message(exc.detail)
-        or "请求处理失败。"
-    )
+    message = _FALLBACK_MESSAGES.get(exc.status_code) or _usable_detail_message(exc.detail) or "请求处理失败。"
     return error_response(
         status_code=exc.status_code,
         code=code,

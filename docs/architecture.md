@@ -59,7 +59,7 @@ FastAPI application
 - 每个请求与后台任务各自获取会话，不跨请求复用。
 - `Base` 与约束命名约定定义在 `app/core/database.py`；`migrations/env.py` 显式导入各领域 `models`，新增领域必须在此追加导入，否则 autogenerate 会静默漏表。
 - `alembic.ini` 不保存连接串且必须保持 ASCII-only（`configparser` 按本地编码读取）；版本号使用可读递增编号。
-- 质量护栏：Pyright `strict` 与 pytest 警告即失败，用于拦住漏写 `await` 与弃用 API。
+- 质量护栏（目前均只在本地执行）：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`），分别拦住漏写 `await`、弃用 API 与常见缺陷模式。
 
 ## 4. 前端技术架构与能力
 
@@ -175,4 +175,4 @@ JobArk/
 - 去重是否能依赖公司、标题、地点和 JD 相似度；必须提供人工合并/拆分入口。
 - PDF 导出在目标部署环境中的 Chromium 字体与分页是否稳定。
 - 匹配评分的权重与“硬性淘汰”规则需用真实职位样本校准，不能先把模型分数当作事实。
-- 后端解释器版本已定为 `>=3.14`，并与 `backend/uv.lock` 保持一致；但 CI 尚未固定实际使用的补丁版本（阶段 0 第 6 项）。
+- 后端解释器版本已定为 `>=3.14`，并与 `backend/uv.lock` 保持一致；**CI 尚未接入（有意推迟）**，因此"在干净环境复现"缺位：解释器补丁版本、前端 lint 与跨平台差异目前都只在本地验证过。

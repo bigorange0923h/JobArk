@@ -64,9 +64,13 @@ uv run alembic revision --rev-id 0002 -m "新增 xxx 表"    # 新建迁移（�
 
 ```bash
 cd backend
-uv run pytest     # 契约与集成测试；警告即失败
-uv run pyright    # 类型检查（strict），用于拦住漏写 await 等问题
+uv run pytest            # 契约与集成测试；警告即失败
+uv run pyright           # 类型检查（strict），用于拦住漏写 await 等问题
+uv run ruff check        # lint（E/W/F/I/UP/B/SIM/C4）
+uv run ruff format       # 格式化；CI 式检查用 --check
 ```
+
+> 三项检查目前只在本地执行：仓库尚未接入 CI，"在干净环境复现"这一步缺位。
 
 数据库集成测试需要独立测试库，通过环境变量提供；未设置时自动跳过，不影响其余测试：
 

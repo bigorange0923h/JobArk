@@ -21,6 +21,7 @@ dev = [
     "httpx2>=2.13.0",
     "pytest-asyncio>=1.4.0",
     "pyright>=1.1.414",
+    "ruff>=0.16.8",
 ]
 
 [tool.pytest.ini_options]
@@ -45,3 +46,30 @@ venv = ".venv"
 # 严格模式：漏写 await 会静默失效，必须由类型检查兜住，而不是靠人工评审。
 typeCheckingMode = "strict"
 include = ["app", "tests", "migrations"]
+
+[tool.ruff]
+target-version = "py314"
+# 120 列：与现有代码的实际排版一致，避免引入规则时产生大范围无关重排。
+line-length = 120
+src = ["app", "tests", "migrations"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle 错误
+    "W",    # pycodestyle 警告
+    "F",    # pyflakes：未使用导入与变量等
+    "I",    # 导入排序
+    "UP",   # pyupgrade：改用目标版本的新写法
+    "B",    # flake8-bugbear：常见缺陷模式
+    "SIM",  # flake8-simplify
+    "C4",   # 推导式写法
+]
+# 刻意不启用 "D"（docstring 规则）：项目注释为中文，而 D 规则内含英文语气与段落约定，
+# 会产生大量噪声却拦不住真正的问题。docstring 完整性由 AGENTS.md 与代码评审约束。
+
+[tool.ruff.lint.isort]
+known-first-party = ["app"]
+
+[tool.ruff.lint.flake8-bugbear]
+# B008：FastAPI 的依赖注入惯用「函数调用作为默认值」，是框架规定写法而非缺陷。
+extend-immutable-calls = ["fastapi.Depends"]
