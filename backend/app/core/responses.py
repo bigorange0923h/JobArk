@@ -8,15 +8,39 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from datetime import datetime
 from typing import TYPE_CHECKING, Literal
+from uuid import UUID
 
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .context import ensure_request_id
 
 if TYPE_CHECKING:
     from .errors import ErrorCode
+
+
+class ORMModel(BaseModel):
+    """可从 ORM 实例构造的响应模型基类。
+
+    响应模型统一从这里派生，使"如何从 ORM 对象构造响应"只有一处定义，
+    不需要每个领域模块各自声明 `from_attributes`。
+    """
+
+    model_config = ConfigDict(from_attributes=True)
+
+
+class EditableRead(ORMModel):
+    """可编辑实体的公共响应字段。
+
+    与 `app.core.versioning` 的乐观锁约定配套：`version` 在局部更新时必须原样回传。
+    """
+
+    id: UUID = Field(description="记录主键。")
+    created_at: datetime = Field(description="创建时间（UTC）。")
+    updated_at: datetime = Field(description="最后更新时间（UTC）。")
+    version: int = Field(description="乐观锁版本号；局部更新时必须原样回传。")
 
 
 class ResponseMeta(BaseModel):

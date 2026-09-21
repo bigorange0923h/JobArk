@@ -20,6 +20,7 @@ from .core.logging import setup_logging
 from .core.middleware import RequestContextMiddleware
 from .core.responses import ApiResponse, success
 from .modules.profile.router import router as profile_router
+from .modules.resume.router import router as resume_router
 
 
 class HealthResponse(BaseModel):
@@ -116,6 +117,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 统一挂到 /api/v1，使后续版本演进不需要改动已发布的路径。
     api_v1 = APIRouter(prefix=resolved_settings.api_v1_prefix)
     api_v1.include_router(profile_router)
+    api_v1.include_router(resume_router)
     application.include_router(api_v1)
 
     return application

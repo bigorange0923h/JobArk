@@ -21,6 +21,7 @@ from app.core.database import Base
 # 领域模型的显式导入登记处。autogenerate 只能感知已加载进 Base.metadata 的表，
 # 漏导入的表现是"生成的迁移里缺少某张表"，属于静默错误，因此这里不做自动扫描。
 from app.modules.profile import models as profile_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from app.modules.resume import models as resume_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 config = context.config
 target_metadata = Base.metadata

@@ -28,9 +28,10 @@
 PersonalProfile ──< ProfileEvidence
        ├──────────< ProfileSkill / ProfileExperience / ProfileProject
        ├──────────< ProfileEducation / ProfileLanguage / ProfilePreference
-       └──────────< ProfileRevision ──< Resume ──< ResumeVersion
-                                              │
-                                              └──< ResumeDraft
+       └──────────< ProfileRevision ──< ResumeVersion
+
+Resume ──< ResumeVersion ──< ResumeVersionEvidence >── ProfileEvidence
+   └────< ResumeDraft ──（确认后新建，绝不覆盖）──> ResumeVersion
 
 Company ──< JobOpportunity ──< JobPosting ──< JobSnapshot
                                                    │
@@ -88,7 +89,11 @@ UNIQUE(profile_id, revision_no)
 | `resumes` | 名称、目标方向、状态、`version` | 是可持续维护的一份简历方向，不是某次投递附件。 |
 | `resume_versions` | `resume_id`、`version_no`、`profile_revision_id`、`document_json`、`render_schema_version`、`created_reason` | 不可变；`UNIQUE(resume_id, version_no)`。Application 只能引用此表。 |
 | `resume_version_evidences` | `resume_version_id`、`evidence_id` | 保留简历版本和真实证据的显式关联。 |
-| `resume_drafts` | `base_resume_version_id`、候选 `document_json`、`status`、`confirmed_resume_version_id`、生成元数据 | AI 输出状态为 `DRAFT`、`CONFIRMED`、`DISCARDED` 或 `FAILED`；确认后新建 ResumeVersion，绝不覆盖旧版本。 |
+| `resume_drafts` | `resume_id`、`base_resume_version_id`、候选 `document_json`、`status`、`confirmed_resume_version_id`、生成元数据 | AI 输出状态为 `DRAFT`、`CONFIRMED`、`DISCARDED` 或 `FAILED`；确认后新建 ResumeVersion，绝不覆盖旧版本。 |
+
+`resumes` **不携带**指向 Profile 或 ProfileRevision 的外键：V1 只有一份主档案，而"这一版简历基于哪份资料修订"记录在 `resume_versions.profile_revision_id`。简历方向若绑定某个修订，就会与"长期维护、之后从新修订继续生成版本"的语义冲突；每一版的可复现性由版本自身的 `profile_revision_id` 保证。
+
+`resume_drafts` 的字段取舍：`resume_id` 非空，候选稿始终属于某份简历方向；`base_resume_version_id` 可空，为"从零生成"的候选稿留出表达方式；`confirmed_resume_version_id` 仅在状态为 `CONFIRMED` 时非空，两者由 CHECK 约束联动，避免出现状态与产出自相矛盾的记录。`resume_version_evidences` 保留版本与证据的显式关联，不要求与 `document_json` 内的 `source_fact_id` 完全一致——前者是"这一版引用了哪些证据"的正式声明，后者是逐条内容的溯源线索。
 
 ## 5. Job：机会、页面与 JD 快照
 

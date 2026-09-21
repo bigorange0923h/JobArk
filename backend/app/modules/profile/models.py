@@ -17,7 +17,6 @@ from __future__ import annotations
 import uuid
 from datetime import date, datetime
 from decimal import Decimal
-from enum import StrEnum
 from typing import Any
 
 from sqlalchemy import (
@@ -35,49 +34,11 @@ from sqlalchemy import (
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
-from sqlalchemy.types import Enum as SAEnum
 
 from app.core.database import Base
-from app.core.models import CreatedAtMixin, EditableMixin, UuidPrimaryKeyMixin
+from app.core.models import CreatedAtMixin, EditableMixin, UuidPrimaryKeyMixin, enum_column_type
 
 from .enums import ClaimStatus, EvidenceSourceType, RemotePreference, SkillProficiency, VerificationStatus
-
-
-def _enum_values(enum_cls: type[StrEnum]) -> list[str]:
-    """返回枚举的持久化取值集合。
-
-    参数:
-        enum_cls: 目标枚举类。
-
-    返回:
-        list[str]: 各成员的值；作为 CHECK 约束的取值集合。
-
-    注意:
-        SQLAlchemy 默认持久化成员的**名字**而不是值。这里显式指定按值存储，
-        使数据库中出现的就是 `UNVERIFIED` 这类可读取值，而不是 Python 成员名。
-    """
-    return [member.value for member in enum_cls]
-
-
-def _enum_type(enum_cls: type[StrEnum], name: str) -> SAEnum:
-    """构造 VARCHAR + CHECK 形式的枚举列类型。
-
-    参数:
-        enum_cls: 枚举类。
-        name: 约束名后缀，最终形如 `ck_<table>_<name>`（由 Base 的命名约定拼接）。
-
-    返回:
-        SAEnum[str]: 非原生枚举列类型。
-    """
-    return SAEnum(
-        enum_cls,
-        native_enum=False,
-        create_constraint=True,
-        length=32,
-        name=name,
-        values_callable=_enum_values,
-    )
-
 
 # 技能名的规范化：小写、去除首尾空白、把连续空白折叠为单个空格，用于同一档案内的唯一约束。
 _SKILL_NAME_NORMALIZED_LENGTH = 100
@@ -151,7 +112,7 @@ class ProfileEvidence(UuidPrimaryKeyMixin, EditableMixin, Base):
         index=True,
     )
     source_type: Mapped[EvidenceSourceType] = mapped_column(
-        _enum_type(EvidenceSourceType, "source_type"),
+        enum_column_type(EvidenceSourceType, "source_type"),
         nullable=False,
     )
     title: Mapped[str] = mapped_column(String(200), nullable=False, comment="证据标题，例如证书名称。")
@@ -162,7 +123,7 @@ class ProfileEvidence(UuidPrimaryKeyMixin, EditableMixin, Base):
         comment="来源内容哈希，用于识别同一份证据的重复导入。",
     )
     verification_status: Mapped[VerificationStatus] = mapped_column(
-        _enum_type(VerificationStatus, "verification_status"),
+        enum_column_type(VerificationStatus, "verification_status"),
         nullable=False,
         server_default=text("'UNVERIFIED'"),
     )
@@ -204,7 +165,7 @@ class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, Base):
         comment="规范化技能名（小写、折叠空白），用于同一档案内的唯一约束。",
     )
     category: Mapped[str | None] = mapped_column(String(64), comment="技能分类，例如语言、框架、工具。")
-    proficiency: Mapped[SkillProficiency | None] = mapped_column(_enum_type(SkillProficiency, "proficiency"))
+    proficiency: Mapped[SkillProficiency | None] = mapped_column(enum_column_type(SkillProficiency, "proficiency"))
     years_of_experience: Mapped[Decimal | None] = mapped_column(Numeric(4, 1), comment="使用年限，可含小数。")
     source_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
@@ -212,7 +173,7 @@ class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, Base):
         comment="支撑该技能的来源证据。",
     )
     claim_status: Mapped[ClaimStatus] = mapped_column(
-        _enum_type(ClaimStatus, "claim_status"),
+        enum_column_type(ClaimStatus, "claim_status"),
         nullable=False,
         server_default=text("'UNVERIFIED'"),
     )
@@ -381,7 +342,7 @@ class ProfilePreference(UuidPrimaryKeyMixin, EditableMixin, Base):
     salary_max: Mapped[int | None] = mapped_column(Integer, comment="期望薪资上限，按月计。")
     salary_currency: Mapped[str | None] = mapped_column(String(3), comment="ISO 4217 币种代码。")
     remote_preference: Mapped[RemotePreference | None] = mapped_column(
-        _enum_type(RemotePreference, "remote_preference"),
+        enum_column_type(RemotePreference, "remote_preference"),
     )
     exclusions: Mapped[list[str]] = mapped_column(
         JSONB,

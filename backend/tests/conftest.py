@@ -33,6 +33,10 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 # 领域表清单：清空测试数据时使用，顺序无关（TRUNCATE 带 CASCADE）。
 _DOMAIN_TABLES = (
+    "resume_version_evidences",
+    "resume_drafts",
+    "resume_versions",
+    "resumes",
     "profile_revisions",
     "profile_preferences",
     "profile_languages",
@@ -153,26 +157,6 @@ def test_database_url() -> str:
     return database_url
 
 
-async def _table_exists(database_url: str, table_name: str) -> bool:
-    """判断库中是否存在指定表。
-
-    参数:
-        database_url: 目标数据库连接串。
-        table_name: 表名。
-
-    返回:
-        bool: 存在返回 True。
-    """
-    engine = create_async_engine(database_url, poolclass=NullPool)
-    try:
-        async with engine.connect() as connection:
-            # 用 to_regclass 而不是查 information_schema：它一次查询即可判断，且对 schema 限定名友好。
-            found = await connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table_name}"})
-            return found is not None
-    finally:
-        await engine.dispose()
-
-
 async def _truncate_domain_tables(database_url: str) -> None:
     """清空领域表，保证测试之间互不影响。
 
@@ -190,10 +174,13 @@ async def _truncate_domain_tables(database_url: str) -> None:
         await engine.dispose()
 
 
-def _upgrade_schema_if_needed() -> None:
-    """必要时把测试库迁移到最新版本。
+def _upgrade_schema() -> None:
+    """把测试库迁移到最新版本。
 
     注意:
+        每次使用数据库夹具时都执行一次：迁移是幂等的，而已迁移的库执行 upgrade 是空操作。
+        刻意不做"缺表才升级"的判断——那种判断会在新增迁移时静默失效，表现为测试里缺表，
+        让人误以为是代码问题。
         通过 Alembic 迁移建表，而不是 `create_all`：测试必须验证的是真实迁移产物，
         两者不一致时应当由测试暴露，而不是被"测试里另建一套表"掩盖。
         必须用 `alembic.command`（同步）执行：异步 `env.py` 内部调用 `asyncio.run`，
@@ -222,8 +209,7 @@ def db_client(
     # 配置单例带缓存，必须清除，否则应用会继续连接开发库。
     get_settings.cache_clear()
 
-    if not asyncio.run(_table_exists(test_database_url, "personal_profiles")):
-        _upgrade_schema_if_needed()
+    _upgrade_schema()
     asyncio.run(_truncate_domain_tables(test_database_url))
 
     application = create_app(

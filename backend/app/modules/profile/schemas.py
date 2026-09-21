@@ -14,24 +14,11 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
+
+from app.core.responses import EditableRead, ORMModel
 
 from .enums import ClaimStatus, EvidenceSourceType, RemotePreference, SkillProficiency, VerificationStatus
-
-
-class ORMModel(BaseModel):
-    """可从 ORM 实例构造的响应模型基类。"""
-
-    model_config = ConfigDict(from_attributes=True)
-
-
-class EditableRead(ORMModel):
-    """可编辑实体的公共响应字段。"""
-
-    id: UUID = Field(description="记录主键。")
-    created_at: datetime = Field(description="创建时间（UTC）。")
-    updated_at: datetime = Field(description="最后更新时间（UTC）。")
-    version: int = Field(description="乐观锁版本号；局部更新时必须原样回传。")
 
 
 class ResourceRef(BaseModel):

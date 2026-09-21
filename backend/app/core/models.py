@@ -10,10 +10,12 @@
 
 import uuid
 from datetime import datetime
+from enum import StrEnum
 
 from sqlalchemy import DateTime, Integer, func, text
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
+from sqlalchemy.types import Enum as SAEnum
 
 
 class UuidPrimaryKeyMixin:
@@ -53,4 +55,44 @@ class EditableMixin(CreatedAtMixin):
         server_default=text("1"),
         default=1,
         comment="乐观锁版本号；每次更新自增，接口提交旧值即返回 409。",
+    )
+
+
+def enum_values(enum_cls: type[StrEnum]) -> list[str]:
+    """返回枚举的持久化取值集合。
+
+    参数:
+        enum_cls: 目标枚举类。
+
+    返回:
+        list[str]: 各成员的值；作为 CHECK 约束的取值集合。
+
+    注意:
+        SQLAlchemy 默认持久化成员的**名字**而不是值。这里显式指定按值存储，
+        使数据库中出现的就是 `UNVERIFIED` 这类可读取值，而不是 Python 成员名。
+    """
+    return [member.value for member in enum_cls]
+
+
+def enum_column_type(enum_cls: type[StrEnum], name: str) -> SAEnum:
+    """构造 VARCHAR + CHECK 形式的枚举列类型。
+
+    参数:
+        enum_cls: 枚举类。
+        name: 约束名后缀，最终形如 `ck_<table>_<name>`（由 Base 的命名约定拼接）。
+
+    返回:
+        SAEnum: 非原生枚举列类型。
+
+    注意:
+        刻意不用 PostgreSQL 原生枚举：原生枚举新增取值需要 `ALTER TYPE`，且不能在事务块内完成，
+        而 Alembic 默认在事务中执行迁移；用 CHECK 则把取值变更变成一次普通的约束替换。
+    """
+    return SAEnum(
+        enum_cls,
+        native_enum=False,
+        create_constraint=True,
+        length=32,
+        name=name,
+        values_callable=enum_values,
     )

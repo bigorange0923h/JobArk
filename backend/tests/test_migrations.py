@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0002"
+EXPECTED_HEAD = "0003"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -121,3 +121,65 @@ def test_upgrade_downgrade_upgrade_cycle_is_repeatable(alembic_config: Config, t
     command.upgrade(alembic_config, "head")
 
     assert _current_revision(test_database_url) == EXPECTED_HEAD
+
+
+async def _foreign_key_names(database_url: str) -> set[str]:
+    """读取 public schema 中的物理外键约束名。
+
+    参数:
+        database_url: 目标数据库连接串。
+
+    返回:
+        set[str]: 外键约束名集合。
+    """
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text(
+                    "SELECT constraint_name FROM information_schema.table_constraints "
+                    "WHERE constraint_type = 'FOREIGN KEY' AND table_schema = 'public'"
+                )
+            )
+            return {str(row[0]) for row in result.all()}
+    finally:
+        await engine.dispose()
+
+
+# 期望存在的跨表外键。约束名本身编码了"子表_列_目标表"，因此这份清单同时就是引用关系清单。
+_EXPECTED_FOREIGN_KEYS = {
+    # Profile：子表与修订指向主档案，事实表指向证据
+    "fk_profile_evidences_profile_id_personal_profiles",
+    "fk_profile_preferences_profile_id_personal_profiles",
+    "fk_profile_revisions_profile_id_personal_profiles",
+    "fk_profile_educations_profile_id_personal_profiles",
+    "fk_profile_educations_source_evidence_id_profile_evidences",
+    "fk_profile_experiences_profile_id_personal_profiles",
+    "fk_profile_experiences_source_evidence_id_profile_evidences",
+    "fk_profile_languages_profile_id_personal_profiles",
+    "fk_profile_languages_source_evidence_id_profile_evidences",
+    "fk_profile_projects_profile_id_personal_profiles",
+    "fk_profile_projects_source_evidence_id_profile_evidences",
+    "fk_profile_skills_profile_id_personal_profiles",
+    "fk_profile_skills_source_evidence_id_profile_evidences",
+    # Resume：版本指向简历与资料修订，证据关联指向版本与证据，候选稿指向简历与版本
+    "fk_resume_versions_resume_id_resumes",
+    "fk_resume_versions_profile_revision_id_profile_revisions",
+    "fk_resume_version_evidences_resume_version_id_resume_versions",
+    "fk_resume_version_evidences_evidence_id_profile_evidences",
+    "fk_resume_drafts_resume_id_resumes",
+    "fk_resume_drafts_base_resume_version_id_resume_versions",
+    "fk_resume_drafts_confirmed_resume_version_id_resume_versions",
+}
+
+
+def test_schema_has_expected_foreign_keys(alembic_config: Config, test_database_url: str) -> None:
+    """迁移产物必须包含全部跨表外键。
+
+    为什么需要这条断言：外键在模型与迁移中各出现一次，删掉迁移里的约束不会有任何报错，
+    数据库会悄悄失去引用完整性，并让依赖外键推断连接条件的 ORM 关系在运行到该查询时才失败。
+    断言"关键外键存在"比断言数量更能定位缺失的是哪一条。
+    """
+    command.upgrade(alembic_config, "head")
+
+    assert asyncio.run(_foreign_key_names(test_database_url)) == _EXPECTED_FOREIGN_KEYS
