@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理；HTTP 层当前仅有 `/health`，尚未有前端、数据库迁移或领域模块实现。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；HTTP 层当前仅有 `/health`，尚未有前端与领域模块实现。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -48,6 +48,17 @@ FastAPI application
 - `request_id` 由请求上下文中间件建立并贯穿响应头、响应体与服务端日志；入站 `X-Request-ID` 经白名单校验后沿用。
 - 日志为单行 JSON，字段集合固定；`uvicorn.access` 被关闭，访问日志统一由中间件产出，以保证每条都带 `request_id`。
 - 应用配置从环境变量与 `backend/.env` 读取，统一使用 `JOBARK_` 前缀；仓库根目录的 `.env` 仅供 `compose.yaml` 使用。两者命名空间分离，避免把数据库凭据误读为应用配置。
+
+### 3.2 数据访问与迁移
+
+数据访问细节与取舍见 ADR 0002，要点如下：
+
+- 数据库 I/O 全异步（`AsyncSession` + asyncpg），Alembic 同样使用异步 `env.py`；纯计算（评分、校验、字段转换）保持普通 `def`。
+- 事务边界由应用服务显式控制，会话依赖不做隐式提交；服务顺序固定为**取数据 → 结束事务 → 等待外部 → 按需开启新事务写回**，禁止在持有事务时等待 LLM、浏览器或第三方 HTTP。
+- 每个请求与后台任务各自获取会话，不跨请求复用。
+- `Base` 与约束命名约定定义在 `app/core/database.py`；`migrations/env.py` 显式导入各领域 `models`，新增领域必须在此追加导入，否则 autogenerate 会静默漏表。
+- `alembic.ini` 不保存连接串且必须保持 ASCII-only（`configparser` 按本地编码读取）；版本号使用可读递增编号。
+- 质量护栏：Pyright `strict` 与 pytest 警告即失败，用于拦住漏写 `await` 与弃用 API。
 
 ## 4. 前端技术架构与能力
 
@@ -100,6 +111,7 @@ JobArk/
 │   │   ├── main.py               # 唯一 FastAPI 入口：create_app 与模块级 app
 │   │   ├── core/                 # 配置、日志、错误与响应契约（契约见 ADR 0001）
 │   │   │   ├── config.py         # Settings：JOBARK_ 前缀，backend/.env 可选
+│   │   │   ├── database.py       # Base、约束命名约定、异步引擎与会话依赖
 │   │   │   ├── context.py        # request_id 的 ContextVar 载体
 │   │   │   ├── logging.py        # 单行 JSON 日志格式化与 uvicorn 日志收口
 │   │   │   ├── errors.py         # AppError 体系与稳定错误码
@@ -116,8 +128,12 @@ JobArk/
 │   │   ├── ai/                   # 受控 LLM 能力和输出契约
 │   │   └── automation/           # Phase 5+ 的端口和适配器
 │   ├── .env.example              # 后端应用配置示例（JOBARK_ 前缀）
+│   ├── alembic.ini               # 迁移配置：不含凭据，且必须保持 ASCII-only
 │   ├── migrations/
-│   └── tests/
+│   │   ├── env.py                # 异步迁移环境；领域模型在此显式导入
+│   │   ├── script.py.mako        # 迁移脚本模板
+│   │   └── versions/             # 迁移脚本，可读递增编号（0001、0002……）
+│   └── tests/                    # 契约测试 + 数据库集成测试（缺测试库时自动跳过）
 ├── frontend/
 │   └── src/
 │       ├── app/                  # Vue 路由、布局、Vite 启动配置

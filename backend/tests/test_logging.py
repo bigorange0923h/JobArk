@@ -15,6 +15,23 @@ from app.core.logging import JsonLogFormatter
 _REQUIRED_FIELDS = {"timestamp", "level", "logger", "service", "request_id", "message"}
 
 
+def _extra(record: logging.LogRecord, name: str) -> object:
+    """读取通过 `extra=` 传入的自定义字段。
+
+    参数:
+        record: 日志记录。
+        name: 字段名。
+
+    返回:
+        object: 字段值；字段不存在时为 None。
+
+    注意:
+        标准库 `LogRecord` 未声明这些动态字段，直接属性访问会被类型检查拒绝，
+        因此统一通过本函数读取，并在断言处显式收窄类型。
+    """
+    return getattr(record, name, None)
+
+
 def test_formatter_emits_single_line_json() -> None:
     """格式化结果必须是单行可解析 JSON，禁止换行破坏逐行采集。"""
     formatter = JsonLogFormatter(service="JobArk")
@@ -72,8 +89,10 @@ def test_access_log_carries_request_id_and_status(client: TestClient, caplog: py
 
     assert len(access_records) == 1
     record = access_records[0]
-    assert record.http_status == response.status_code
-    assert record.http_method == "GET"
-    assert record.http_path == "/health"
-    assert record.duration_ms >= 0
+    duration_ms = _extra(record, "duration_ms")
+    assert _extra(record, "http_status") == response.status_code
+    assert _extra(record, "http_method") == "GET"
+    assert _extra(record, "http_path") == "/health"
+    assert isinstance(duration_ms, float)
+    assert duration_ms >= 0
     assert response.json()["meta"]["request_id"] == "log-correlation-1"

@@ -53,7 +53,10 @@ class ApiError(BaseModel):
 
     code: str = Field(description="稳定错误码，取值见 ADR 0001 的错误码表。")
     message: str = Field(description="面向用户的安全提示。")
-    details: list[ErrorDetail] = Field(default_factory=list, description="结构化的失败细节。")
+    details: list[ErrorDetail] = Field(
+        default_factory=list[ErrorDetail],
+        description="结构化的失败细节。",
+    )
 
 
 class ApiErrorResponse(BaseModel):

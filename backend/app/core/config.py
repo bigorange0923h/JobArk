@@ -42,6 +42,12 @@ class Settings(BaseSettings):
     log_level: LogLevel = "INFO"
     # 业务领域路由的统一挂载前缀；/health 等运维接口不带版本，便于探针长期稳定引用。
     api_v1_prefix: str = "/api/v1"
+    # 异步驱动固定为 asyncpg：数据访问范式在 ADR 0002 中确定，不做同步/异步混用。
+    # 默认值是本地开发占位串，密码必须与仓库根目录 .env 的 POSTGRES_PASSWORD 一致；
+    # 未配置时服务仍可启动，但首次查询会以明确的认证失败暴露问题。
+    database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
+    # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
+    database_echo: bool = False
 
 
 @lru_cache

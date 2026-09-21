@@ -12,7 +12,7 @@
 import logging
 import re
 from time import perf_counter
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from starlette.datastructures import MutableHeaders
 

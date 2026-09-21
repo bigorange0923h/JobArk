@@ -9,6 +9,9 @@ dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
     "pydantic-settings>=2.10",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.31.0",
+    "alembic>=1.20.0",
 ]
 
 # 仅开发与测试使用；生产镜像安装依赖时不应包含该组。
@@ -16,6 +19,8 @@ dependencies = [
 dev = [
     "pytest>=8.4",
     "httpx2>=2.13.0",
+    "pytest-asyncio>=1.4.0",
+    "pyright>=1.1.414",
 ]
 
 [tool.pytest.ini_options]
@@ -23,3 +28,20 @@ testpaths = ["tests"]
 # 保证从任意工作目录运行 pytest 时都能导入 app 包。
 pythonpath = ["."]
 addopts = "-ra"
+# 警告即失败：漏写 await、使用弃用 API、未关闭的资源等问题必须当场暴露，
+# 不能被"测试通过"掩盖。后出现的条目优先级更高，因此定向豁免写在后面。
+filterwarnings = [
+    "error",
+    # 定向豁免：Starlette 测试客户端内部引用了 anyio 的弃用别名，属第三方代码，
+    # 本项目无可修复动作，待上游修复后删除本条。
+    "ignore:The anyio\\.abc\\.BlockingPortal alias is deprecated:DeprecationWarning",
+]
+asyncio_mode = "auto"
+
+[tool.pyright]
+pythonVersion = "3.14"
+venvPath = "."
+venv = ".venv"
+# 严格模式：漏写 await 会静默失效，必须由类型检查兜住，而不是靠人工评审。
+typeCheckingMode = "strict"
+include = ["app", "tests", "migrations"]

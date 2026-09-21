@@ -8,11 +8,15 @@
 """
 
 import logging
-from typing import Any
+from collections.abc import Awaitable, Callable
+from typing import Any, cast
 
 from fastapi import FastAPI
 from fastapi.exceptions import RequestValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
+from starlette.requests import Request
+from starlette.responses import Response
+from starlette.types import ExceptionHandler
 
 from .errors import AppError, ErrorCode
 from .responses import ErrorDetail, error_response
@@ -43,22 +47,54 @@ _FALLBACK_MESSAGES: dict[int, str] = {
     429: "请求过于频繁，请稍后重试。",
 }
 
+# Starlette 把处理器第二个参数声明为宽泛的 Exception，而异常分发实际按异常类型匹配，
+# 因此每个处理器只会收到自己声明的那个异常类型。下面的 cast 只用于弥补这一处签名不精确，
+# 不改变任何运行时行为。
+_HandlerFunction = Callable[[Request, Any], Awaitable[Response]]
 
-def _request_id_from_scope(request: Any) -> str | None:
+
+def _register(app: FastAPI, exc_type: type[Exception], handler: _HandlerFunction) -> None:
+    """注册异常处理器。
+
+    参数:
+        app: FastAPI 应用实例。
+        exc_type: 该处理器负责的异常类型。
+        handler: 处理协程函数，其第二个参数为具体异常类型。
+    """
+    app.add_exception_handler(exc_type, cast("ExceptionHandler", handler))
+
+
+def _usable_detail_message(value: object) -> str | None:
+    """从 HTTP 异常的 detail 中提取可直接展示的文案。
+
+    参数:
+        value: `HTTPException.detail` 的原始值。
+
+    返回:
+        str | None: 非空字符串时返回它，否则返回 None。
+
+    注意:
+        Starlette 把 `detail` 标注为 `str`，但运行期允许任意对象（FastAPI 允许传 dict）。
+        若直接把结构体透传到 `message` 字段，响应模型校验失败会把 4xx 退化成 500，
+        因此这里只接受字符串，其余由调用方回落到状态码对应的固定文案。
+    """
+    return value if isinstance(value, str) and value else None
+
+
+def _request_id_from_scope(request: Request) -> str | None:
     """从请求作用域读取中间件写入的请求标识。
 
     参数:
-        request: Starlette/FastAPI 请求对象。
+        request: 当前请求。
 
     返回:
         str | None: 请求标识；未经过请求上下文中间件时为 None。
     """
-    state = getattr(request, "state", None)
-    value = getattr(state, "request_id", None)
+    value = getattr(request.state, "request_id", None)
     return value if isinstance(value, str) else None
 
 
-async def app_error_handler(request: Any, exc: AppError) -> Any:
+async def app_error_handler(request: Request, exc: AppError) -> Response:
     """处理领域异常。
 
     参数:
@@ -66,7 +102,7 @@ async def app_error_handler(request: Any, exc: AppError) -> Any:
         exc: 领域异常实例。
 
     返回:
-        JSONResponse: 按契约构造的失败响应。
+        Response: 按契约构造的失败响应。
 
     注意:
         5xx 视为服务端缺陷，记录完整堆栈；4xx 属于可预期的业务失败，只记录告警级结论，
@@ -91,7 +127,7 @@ async def app_error_handler(request: Any, exc: AppError) -> Any:
     )
 
 
-async def validation_error_handler(request: Any, exc: RequestValidationError) -> Any:
+async def validation_error_handler(request: Request, exc: RequestValidationError) -> Response:
     """处理请求校验失败。
 
     参数:
@@ -99,7 +135,7 @@ async def validation_error_handler(request: Any, exc: RequestValidationError) ->
         exc: FastAPI 抛出的校验异常。
 
     返回:
-        JSONResponse: 422 失败响应，`details` 含字段路径与原因。
+        Response: 422 失败响应，`details` 含字段路径与原因。
 
     注意:
         只保留字段路径与原因，丢弃 pydantic 错误中的 `input`/`ctx` 等内容——它们可能包含
@@ -125,7 +161,7 @@ async def validation_error_handler(request: Any, exc: RequestValidationError) ->
     )
 
 
-async def http_exception_handler(request: Any, exc: StarletteHTTPException) -> Any:
+async def http_exception_handler(request: Request, exc: StarletteHTTPException) -> Response:
     """处理 Starlette/FastAPI 内置 HTTP 异常。
 
     参数:
@@ -133,11 +169,14 @@ async def http_exception_handler(request: Any, exc: StarletteHTTPException) -> A
         exc: 内置 HTTP 异常，常见来源是路由未匹配（404）与方法不支持（405）。
 
     返回:
-        JSONResponse: 与错误码表一致的失败响应。
+        Response: 与错误码表一致的失败响应。
     """
     code = _STATUS_CODE_TO_ERROR_CODE.get(exc.status_code, ErrorCode.INTERNAL_ERROR)
-    detail = exc.detail if isinstance(exc.detail, str) and exc.detail else None
-    message = _FALLBACK_MESSAGES.get(exc.status_code) or detail or "请求处理失败。"
+    message = (
+        _FALLBACK_MESSAGES.get(exc.status_code)
+        or _usable_detail_message(exc.detail)
+        or "请求处理失败。"
+    )
     return error_response(
         status_code=exc.status_code,
         code=code,
@@ -146,7 +185,7 @@ async def http_exception_handler(request: Any, exc: StarletteHTTPException) -> A
     )
 
 
-async def unhandled_exception_handler(request: Any, exc: Exception) -> Any:
+async def unhandled_exception_handler(request: Request, exc: Exception) -> Response:
     """处理未捕获异常。
 
     参数:
@@ -154,7 +193,7 @@ async def unhandled_exception_handler(request: Any, exc: Exception) -> Any:
         exc: 未被其他处理器覆盖的异常。
 
     返回:
-        JSONResponse: 500 失败响应，仅含通用提示与请求标识。
+        Response: 500 失败响应，仅含通用提示与请求标识。
 
     注意:
         处理器由 Starlette 的 `ServerErrorMiddleware` 调用，位于请求上下文中间件之外，
@@ -182,7 +221,7 @@ def register_exception_handlers(app: FastAPI) -> None:
         注册 `Exception` 的处理器等价于自定义 500 处理器：Starlette 会用它替换默认的
         `ServerErrorMiddleware` 行为，从而保证未捕获异常也返回统一契约而非纯文本 500。
     """
-    app.add_exception_handler(AppError, app_error_handler)
-    app.add_exception_handler(RequestValidationError, validation_error_handler)
-    app.add_exception_handler(StarletteHTTPException, http_exception_handler)
-    app.add_exception_handler(Exception, unhandled_exception_handler)
+    _register(app, AppError, app_error_handler)
+    _register(app, RequestValidationError, validation_error_handler)
+    _register(app, StarletteHTTPException, http_exception_handler)
+    _register(app, Exception, unhandled_exception_handler)
