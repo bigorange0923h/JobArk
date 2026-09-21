@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + API Client），尚无业务页面；领域模块尚未实现，HTTP 层当前仅有 `/health`。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + API Client），尚无业务页面；后端已实现 Profile 领域（9 张表、26 个接口）与 `/health`，Resume 及后续领域尚未实现。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -96,6 +96,8 @@ V1 前端能力包括：
 
 ## 5. 领域数据与约束
 
+表模型、不可变快照边界、关键约束与实施顺序见[数据模型设计](data-model.md)。JobArk 按单人本地工具建模，不预留多租户、用户或组织边界。
+
 ```text
 PersonalProfile ──< ProfileEvidence
        │
@@ -130,7 +132,7 @@ JobArk/
 │   │   │   ├── middleware.py     # 请求上下文中间件与结构化访问日志
 │   │   │   └── exception_handlers.py  # 四类异常的统一收口
 │   │   ├── modules/              # 业务优先分包
-│   │   │   ├── profile/
+│   │   │   ├── profile/          # router/service/repository/models/schemas/enums
 │   │   │   ├── resume/
 │   │   │   ├── job/
 │   │   │   ├── matching/

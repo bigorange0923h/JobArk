@@ -70,6 +70,15 @@ select = [
 [tool.ruff.lint.isort]
 known-first-party = ["app"]
 
+[tool.ruff.lint.per-file-ignores]
+# Alembic 自动生成的脚本由工具排版：其中大量行是模型里的中文列注释，必然超过 120 列，
+# 而手工换行会在下次 autogenerate 时被覆盖。可读性的源头是 app/ 下的模型定义。
+"migrations/versions/*.py" = ["E501"]
+
+[tool.ruff.format]
+# 同上：不对生成脚本做格式化，避免每次 autogenerate 都产生纯排版差异。
+exclude = ["migrations/versions/*.py"]
+
 [tool.ruff.lint.flake8-bugbear]
 # B008：FastAPI 的依赖注入惯用「函数调用作为默认值」，是框架规定写法而非缺陷。
 extend-immutable-calls = ["fastapi.Depends"]

@@ -11,8 +11,11 @@
 import asyncio
 import os
 from collections.abc import Iterator
+from pathlib import Path
 
 import pytest
+from alembic import command
+from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy import text
@@ -20,12 +23,26 @@ from sqlalchemy.engine import make_url
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
 
-from app.core.config import AppEnv, Settings
+from app.core.config import AppEnv, Settings, get_settings
 from app.core.errors import ResourceNotFoundError
 from app.core.responses import ApiResponse, success
 from app.main import create_app
 
 TEST_DATABASE_URL_ENV = "JOBARK_TEST_DATABASE_URL"
+BACKEND_ROOT = Path(__file__).resolve().parents[1]
+
+# 领域表清单：清空测试数据时使用，顺序无关（TRUNCATE 带 CASCADE）。
+_DOMAIN_TABLES = (
+    "profile_revisions",
+    "profile_preferences",
+    "profile_languages",
+    "profile_educations",
+    "profile_projects",
+    "profile_experiences",
+    "profile_skills",
+    "profile_evidences",
+    "personal_profiles",
+)
 
 
 @pytest.fixture
@@ -134,3 +151,90 @@ def test_database_url() -> str:
         pytest.skip(f"未设置 {TEST_DATABASE_URL_ENV}，跳过数据库集成测试。")
     asyncio.run(_ensure_database_exists(database_url))
     return database_url
+
+
+async def _table_exists(database_url: str, table_name: str) -> bool:
+    """判断库中是否存在指定表。
+
+    参数:
+        database_url: 目标数据库连接串。
+        table_name: 表名。
+
+    返回:
+        bool: 存在返回 True。
+    """
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            # 用 to_regclass 而不是查 information_schema：它一次查询即可判断，且对 schema 限定名友好。
+            found = await connection.scalar(text("SELECT to_regclass(:name)"), {"name": f"public.{table_name}"})
+            return found is not None
+    finally:
+        await engine.dispose()
+
+
+async def _truncate_domain_tables(database_url: str) -> None:
+    """清空领域表，保证测试之间互不影响。
+
+    参数:
+        database_url: 目标数据库连接串。
+
+    注意:
+        使用 TRUNCATE 而不是 DELETE：前者一次完成且重置序列，不会因为外键顺序反复失败。
+    """
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.begin() as connection:
+            await connection.execute(text(f"TRUNCATE {', '.join(_DOMAIN_TABLES)} CASCADE"))
+    finally:
+        await engine.dispose()
+
+
+def _upgrade_schema_if_needed() -> None:
+    """必要时把测试库迁移到最新版本。
+
+    注意:
+        通过 Alembic 迁移建表，而不是 `create_all`：测试必须验证的是真实迁移产物，
+        两者不一致时应当由测试暴露，而不是被"测试里另建一套表"掩盖。
+        必须用 `alembic.command`（同步）执行：异步 `env.py` 内部调用 `asyncio.run`，
+        在已运行的事件循环里会直接报错。
+    """
+    config = Config(str(BACKEND_ROOT / "alembic.ini"))
+    config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
+    command.upgrade(config, "head")
+
+
+@pytest.fixture
+def db_client(
+    test_database_url: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> Iterator[TestClient]:
+    """返回指向测试库、且数据已清空的客户端。
+
+    参数:
+        test_database_url: 会话级测试库连接串。
+        monkeypatch: 用于把连接串注入应用配置。
+
+    返回:
+        Iterator[TestClient]: 可在真实数据库上验证领域接口的客户端。
+    """
+    monkeypatch.setenv("JOBARK_DATABASE_URL", test_database_url)
+    # 配置单例带缓存，必须清除，否则应用会继续连接开发库。
+    get_settings.cache_clear()
+
+    if not asyncio.run(_table_exists(test_database_url, "personal_profiles")):
+        _upgrade_schema_if_needed()
+    asyncio.run(_truncate_domain_tables(test_database_url))
+
+    application = create_app(
+        Settings(
+            app_env=AppEnv.TEST,
+            log_level="WARNING",
+            database_url=test_database_url,
+            # 与 conftest 其他夹具一致：运行期禁用 .env 读取。
+            _env_file=None,  # pyright: ignore[reportCallIssue]
+        )
+    )
+    with TestClient(application, raise_server_exceptions=False) as client:
+        yield client
+    get_settings.cache_clear()
