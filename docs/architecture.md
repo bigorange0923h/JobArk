@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + API Client），尚无业务页面；后端已实现 Profile 领域（9 张表、26 个接口）与 `/health`，Resume 及后续领域尚未实现。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + Ant Design Vue 按需导入 + API Client），已实现个人资料页（档案聚合、六类事实的增删改、求职偏好与资料修订，含乐观锁冲突与字段级错误的呈现）；后端已实现 Profile 领域（9 张表、26 个接口）与 Resume 领域（4 张表、12 个接口，含不可变版本与候选稿确认流程）以及 `/health`，Job 及后续领域尚未实现。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -101,7 +101,8 @@ V1 前端能力包括：
 ```text
 PersonalProfile ──< ProfileEvidence
        │
-       └──< Resume ──< ResumeVersion
+       ├──< ProfileRevision ──< ResumeVersion
+       └──< Resume ──< ResumeVersion / ResumeDraft
 
 Company ──< JobOpportunity ──< JobPosting ──< JobSnapshot
                                   │
@@ -128,12 +129,13 @@ JobArk/
 │   │   │   ├── context.py        # request_id 的 ContextVar 载体
 │   │   │   ├── logging.py        # 单行 JSON 日志格式化与 uvicorn 日志收口
 │   │   │   ├── errors.py         # AppError 体系与稳定错误码
-│   │   │   ├── responses.py      # ApiResponse / ApiErrorResponse 契约
+│   │   │   ├── responses.py      # ApiResponse / ApiErrorResponse 契约与公共响应基类
+│   │   │   ├── versioning.py     # 可编辑实体的乐观锁条件更新
 │   │   │   ├── middleware.py     # 请求上下文中间件与结构化访问日志
 │   │   │   └── exception_handlers.py  # 四类异常的统一收口
 │   │   ├── modules/              # 业务优先分包
 │   │   │   ├── profile/          # router/service/repository/models/schemas/enums
-│   │   │   ├── resume/
+│   │   │   ├── resume/           # 同上；含不可变简历版本与 AI 候选稿状态机
 │   │   │   ├── job/
 │   │   │   ├── matching/
 │   │   │   ├── application/

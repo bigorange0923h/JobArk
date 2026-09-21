@@ -4,8 +4,9 @@ JobArk 前端是位于本目录的独立 npm 工程，工程根即 `frontend/`�
 
 ## 技术栈与当前状态
 
-- **已接入**：Vue 3、TypeScript（严格模式）、Vite、Vue Router、API Client、Vitest。
-- **已推迟**：Ant Design Vue 与 ECharts。阶段 0 没有任何业务页面，提前安装只会引入未使用的依赖；出现真实页面时再按需接入（见 `docs/architecture.md` 第 4 节）。
+- **已接入**：Vue 3、TypeScript（严格模式）、Vite、Vue Router、Ant Design Vue（按需自动导入）、API Client、Vitest。
+- **已推迟**：ECharts。仪表盘出现时再接入，当前没有图表页面。
+- **已实现的页面**：个人资料（`features/profile/`，覆盖档案根信息、证据、技能、经历、项目、教育、语言、求职偏好与资料修订）。
 
 ## 目录
 
@@ -13,15 +14,24 @@ JobArk 前端是位于本目录的独立 npm 工程，工程根即 `frontend/`�
 src/
 ├── main.ts                应用入口
 ├── App.vue                根组件：最外层布局与路由出口
+├── test-setup.ts          组件测试的 DOM 环境补丁（jsdom 缺 matchMedia/ResizeObserver）
 ├── app/
 │   ├── router.ts          路由表
-│   └── views/             页面：工程状态页、404 兜底页
+│   └── views/             跨领域壳页面：工程状态页、404 兜底页
+├── features/
+│   └── profile/
+│       ├── ProfileView.vue        页面容器：加载/失败/未创建/就绪四种状态与冲突处理
+│       ├── descriptors.ts         六类事实的字段、表格列与写操作（表单的单一来源）
+│       ├── types.ts               描述符类型
+│       └── components/            通用事实面板、档案根信息、偏好、修订面板
 └── shared/
-    └── api/
-        ├── types.ts       后端统一契约的 TypeScript 镜像
-        ├── client.ts      唯一解包点：成功返回 data，失败抛 ApiError
-        ├── system.ts      系统级端点封装（/health）
-        └── client.test.ts
+    ├── api/
+    │   ├── types.ts       后端统一契约的 TypeScript 镜像
+    │   ├── client.ts      唯一解包点：成功返回 data，失败抛 ApiError
+    │   ├── profile.ts     Profile 领域的类型与调用（后端 schema 的手工镜像）
+    │   └── system.ts      系统级端点封装（/health）
+    └── forms/
+        └── serverErrors.ts  把失败响应解析成"总体提示 / 字段级原因 / 请求标识"
 ```
 
 ## 命令
@@ -46,10 +56,17 @@ npm run build               # 类型检查 + 生产构建
 
 因此本地开发不涉及跨域，后端 CORS 默认关闭。只有前后端确实分离到不同源时，才通过 `JOBARK_CORS_ALLOWED_ORIGINS` 显式启用白名单。
 
-## 两条环境注意事项
+## 三条环境注意事项
 
 1. **安装依赖必须带 `--include=dev`**。部分 IDE/CI 环境会预设 `NODE_ENV=production`，npm 据此默认 `omit=dev`，导致 `vue-tsc`、`vitest`、`@vitejs/plugin-vue` 等开发依赖被静默跳过，表现为命令找不到或 `npm run typecheck` 报错。也可以先清除 `NODE_ENV` 再安装。
 2. **TypeScript 固定在 5.x**。`vue-tsc` 3.x 依赖 `typescript/lib/tsc` 子路径，而 TypeScript 7 已移除该导出（报 `ERR_PACKAGE_PATH_NOT_EXPORTED`）；npm 的 `>=5.0.0` 版本范围拦不住这个不兼容。等 `vue-tsc` 支持 TypeScript 7 后再升级。
+3. **`components.d.ts` 必须提交**。Ant Design Vue 的组件由 `unplugin-vue-components` 在构建时自动导入并生成该声明文件；`npm run build` 的执行顺序是 `vue-tsc` 在前、`vite` 在后，因此干净环境里若没有它，类型检查会先失败。它是生成物，但属于构建所需的输入，不放进 `.gitignore`。
+
+## 测试的环境约定
+
+默认环境是 `node`（传输层测试只需替换 `fetch`）。**组件测试必须在文件顶部标注 `@vitest-environment jsdom`**：不要全局改成 jsdom，因为 jsdom 没有完整实现 `AbortSignal.timeout`，会让传输层的超时测试在一个与被测逻辑无关的地方失败。
+
+`src/test-setup.ts` 为 jsdom 补上 `matchMedia` 与 `ResizeObserver`——AntDV 的栅格与部分组件挂载时会调用它们，缺失时组件直接抛错，而不是"渲染得不一样"。
 
 ## 边界
 
