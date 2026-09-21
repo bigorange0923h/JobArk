@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**仓库当前是一个 Python/FastAPI 启动项目，根目录含 `main.py` 与 `pyproject.toml`；尚未有前端、数据库迁移或领域模块实现。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），当前只提供健康检查接口；尚未有前端、数据库迁移或领域模块实现。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -85,8 +85,9 @@ JobOpportunity ──< MatchResult >── ResumeVersion / PersonalProfile
 
 ```text
 JobArk/
-├── backend/
+├── backend/                      # 后端 Python 工程根：pyproject.toml、uv.lock、app/
 │   ├── app/
+│   │   ├── main.py               # 唯一 FastAPI 入口：create_app 与模块级 app
 │   │   ├── core/                 # 配置、数据库、错误与日志
 │   │   ├── modules/              # 业务优先分包
 │   │   │   ├── profile/
@@ -104,12 +105,13 @@ JobArk/
 │       ├── app/                  # Vue 路由、布局、Vite 启动配置
 │       ├── features/             # Dashboard/Jobs/Profile/Resume/Applications
 │       └── shared/               # AntDV 封装、ECharts 图表、API 与通用工具
+├── compose.yaml                  # 唯一的 Compose 服务入口，与根目录 .env 配对
 ├── docs/                         # 可提交的工程文档
 ├── deploy/                       # Compose、Nginx 和部署配置
 └── scripts/                      # 可重复执行的开发/运维辅助脚本
 ```
 
-每个后端领域模块后续按需要增加 `router.py`、`service.py`、`repository.py`、`models.py`、`schemas.py` 与 `enums.py`；不预先创建空实现文件。根目录现有 `main.py` 是启动示例，迁移到 `backend/app/main.py` 应与首次后端初始化提交一并完成，避免双入口。
+每个后端领域模块后续按需要增加 `router.py`、`service.py`、`repository.py`、`models.py`、`schemas.py` 与 `enums.py`；不预先创建空实现文件。后端入口已完成迁移：`backend/app/main.py` 是仓库内唯一的 ASGI 入口，根目录不再保留 Python 工程文件，双入口已被消除；包边界由各目录的 `__init__.py` 固定。
 
 ## 7. V1 实施顺序
 
@@ -125,4 +127,4 @@ JobArk/
 - 去重是否能依赖公司、标题、地点和 JD 相似度；必须提供人工合并/拆分入口。
 - PDF 导出在目标部署环境中的 Chromium 字体与分页是否稳定。
 - 匹配评分的权重与“硬性淘汰”规则需用真实职位样本校准，不能先把模型分数当作事实。
-- 当前 `pyproject.toml` 的 Python 3.14 要求与设计稿的“3.12+”不同；后端初始化时需明确支持版本并在 CI 固化。
+- 后端解释器版本已定为 `>=3.14`，并与 `backend/uv.lock` 保持一致；但 CI 尚未固定实际使用的补丁版本（阶段 0 第 6 项）。

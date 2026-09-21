@@ -1,0 +1,11 @@
+[project]
+name = "jobark"
+version = "0.1.0"
+description = "JobArk 后端：个人求职工作台的领域服务与受控 AI 能力。"
+# 后端工程根位于 backend/，本文件是其唯一的依赖与版本声明处。
+# requires-python 与 uv.lock 保持一致；调整前必须确认部署环境的解释器版本。
+requires-python = ">=3.14"
+dependencies = [
+    "fastapi>=0.141.1",
+    "uvicorn>=0.53.0",
+]
