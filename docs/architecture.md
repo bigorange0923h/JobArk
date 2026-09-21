@@ -37,7 +37,7 @@ FastAPI application
 
 浏览器适配器、LLM Provider 和调度器均是可替换基础设施。领域服务只能依赖它们定义的端口，不得依赖具体平台页面或模型 SDK。
 
-数据库使用 PostgreSQL 18.6。开发与部署镜像位于 `deploy/postgres/`，Compose 服务位于 `deploy/docker-compose.yml`；仅初始化 `pgcrypto`、`pg_trgm` 和 `unaccent`，业务表结构一律通过 Alembic 管理。该选择为职位/公司文本检索、版本化数据与统计查询提供稳定基础，且不提前引入 V1 范围外的向量检索能力。
+数据库使用 PostgreSQL 16。开发与部署镜像位于 `deploy/postgres/`，根目录 `compose.yaml` 是唯一的 Compose 服务入口，并与根目录 `.env` 配对；基础镜像固定到已验证的官方摘要，V1 仅初始化 `pgcrypto`、`pg_trgm` 和 `unaccent`，业务表结构一律通过 Alembic 管理。该选择为职位/公司文本检索、版本化数据与统计查询提供稳定基础，且不提前引入 V1 范围外的向量检索能力。
 
 ## 4. 前端技术架构与能力
 
