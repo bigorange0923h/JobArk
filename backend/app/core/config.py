@@ -7,9 +7,10 @@
 
 from enum import StrEnum
 from functools import lru_cache
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
 
@@ -48,6 +49,30 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
     # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
     database_echo: bool = False
+    # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
+    # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；
+    # 只有前后端确实分离到不同源时才按环境显式启用，环境变量写法为逗号分隔，例如
+    # JOBARK_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+    # 用 NoDecode 关闭 pydantic-settings 对复杂字段的 JSON 解析，避免逗号分隔写法直接报错。
+    cors_allowed_origins: Annotated[list[str], NoDecode] = []
+
+    @field_validator("cors_allowed_origins", mode="before")
+    @classmethod
+    def _split_origins(cls, value: object) -> object:
+        """把逗号分隔的跨域白名单拆分为列表。
+
+        参数:
+            value: 环境变量或构造参数传入的原始值。
+
+        返回:
+            object: 字符串输入拆分为去空白的列表，其他输入原样返回交由 pydantic 校验。
+
+        注意:
+            空白项会被丢弃，避免写成 `a,,b` 时把空串当成合法来源（空来源等价于任意来源）。
+        """
+        if isinstance(value, str):
+            return [item.strip() for item in value.split(",") if item.strip()]
+        return value
 
 
 @lru_cache

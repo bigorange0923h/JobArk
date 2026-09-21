@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；HTTP 层当前仅有 `/health`，尚未有前端与领域模块实现。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（首个空基线迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + API Client），尚无业务页面；领域模块尚未实现，HTTP 层当前仅有 `/health`。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -48,6 +48,7 @@ FastAPI application
 - `request_id` 由请求上下文中间件建立并贯穿响应头、响应体与服务端日志；入站 `X-Request-ID` 经白名单校验后沿用。
 - 日志为单行 JSON，字段集合固定；`uvicorn.access` 被关闭，访问日志统一由中间件产出，以保证每条都带 `request_id`。
 - 应用配置从环境变量与 `backend/.env` 读取，统一使用 `JOBARK_` 前缀；仓库根目录的 `.env` 仅供 `compose.yaml` 使用。两者命名空间分离，避免把数据库凭据误读为应用配置。
+- 跨域默认关闭：开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS。只有前后端确实分离到不同源时，才通过 `JOBARK_CORS_ALLOWED_ORIGINS`（逗号分隔白名单）显式启用，并暴露 `X-Request-ID` 供前端读取。已知限制：未捕获异常产生的 500 由 Starlette 最外层中间件生成，不经过 CORS 中间件，跨域场景下浏览器会把 500 报成 CORS 错误，排查时需直接访问后端地址。
 
 ### 3.2 数据访问与迁移
 
@@ -62,7 +63,7 @@ FastAPI application
 
 ## 4. 前端技术架构与能力
 
-前端技术栈正式确定为：**Vue 3 + TypeScript + Vite + Ant Design Vue + ECharts**。
+前端技术栈正式确定为：**Vue 3 + TypeScript + Vite + Ant Design Vue + ECharts**。其中 Ant Design Vue 与 ECharts 在阶段 0 不安装：此时还没有任何业务页面，提前引入只会产生未使用的依赖与版本负担，等出现真实页面时再按需接入。
 
 | 层级 | 技术/位置 | 职责 |
 | --- | --- | --- |
@@ -72,6 +73,16 @@ FastAPI application
 | 可视化层 | ECharts | 求职漏斗、来源分布、投递趋势、简历版本转化等数据图表 |
 | 共享层 | `frontend/src/shared/` | API Client、类型、通用组件、格式化工具与可复用组合式函数 |
 | 构建层 | Vite | 本地开发服务器、TypeScript 构建、环境变量注入和生产打包 |
+
+**当前实现状态（阶段 0 第 5 项）：**`frontend/` 已是独立 npm 工程，包含 Vite 构建、Vue Router 路由、TypeScript 严格检查与 API Client；Ant Design Vue 与 ECharts 尚未安装。
+
+API Client 的分层与边界：
+
+- `shared/api/types.ts` 手工镜像后端统一契约（后端尚无业务接口，代码生成暂无价值）。
+- `shared/api/client.ts` 是**唯一的解包点**：成功返回 `data`，失败抛出携带 `code`/`message`/`status`/`requestId`/`details` 的 `ApiError`。
+- 具体端点封装放在 `shared/api/` 或阶段 1 起各领域的 `features/<domain>/api.ts`。
+- 错误码原样透传供调用方分支，展示默认使用后端 `message`，前端**不复制一份文案表**（必然漂移）；`requestId` 附着在错误对象上，便于展示"错误编号"并定位服务端日志。
+- 不自动重试：写操作重试可能造成重复提交。
 
 前端负责呈现和编辑用户已确认或待确认的数据，不拥有领域规则：例如状态流转、匹配评分、证据校验和自动化权限都在后端执行。所有会引起外部副作用的操作（如后续投递）必须以显式确认界面收口。
 
@@ -134,11 +145,14 @@ JobArk/
 │   │   ├── script.py.mako        # 迁移脚本模板
 │   │   └── versions/             # 迁移脚本，可读递增编号（0001、0002……）
 │   └── tests/                    # 契约测试 + 数据库集成测试（缺测试库时自动跳过）
-├── frontend/
+├── frontend/                     # 独立 npm 工程根：package.json、vite.config.ts、tsconfig.json
 │   └── src/
-│       ├── app/                  # Vue 路由、布局、Vite 启动配置
-│       ├── features/             # Dashboard/Jobs/Profile/Resume/Applications
-│       └── shared/               # AntDV 封装、ECharts 图表、API 与通用工具
+│       ├── main.ts               # 应用入口
+│       ├── App.vue               # 根组件：最外层布局与路由出口
+│       ├── app/                  # 路由与页面（views/）；Vite 启动配置在工程根
+│       ├── features/             # 领域页面容器，阶段 1 起按 Dashboard/Jobs/… 填充
+│       └── shared/
+│           └── api/              # API Client：契约类型、解包、端点封装与单元测试
 ├── compose.yaml                  # 唯一的 Compose 服务入口，与根目录 .env 配对
 ├── docs/                         # 可提交的工程文档
 ├── deploy/                       # Compose、Nginx 和部署配置

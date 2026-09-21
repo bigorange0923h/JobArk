@@ -44,6 +44,7 @@ py -3.14 -m venv .venv
 | `JOBARK_API_V1_PREFIX` | `/api/v1` | 业务领域路由的挂载前缀 |
 | `JOBARK_DATABASE_URL` | 本地占位串 | 异步连接串，驱动固定为 `asyncpg`；密码需与仓库根目录 `.env` 的 `POSTGRES_PASSWORD` 一致 |
 | `JOBARK_DATABASE_ECHO` | `false` | 是否把 SQL 语句写入日志，仅本地排查使用 |
+| `JOBARK_CORS_ALLOWED_ORIGINS` | 空 | 跨域白名单，逗号分隔；留空则完全不挂载 CORS（开发期由 Vite 代理同源访问） |
 
 仓库根目录的 `.env` 仅供 `compose.yaml` 使用（`POSTGRES_*`），后端不读取它。`.env` 按进程工作目录解析，因此请在 `backend/` 目录下启动服务。
 

@@ -10,6 +10,7 @@ from contextlib import asynccontextmanager
 from typing import Literal
 
 from fastapi import APIRouter, FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
 from .core.config import Settings, get_settings
@@ -73,6 +74,23 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     )
 
     application.add_middleware(RequestContextMiddleware)
+    if resolved_settings.cors_allowed_origins:
+        # 后注册的中间件在外层：CORS 包住请求上下文中间件，使预检请求直接由 CORS 应答，
+        # 不进入访问日志，也不触碰业务逻辑。
+        #
+        # 已知限制：Starlette 的 ServerErrorMiddleware 始终在最外层，未捕获异常产生的 500
+        # 不经过 CORS，浏览器会把跨域场景下的 500 报成 CORS 错误。开发期使用 Vite 代理同源访问，
+        # 不触发该问题；分离部署时排查 500 需直接打后端地址。
+        application.add_middleware(
+            CORSMiddleware,
+            allow_origins=resolved_settings.cors_allowed_origins,
+            # 当前没有凭据式认证；开启后浏览器会携带 Cookie 跨域，需与认证方案一起评估。
+            allow_credentials=False,
+            allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            allow_headers=["Content-Type", "X-Request-ID"],
+            # 不暴露该头时前端脚本读不到它，跨域排查会丢失请求标识。
+            expose_headers=["X-Request-ID"],
+        )
     register_exception_handlers(application)
 
     @application.get(
