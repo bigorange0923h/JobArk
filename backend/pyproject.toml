@@ -8,4 +8,18 @@ requires-python = ">=3.14"
 dependencies = [
     "fastapi>=0.141.1",
     "uvicorn>=0.53.0",
+    "pydantic-settings>=2.10",
 ]
+
+# 仅开发与测试使用；生产镜像安装依赖时不应包含该组。
+[dependency-groups]
+dev = [
+    "pytest>=8.4",
+    "httpx2>=2.13.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# 保证从任意工作目录运行 pytest 时都能导入 app 包。
+pythonpath = ["."]
+addopts = "-ra"

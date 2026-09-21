@@ -2,7 +2,7 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），当前只提供健康检查接口；尚未有前端、数据库迁移或领域模块实现。
+**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理；HTTP 层当前仅有 `/health`，尚未有前端、数据库迁移或领域模块实现。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -38,6 +38,16 @@ FastAPI application
 浏览器适配器、LLM Provider 和调度器均是可替换基础设施。领域服务只能依赖它们定义的端口，不得依赖具体平台页面或模型 SDK。
 
 数据库使用 PostgreSQL 16。开发与部署镜像位于 `deploy/postgres/`，根目录 `compose.yaml` 是唯一的 Compose 服务入口，并与根目录 `.env` 配对；基础镜像固定到已验证的官方摘要，V1 仅初始化 `pgcrypto`、`pg_trgm` 和 `unaccent`，业务表结构一律通过 Alembic 管理。该选择为职位/公司文本检索、版本化数据与统计查询提供稳定基础，且不提前引入 V1 范围外的向量检索能力。
+
+### 3.1 请求与响应契约
+
+后端 HTTP 层遵循 ADR 0001 固化的契约，细节与错误码表以该 ADR 为准：
+
+- 成功响应为 `{success: true, data, meta}`，失败响应为 `{success: false, error, meta}`；分页等附加信息放入 `meta`。
+- 路由显式返回 `ApiResponse[T]`，失败由 `app/core/exception_handlers.py` 集中构造，业务代码只抛 `AppError` 子类。
+- `request_id` 由请求上下文中间件建立并贯穿响应头、响应体与服务端日志；入站 `X-Request-ID` 经白名单校验后沿用。
+- 日志为单行 JSON，字段集合固定；`uvicorn.access` 被关闭，访问日志统一由中间件产出，以保证每条都带 `request_id`。
+- 应用配置从环境变量与 `backend/.env` 读取，统一使用 `JOBARK_` 前缀；仓库根目录的 `.env` 仅供 `compose.yaml` 使用。两者命名空间分离，避免把数据库凭据误读为应用配置。
 
 ## 4. 前端技术架构与能力
 
@@ -88,7 +98,14 @@ JobArk/
 ├── backend/                      # 后端 Python 工程根：pyproject.toml、uv.lock、app/
 │   ├── app/
 │   │   ├── main.py               # 唯一 FastAPI 入口：create_app 与模块级 app
-│   │   ├── core/                 # 配置、数据库、错误与日志
+│   │   ├── core/                 # 配置、日志、错误与响应契约（契约见 ADR 0001）
+│   │   │   ├── config.py         # Settings：JOBARK_ 前缀，backend/.env 可选
+│   │   │   ├── context.py        # request_id 的 ContextVar 载体
+│   │   │   ├── logging.py        # 单行 JSON 日志格式化与 uvicorn 日志收口
+│   │   │   ├── errors.py         # AppError 体系与稳定错误码
+│   │   │   ├── responses.py      # ApiResponse / ApiErrorResponse 契约
+│   │   │   ├── middleware.py     # 请求上下文中间件与结构化访问日志
+│   │   │   └── exception_handlers.py  # 四类异常的统一收口
 │   │   ├── modules/              # 业务优先分包
 │   │   │   ├── profile/
 │   │   │   ├── resume/
@@ -98,6 +115,7 @@ JobArk/
 │   │   │   └── dashboard/
 │   │   ├── ai/                   # 受控 LLM 能力和输出契约
 │   │   └── automation/           # Phase 5+ 的端口和适配器
+│   ├── .env.example              # 后端应用配置示例（JOBARK_ 前缀）
 │   ├── migrations/
 │   └── tests/
 ├── frontend/
