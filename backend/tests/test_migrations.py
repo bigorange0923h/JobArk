@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0003"
+EXPECTED_HEAD = "0007"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -148,6 +148,14 @@ async def _foreign_key_names(database_url: str) -> set[str]:
 
 # 期望存在的跨表外键。约束名本身编码了"子表_列_目标表"，因此这份清单同时就是引用关系清单。
 _EXPECTED_FOREIGN_KEYS = {
+    "fk_job_parse_results_job_snapshot_id_job_snapshots",
+    "fk_match_results_job_snapshot_id_job_snapshots",
+    "fk_match_results_profile_revision_id_profile_revisions",
+    "fk_match_results_resume_version_id_resume_versions",
+    "fk_applications_job_opportunity_id_job_opportunities",
+    "fk_applications_job_snapshot_id_job_snapshots",
+    "fk_applications_resume_version_id_resume_versions",
+    "fk_application_events_application_id_applications",
     # Profile：子表与修订指向主档案，事实表指向证据
     "fk_profile_evidences_profile_id_personal_profiles",
     "fk_profile_preferences_profile_id_personal_profiles",
@@ -170,6 +178,10 @@ _EXPECTED_FOREIGN_KEYS = {
     "fk_resume_drafts_resume_id_resumes",
     "fk_resume_drafts_base_resume_version_id_resume_versions",
     "fk_resume_drafts_confirmed_resume_version_id_resume_versions",
+    # Job：机会、页面与快照必须保留物理引用完整性。
+    "fk_job_opportunities_company_id_companies",
+    "fk_job_postings_opportunity_id_job_opportunities",
+    "fk_job_snapshots_posting_id_job_postings",
 }
 
 

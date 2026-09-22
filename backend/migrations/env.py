@@ -17,9 +17,12 @@ from sqlalchemy.ext.asyncio import async_engine_from_config
 
 from app.core.config import get_settings
 from app.core.database import Base
+from app.modules.application import models as application_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 
 # 领域模型的显式导入登记处。autogenerate 只能感知已加载进 Base.metadata 的表，
 # 漏导入的表现是"生成的迁移里缺少某张表"，属于静默错误，因此这里不做自动扫描。
+from app.modules.job import models as job_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
+from app.modules.matching import models as matching_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from app.modules.profile import models as profile_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from app.modules.resume import models as resume_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 

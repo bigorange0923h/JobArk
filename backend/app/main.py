@@ -19,7 +19,13 @@ from .core.exception_handlers import register_exception_handlers
 from .core.logging import setup_logging
 from .core.middleware import RequestContextMiddleware
 from .core.responses import ApiResponse, success
+from .modules.application.router import router as application_router
+from .modules.dashboard.router import router as dashboard_router
+from .modules.job.parsing import router as parsing_router
+from .modules.job.router import router as job_router
+from .modules.matching.router import router as matching_router
 from .modules.profile.router import router as profile_router
+from .modules.resume.optimization import router as optimization_router
 from .modules.resume.router import router as resume_router
 
 
@@ -118,6 +124,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api_v1 = APIRouter(prefix=resolved_settings.api_v1_prefix)
     api_v1.include_router(profile_router)
     api_v1.include_router(resume_router)
+    api_v1.include_router(job_router)
+    api_v1.include_router(application_router)
+    api_v1.include_router(dashboard_router)
+    api_v1.include_router(matching_router)
+    api_v1.include_router(optimization_router)
+    api_v1.include_router(parsing_router)
     application.include_router(api_v1)
 
     return application

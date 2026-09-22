@@ -103,6 +103,7 @@ UNIQUE(profile_id, revision_no)
 | `job_opportunities` | `company_id`、职位标题、地点、雇佣类型、机会状态、人工备注、去重键 | 表示一个真实职位机会，不等于招聘 URL；去重结论必须可人工纠正。 |
 | `job_postings` | `opportunity_id`、`source`、`external_id`、`canonical_url`、首次/最后发现时间、页面状态 | 优先唯一 `(source, external_id)`；缺少外部 ID 时使用规范化 URL。 |
 | `job_snapshots` | `posting_id`、`content_hash`、抓取时间、原始 JD、`parsed_json`、解析状态、解析器版本、安全错误码 | 不可变；`UNIQUE(posting_id, content_hash)`。解析失败仍保留原始 JD，且不写入伪造结构化字段。 |
+| `job_parse_results` | `job_snapshot_id`、`parser_version`、`status`、`result_json`、`failure_code` | 后续解析的独立不可变产物；PARSED 保存验证后的结果，FAILED 只保存安全错误码，不更新快照。 |
 
 `source` 初始支持 `MANUAL`；后续平台适配器再按真实能力增加来源值。V1 不保存浏览器 Cookie、登录会话或平台密码。
 
@@ -118,19 +119,13 @@ resume_version_id NULL
 match_kind                 # PROFILE 或 RESUME
 engine_name, engine_version
 input_fingerprint
-overall_score NULL
-hard_constraints_json
-dimension_scores_json
-evidence_json
-gaps_json
-uncertainties_json
-status, failure_code
+report_json                # 条件、逐字引用、证据、缺口、不确定项及解析器版本
 created_at
 ```
 
 约束：`match_kind = PROFILE` 时 `resume_version_id` 必须为空；`match_kind = RESUME` 时必须存在。`input_fingerprint` 用于识别完全相同输入和同一引擎版本的重复计算，但不阻止用户主动重新分析。
 
-`evidence_json` 至少保存每个结论关联的 Profile 事实或证据 ID、说明和置信状态。`overall_score` 只能是摘要，不能成为唯一输出；AI 或解析失败时创建失败记录或返回错误，不产生貌似有效的分数。
+`report_json.requirements[].evidence` 保存每个条件关联的 Profile 事实或证据 ID、说明和主张验证状态。当前字面证据引擎把 `report_json.overall_score` 固定为空，不声称技能名称出现就满足整项要求。解析结果与版本嵌入报告，独立 AI 解析产物不自动作为匹配输入。
 
 ## 7. Application：投递尝试与事件状态机
 
@@ -138,7 +133,7 @@ created_at
 | --- | --- | --- |
 | `applications` | `job_opportunity_id`、`job_snapshot_id`、`resume_version_id`、`attempt_no`、`current_status`、`version` | 一次求职尝试；`UNIQUE(job_opportunity_id, attempt_no)`。 |
 | `application_events` | `application_id`、`sequence_no`、事件类型、前后状态、发生时间、操作者、备注、`payload_json` | 状态历史的唯一来源；`UNIQUE(application_id, sequence_no)`。 |
-| `application_drafts` | `application_id`、草稿类型、内容、状态、确认时间 | 问候语、筛选问题答案等候选内容；确认前不代表外部已发送。 |
+| `application_drafts`（后续设计，非当前表） | `application_id`、草稿类型、内容、状态、确认时间 | 问候语、筛选问题答案等候选内容；独立需求确认后再建表，当前不实现对外发送。 |
 
 初始状态集合：`SAVED`、`PREPARING`、`READY_TO_APPLY`、`APPLIED`、`CONTACTED`、`INTERVIEWING`、`OFFERED`、`REJECTED`、`WITHDRAWN`、`CLOSED`。创建 Application 时写入首个事件；后续每次状态变更均在同一数据库事务中新增 Event 并更新 `current_status` 投影。
 

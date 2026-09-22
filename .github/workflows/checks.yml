@@ -1,0 +1,48 @@
+name: 质量检查
+on: [push, pull_request]
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: jobark_test
+          POSTGRES_PASSWORD: ci-only-password
+          POSTGRES_DB: jobark_test
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U jobark_test"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      JOBARK_TEST_DATABASE_URL: postgresql+asyncpg://jobark_test:ci-only-password@localhost:5432/jobark_test
+      JOBARK_DATABASE_URL: postgresql+asyncpg://jobark_test:ci-only-password@localhost:5432/jobark_test
+    defaults:
+      run:
+        working-directory: backend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: '3.14'
+      - run: uv sync --locked
+      - run: uv run ruff check . && uv run ruff format --check .
+      - run: uv run pyright
+      - run: uv run pytest
+      - run: uv run alembic upgrade head && uv run alembic check
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test
+      - run: npm run build

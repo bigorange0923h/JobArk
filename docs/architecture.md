@@ -2,7 +2,9 @@
 
 ## 1. 状态与范围
 
-**已验证事实：**后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`），`app/core/` 已实现配置、结构化日志、请求标识、统一响应与异常处理，并接入异步 SQLAlchemy 与 Alembic（迁移已对独立测试库验证可反复升降级）；前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + Ant Design Vue 按需导入 + API Client），已实现个人资料页（档案聚合、六类事实的增删改、求职偏好与资料修订，含乐观锁冲突与字段级错误的呈现）；后端已实现 Profile 领域（9 张表、26 个接口）与 Resume 领域（4 张表、12 个接口，含不可变版本与候选稿确认流程）以及 `/health`，Job 及后续领域尚未实现。
+后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`）。`app/core/` 负责配置、结构化日志、请求标识、统一响应与异常处理，数据访问使用异步 SQLAlchemy 与 Alembic。前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + Ant Design Vue 按需导入 + API Client）。业务按 Profile、Resume、Job、Matching、Application 和 Dashboard 分域，形成个人求职的人工记录闭环。
+
+分析能力遵循[ADR 0003](adr/0003-求职闭环与分析边界.md)：JD 原文与独立解析产物分离；默认本地逐行提取与字面证据匹配，不输出未经校准的分数。可选 AI 网关用于带逐字引用的 JD 解析、简历已有条目的筛选和重排，必须确认外部发送；它不是开箱即用的商业模型集成，协议与配置见 [AI 网关](ai-gateway.md)。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -24,15 +26,15 @@
 
 ```text
 Vue 3 Web
-    │ REST / SSE
+    │ REST
     ▼
 FastAPI application
     ├── profile / resume / job / matching / application / dashboard
-    ├── AI services (JD parser, matcher, resume optimizer)
-    └── automation port (Phase 5+)
+    ├── local evidence matching
+    └── optional JSON AI gateway (JD parser, resume selector)
              │
              ├── PostgreSQL: business facts
-             └── browser adapters: external side effects
+             └── configured AI endpoint: explicit consent
 ```
 
 浏览器适配器、LLM Provider 和调度器均是可替换基础设施。领域服务只能依赖它们定义的端口，不得依赖具体平台页面或模型 SDK。
@@ -59,26 +61,26 @@ FastAPI application
 - 每个请求与后台任务各自获取会话，不跨请求复用。
 - `Base` 与约束命名约定定义在 `app/core/database.py`；`migrations/env.py` 显式导入各领域 `models`，新增领域必须在此追加导入，否则 autogenerate 会静默漏表。
 - `alembic.ini` 不保存连接串且必须保持 ASCII-only（`configparser` 按本地编码读取）；版本号使用可读递增编号。
-- 质量护栏（目前均只在本地执行）：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`），分别拦住漏写 `await`、弃用 API 与常见缺陷模式。
+- 质量护栏：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`）。GitHub Actions 配置位于 `.github/workflows/checks.yml`，数据库测试只使用独立 `jobark_test`；提交前仍需本地验证，不能把配置文件等同于远端运行成功。
 
 ## 4. 前端技术架构与能力
 
-前端技术栈正式确定为：**Vue 3 + TypeScript + Vite + Ant Design Vue + ECharts**。其中 Ant Design Vue 与 ECharts 在阶段 0 不安装：此时还没有任何业务页面，提前引入只会产生未使用的依赖与版本负担，等出现真实页面时再按需接入。
+前端技术栈为：**Vue 3 + TypeScript + Vite + Ant Design Vue + ECharts**。UI 组件与图表按需导入，业务页面使用路由懒加载，避免把所有领域放入入口包。
 
 | 层级 | 技术/位置 | 职责 |
 | --- | --- | --- |
-| 应用层 | Vue 3、`frontend/src/app/` | 应用启动、路由、布局、全局错误处理与页面级权限预留 |
+| 应用层 | Vue 3、`frontend/src/app/` | 应用启动、路由、布局与全局错误处理；不预留多用户权限体系 |
 | 页面功能层 | `frontend/src/features/` | Dashboard、Jobs、Profile、Resume、Applications 等领域页面和领域组件 |
 | UI 层 | Ant Design Vue | 表格、表单、抽屉、步骤条、通知、确认弹窗与一致的交互规范 |
 | 可视化层 | ECharts | 求职漏斗、来源分布、投递趋势、简历版本转化等数据图表 |
 | 共享层 | `frontend/src/shared/` | API Client、类型、通用组件、格式化工具与可复用组合式函数 |
 | 构建层 | Vite | 本地开发服务器、TypeScript 构建、环境变量注入和生产打包 |
 
-**当前实现状态（阶段 0 第 5 项）：**`frontend/` 已是独立 npm 工程，包含 Vite 构建、Vue Router 路由、TypeScript 严格检查与 API Client；Ant Design Vue 与 ECharts 尚未安装。
+前端质量检查包括 ESLint、Vitest、TypeScript 严格检查与 Vite 生产构建。漏斗图使用 ECharts，核心指标同时保留表格或数值呈现。
 
 API Client 的分层与边界：
 
-- `shared/api/types.ts` 手工镜像后端统一契约（后端尚无业务接口，代码生成暂无价值）。
+- `shared/api/types.ts` 手工镜像后端统一契约，领域类型与端点封装按模块维护。
 - `shared/api/client.ts` 是**唯一的解包点**：成功返回 `data`，失败抛出携带 `code`/`message`/`status`/`requestId`/`details` 的 `ApiError`。
 - 具体端点封装放在 `shared/api/` 或阶段 1 起各领域的 `features/<domain>/api.ts`。
 - 错误码原样透传供调用方分支，展示默认使用后端 `message`，前端**不复制一份文案表**（必然漂移）；`requestId` 附着在错误对象上，便于展示"错误编号"并定位服务端日志。
@@ -111,8 +113,8 @@ JobOpportunity ──< MatchResult >── ResumeVersion / PersonalProfile
        └──< Application ──< ApplicationEvent
 ```
 
-- `JobSnapshot` 固化当时的原始与结构化 JD；匹配结果必须指向其输入快照和 Profile/Resume 版本。
-- `MatchResult` 分开保存 Profile Match 和 Resume Match，保存维度评分、证据引用、缺口与不确定项，而非只有百分比。
+- `JobSnapshot` 固化原始 JD；后续解析保存为独立 `JobParseResult`，失败不覆盖快照。
+- `MatchResult` 分开保存 Profile Match 和 Resume Match，绑定快照、资料修订和可选简历版本；`report_json` 固化本地解析器版本、条件、证据引用、缺口和不确定项，总分留空。独立 AI 解析结果不会悄悄替换匹配输入。
 - `Application` 表示一次求职行为，绑定使用的 `ResumeVersion`；`ApplicationEvent` 是唯一的状态历史。
 - 简历定制、问候语和表单回答均为候选草稿，需用户确认后才能进入提交类操作。
 
@@ -179,4 +181,4 @@ JobArk/
 - 去重是否能依赖公司、标题、地点和 JD 相似度；必须提供人工合并/拆分入口。
 - PDF 导出在目标部署环境中的 Chromium 字体与分页是否稳定。
 - 匹配评分的权重与“硬性淘汰”规则需用真实职位样本校准，不能先把模型分数当作事实。
-- 后端解释器版本已定为 `>=3.14`，并与 `backend/uv.lock` 保持一致；**CI 尚未接入（有意推迟）**，因此"在干净环境复现"缺位：解释器补丁版本、前端 lint 与跨平台差异目前都只在本地验证过。
+- 后端解释器版本为 `>=3.14`，依赖与 `backend/uv.lock` 保持一致；远端 CI、目标部署环境字体与真实 AI 网关必须分别验证，本地通过不能替代这些环境的验收。

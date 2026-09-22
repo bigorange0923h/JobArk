@@ -245,6 +245,7 @@ onMounted(() => {
     <header class="page-header">
       <div>
         <h1>{{ resume?.name ?? '简历' }}</h1>
+        <RouterLink :to="`/resumes/${resumeId}/optimize`">AI 优化与对比</RouterLink>
         <p v-if="resume?.target_direction" class="target-direction">目标方向：{{ resume.target_direction }}</p>
       </div>
       <a-space>

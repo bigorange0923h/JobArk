@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
     # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
     database_echo: bool = False
+    ai_gateway_url: str = ""
+    ai_gateway_token: SecretStr = SecretStr("")
+    ai_timeout_seconds: float = Field(default=30, gt=0, le=120)
     # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
     # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；
     # 只有前后端确实分离到不同源时才按环境显式启用，环境变量写法为逗号分隔，例如

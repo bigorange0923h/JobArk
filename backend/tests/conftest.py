@@ -33,6 +33,14 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 # 领域表清单：清空测试数据时使用，顺序无关（TRUNCATE 带 CASCADE）。
 _DOMAIN_TABLES = (
+    "job_parse_results",
+    "match_results",
+    "application_events",
+    "applications",
+    "job_snapshots",
+    "job_postings",
+    "job_opportunities",
+    "companies",
     "resume_version_evidences",
     "resume_drafts",
     "resume_versions",

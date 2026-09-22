@@ -1,0 +1,13 @@
+# 可选 AI 网关
+
+AI 默认关闭。本地逐行 JD 提取和字面证据匹配无需外部服务，不能当成语义模型评估或招聘概率。
+
+配置 `JOBARK_AI_GATEWAY_URL`、`JOBARK_AI_GATEWAY_TOKEN` 和 `JOBARK_AI_TIMEOUT_SECONDS` 后，可以使用自有推理网关。协议是 POST JSON：`{task, input, output_schema}`，响应为满足 output_schema 的 JSON 对象。网关负责选定模型与结构化输出；本项目不绑定商业服务或代填凭据。URL 必须 HTTPS 或本地回环，拒绝重定向，每次请求有超时且不自动重试。
+
+`resume_select_existing_items` 输入包含目标方向和已有简历经历、项目、技能、学历、语言条目；不发送 basics/contact。输出为这五类条目的索引列表，只允许筛选和重排。正文从本地原文复制，模型不能创建新技能或业绩。条目自由文本可能包含个人信息，界面需明确确认；请根据网关部署方的数据留存政策决定是否启用。失败保留基线，未确认候选不会覆盖正式版本。
+
+网关不存在或不可用时显示明确错误。本地自动测试替换网关验证成功、错误、越界与确认流程，不代表真实模型服务已联网验收。
+
+`jd_requirements_with_verbatim_quotes` 输入仅为所选快照的 `raw_jd`。输出需满足请求中的 JSON Schema；每项 `text` 与 `source_quote` 必须一致，且逐字出现在原文中。标签和强制性仍需人工核对。`POST /api/v1/job-snapshots/{id}/parses` 创建独立的 PARSED 或 FAILED 解析记录；201 表示记录创建成功，不代表解析成功，调用方必须检查 `status`。失败仅保存安全错误码，不持久化上游原始响应，也不改变 JD 快照。GET 同路径读取历史。
+
+匹配接口 `POST /api/v1/matches` 默认不调用网关，只使用快照原文和固定资料修订做本地技能字面证据检索；教育、年限等无法证明的条件保留为未知。它不会自动采用 AI 解析结果，也不生成隐含的满足结论。
