@@ -19,7 +19,7 @@
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { EditableResource } from '@/shared/api/profile'
+import type { EditableResource } from '@/shared/api/types'
 import { ApiError } from '@/shared/api/client'
 
 import type { FactDescriptor } from '../types'

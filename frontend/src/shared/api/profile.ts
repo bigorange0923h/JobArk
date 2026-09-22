@@ -10,6 +10,7 @@
  */
 
 import { requestV1 } from './client'
+import type { EditableResource } from './types'
 
 // --------------------------------------------------------------------------------------------
 // 枚举：取值必须与 backend/app/modules/profile/enums.py 一致，否则会在服务端被 CHECK 约束拒绝
@@ -39,15 +40,6 @@ export type RemotePreference = 'ANY' | 'ONSITE' | 'HYBRID' | 'REMOTE'
 // --------------------------------------------------------------------------------------------
 // 响应类型
 // --------------------------------------------------------------------------------------------
-
-/** 可编辑实体的公共字段。 */
-export interface EditableResource {
-  id: string
-  created_at: string
-  updated_at: string
-  /** 乐观锁版本号：局部更新必须原样回传，不一致时后端返回 409。 */
-  version: number
-}
 
 /** 公开链接。 */
 export interface ProfileLink {

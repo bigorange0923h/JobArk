@@ -17,7 +17,7 @@
 
 import { computed, ref, watch } from 'vue'
 
-import type { EditableResource } from '@/shared/api/profile'
+import type { EditableResource } from '@/shared/api/types'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import type { FactDescriptor, FieldDescriptor, FieldValues } from '../types'

@@ -10,6 +10,20 @@ export interface ResponseMeta {
   request_id: string
 }
 
+/**
+ * 可编辑实体的公共字段。
+ *
+ * 对应后端 `app/core/responses.py` 的 `EditableRead`：它属于核心契约而不是某个领域，
+ * 因此放在这里，各领域模块（档案、简历…）共同引用，避免领域模块互相依赖。
+ */
+export interface EditableResource {
+  id: string
+  created_at: string
+  updated_at: string
+  /** 乐观锁版本号：局部更新必须原样回传，不一致时后端返回 409。 */
+  version: number
+}
+
 /** 单项错误细节。 */
 export interface ErrorDetail {
   /** 出错字段路径；非字段级错误为 null。 */

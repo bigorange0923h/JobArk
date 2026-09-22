@@ -2,10 +2,12 @@
 /**
  * 应用根组件：提供最外层布局与路由出口，不承载业务逻辑。
  *
- * 导航暂时只有两项：个人资料是 V1 的起点，工程状态用于确认前后端链路是否打通。
- * 后续 Resume、Jobs、Applications 等页面出现后，这里应改为由路由表驱动的导航，
- * 而不是继续手写链接——那时才有必要引入 AntDV 的 Menu。
+ * 导航项来自路由表（`app/router.ts` 的 `navItems`）而不是在这里手写：页面增加而导航漏改时，
+ * 表现是"页面存在但进不去"，只能靠用户反馈发现。导航项仍保持简单的链接列表，
+ * 到入口明显增多时再考虑换用 AntDV 的 Menu。
  */
+
+import { navItems } from './app/router'
 </script>
 
 <template>
@@ -13,8 +15,9 @@
     <header class="app-header">
       <RouterLink class="brand" to="/">JobArk</RouterLink>
       <nav class="app-nav">
-        <RouterLink to="/profile">个人资料</RouterLink>
-        <RouterLink to="/status">工程状态</RouterLink>
+        <RouterLink v-for="item in navItems" :key="item.name" :to="{ name: item.name }">
+          {{ item.label }}
+        </RouterLink>
       </nav>
     </header>
     <main class="app-main">

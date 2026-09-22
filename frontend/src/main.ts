@@ -6,6 +6,9 @@ import { createApp } from 'vue'
 // 这里只需要一次全局样式重置，否则浏览器默认边距会让布局与组件预期不一致。
 import 'ant-design-vue/dist/reset.css'
 
+// 打印样式必须全局生效：它要隐藏的是应用外壳，而外壳在预览组件之外。
+import './styles/print.css'
+
 import App from './App.vue'
 import { router } from './app/router'
 
