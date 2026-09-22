@@ -53,9 +53,10 @@ function submitOrder(section: ResumeSection, direction: 'up' | 'down'): void {
  *     checked: 开关的新状态；只有严格等于 true 才算"显示"。
  *
  * 注意:
- *     这里按 `unknown` 接收而不是断言成布尔：该组件的类型声明没有出现在自动生成的
- *     `components.d.ts` 里，模板中的事件参数无法推断，写成具体类型只能靠类型断言硬凑。
- *     运行时的实际取值由测试固定（AntDV 的开关提交布尔值）。
+ *     这里按 `unknown` 接收而不是写成具体类型：`components.d.ts` 是构建时生成的，而它的更新
+ *     滞后于首次构建（实测：引入该组件的首次构建没有写入声明，后续构建才写入），因此"事件参数
+ *     可被推断"这件事取决于构建时序。按 `unknown` 接收并用 `!== true` 判定，使这里不依赖那个
+ *     时序；运行时的实际取值由测试固定（AntDV 的开关提交布尔值）。
  */
 function submitVisibility(section: ResumeSection, checked: unknown): void {
   document.value = {
