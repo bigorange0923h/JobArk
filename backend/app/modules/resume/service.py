@@ -15,13 +15,15 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.errors import ConflictError, ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ErrorDetail
 from app.core.versioning import apply_versioned_update, collect_updates, table_of
+from app.modules.profile.models import ProfileRevision
 
 from . import repository as repo
 from .enums import DraftStatus, ResumeStatus
@@ -31,6 +33,7 @@ from .schemas import (
     ResumeDraftConfirm,
     ResumeDraftCreate,
     ResumeDraftDiscard,
+    ResumeDraftUpdate,
     ResumeUpdate,
     ResumeVersionCreate,
 )
@@ -95,21 +98,164 @@ def _ensure_active(resume: Resume) -> None:
         raise ConflictError("该简历方向已归档，不能新增版本或候选稿。")
 
 
-async def _ensure_revision_exists(session: AsyncSession, revision_id: uuid.UUID) -> None:
-    """校验被引用的资料修订存在。
+async def _require_revision(session: AsyncSession, revision_id: uuid.UUID) -> ProfileRevision:
+    """读取被引用的资料修订。
 
     参数:
         session: 当前会话。
         revision_id: 修订主键。
 
+    返回:
+        ProfileRevision: 修订实体；其 `snapshot_json` 是文档事实溯源的判定依据。
+
     异常:
         ValidationFailedError: 修订不存在时抛出 422，并指出出错字段。
     """
-    if await repo.get_profile_revision(session, revision_id) is None:
+    revision = await repo.get_profile_revision(session, revision_id)
+    if revision is None:
         raise ValidationFailedError(
             "引用的资料修订不存在。",
             details=[ErrorDetail(field="profile_revision_id", reason="请先为当前资料创建一份修订。")],
         )
+    return revision
+
+
+# 文档中存放带溯源内容的字段；顺序即报错时的呈现顺序。
+_TEXT_BLOCK_KEYS: tuple[str, ...] = ("summary",)
+_FACT_LIST_KEYS: tuple[str, ...] = ("experiences", "projects", "skills", "educations", "languages")
+
+# 修订快照中"可被引用的事实"所在字段：档案本身 + 证据 + 五类事实。
+_SNAPSHOT_OBJECT_KEY = "profile"
+_SNAPSHOT_LIST_KEYS: tuple[str, ...] = ("evidences", *_FACT_LIST_KEYS)
+
+
+def _as_mapping(value: object) -> Mapping[str, Any]:
+    """把 JSON 数据中的值收窄为对象视图。
+
+    参数:
+        value: 任意 JSON 值。
+
+    返回:
+        Mapping[str, Any]: 对象视图；传入的不是对象时返回空映射。
+
+    注意:
+        直接在调用处写 `isinstance(value, Mapping)` 会让静态检查把值推断成
+        `Mapping[Unknown, Unknown]`，之后每次取值都变成"类型部分未知"。
+        统一在这里收窄一次，把无类型推断挡在校验逻辑之外。
+    """
+    return cast("Mapping[str, Any]", value) if isinstance(value, Mapping) else {}
+
+
+def _as_list(value: object) -> list[Any]:
+    """把 JSON 数据中的值收窄为数组视图。
+
+    参数:
+        value: 任意 JSON 值。
+
+    返回:
+        list[Any]: 数组视图；传入的不是数组时返回空列表。
+    """
+    return cast("list[Any]", value) if isinstance(value, list) else []
+
+
+def _refs_of_item(path: str, item: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """取出单个条目上的溯源引用。
+
+    参数:
+        path: 该条目 `source_fact_id` 的字段路径。
+        item: 条目数据。
+
+    返回:
+        list[tuple[str, str]]: 有引用时返回一项，否则返回空列表。
+
+    注意:
+        主键统一转成小写字符串再比较：数据库写入的是小写形式，而客户端可能提交大写十六进制，
+        直接比较字符串会把等价的主键判成不同。
+    """
+    fact_id = item.get("source_fact_id")
+    if fact_id is None:
+        return []
+    return [(path, str(fact_id).lower())]
+
+
+def _collect_source_fact_refs(document: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """收集文档中全部 `source_fact_id` 及其字段路径。
+
+    参数:
+        document: 文档内容（`document_json` 形式的纯数据）。
+
+    返回:
+        list[tuple[str, str]]: (字段路径, 事实主键) 列表，路径形如 `skills.0.source_fact_id`。
+
+    注意:
+        按纯数据遍历而不是用 `ResumeDocument` 反序列化：候选稿可能由旧版结构写入，
+        用当前模型解析会在校验之前先失败；这里的目的是"能读到什么就校验什么"。
+    """
+    refs: list[tuple[str, str]] = []
+    for key in _TEXT_BLOCK_KEYS:
+        block = _as_mapping(document.get(key))
+        if block:
+            refs.extend(_refs_of_item(f"{key}.source_fact_id", block))
+    for key in _FACT_LIST_KEYS:
+        for index, raw_item in enumerate(_as_list(document.get(key))):
+            item = _as_mapping(raw_item)
+            if item:
+                refs.extend(_refs_of_item(f"{key}.{index}.source_fact_id", item))
+    return refs
+
+
+def _snapshot_fact_ids(snapshot: Mapping[str, Any]) -> set[str]:
+    """提取修订快照中出现的全部主键。
+
+    参数:
+        snapshot: `profile_revisions.snapshot_json` 的内容。
+
+    返回:
+        set[str]: 小写字符串形式的主键集合。
+    """
+    ids: set[str] = set()
+    profile_id = _as_mapping(snapshot.get(_SNAPSHOT_OBJECT_KEY)).get("id")
+    if profile_id is not None:
+        ids.add(str(profile_id).lower())
+    for key in _SNAPSHOT_LIST_KEYS:
+        for raw_entry in _as_list(snapshot.get(key)):
+            entry_id = _as_mapping(raw_entry).get("id")
+            if entry_id is not None:
+                ids.add(str(entry_id).lower())
+    return ids
+
+
+async def _ensure_facts_traceable(revision: ProfileRevision, document: Mapping[str, Any]) -> None:
+    """校验文档引用的事实确实存在于该修订中。
+
+    参数:
+        revision: 文档所指向的资料修订。
+        document: 文档内容。
+
+    异常:
+        ValidationFailedError: 存在指向修订中不存在事实的引用时抛出 422，逐条给出字段路径。
+
+    注意:
+        判定依据是**该修订的快照**而不是"当前事实"：修订是时点快照，只有按它判定才能保证
+        "这个版本当时依据的是什么"可复现；否则修订之后新增的事实会悄悄变成合法溯源。
+        引用范围取快照中出现的任意主键（档案本身、证据、五类事实），而不按事实种类分别限制：
+        校验要回答的是"这条内容能否追溯到该修订中的已记录内容"，快照本身就是当时的完整清单，
+        按种类限制则会在新增事实类型时不断需要同步修改。
+    """
+    refs = _collect_source_fact_refs(document)
+    if not refs:
+        return
+    known = _snapshot_fact_ids(revision.snapshot_json)
+    missing = [(path, fact_id) for path, fact_id in refs if fact_id not in known]
+    if not missing:
+        return
+    raise ValidationFailedError(
+        "简历内容引用了资料修订中不存在的事实。",
+        details=[
+            ErrorDetail(field=path, reason=f"事实 {fact_id} 不在修订 {revision.revision_no} 中。")
+            for path, fact_id in missing
+        ],
+    )
 
 
 async def _ensure_evidences_usable(
@@ -378,19 +524,22 @@ async def create_version(
     异常:
         ResourceNotFoundError: 简历不存在。
         ConflictError: 简历已归档。
-        ValidationFailedError: 资料修订或证据不可用。
+        ValidationFailedError: 资料修订或证据不可用，或文档引用了该修订中不存在的事实。
     """
     resume = await _require_resume(session, resume_id)
     _ensure_active(resume)
-    await _ensure_revision_exists(session, payload.profile_revision_id)
+    revision = await _require_revision(session, payload.profile_revision_id)
+    # `mode="json"` 让日期与 UUID 变成 JSON 可序列化形式；否则 JSONB 写入时会直接失败。
+    document_json = payload.document.model_dump(mode="json")
+    # 校验在写库之前：版本一经创建即不可变，"可溯源"必须成立在它落库的那一刻。
+    await _ensure_facts_traceable(revision, document_json)
     evidence_ids = await _ensure_evidences_usable(session, payload.evidence_ids)
 
     version = ResumeVersion(
         resume_id=resume.id,
         version_no=await repo.next_version_no(session, resume.id),
-        profile_revision_id=payload.profile_revision_id,
-        # `mode="json"` 让日期与 UUID 变成 JSON 可序列化形式；否则 JSONB 写入时会直接失败。
-        document_json=payload.document.model_dump(mode="json"),
+        profile_revision_id=revision.id,
+        document_json=document_json,
         render_schema_version=payload.document.schema_version,
         created_reason=payload.created_reason,
     )
@@ -428,6 +577,28 @@ async def list_drafts(
     """
     resume = await _require_resume(session, resume_id)
     return await repo.list_drafts(session, resume.id, status=status, limit=limit)
+
+
+async def get_draft(session: AsyncSession, resume_id: uuid.UUID, draft_id: uuid.UUID) -> ResumeDraft:
+    """按主键读取候选稿。
+
+    参数:
+        session: 当前会话。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+
+    返回:
+        ResumeDraft: 候选稿。
+
+    异常:
+        ResourceNotFoundError: 简历不存在，或候选稿不存在/不属于该简历。
+
+    注意:
+        编辑与预览只需要这一份内容。让客户端拉取列表再自行筛选，会在候选稿数量超过列表上限时
+        变成"这条记录明明存在却打不开"，而那个失败与权限、网络都无关，很难排查。
+    """
+    resume = await _require_resume(session, resume_id)
+    return await _require_owned_draft(session, resume.id, draft_id)
 
 
 async def create_draft(session: AsyncSession, resume_id: uuid.UUID, payload: ResumeDraftCreate) -> ResumeDraft:
@@ -494,6 +665,48 @@ def _ensure_draft_pending(draft: ResumeDraft) -> None:
         )
 
 
+async def update_draft(
+    session: AsyncSession,
+    resume_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    payload: ResumeDraftUpdate,
+) -> ResumeDraft:
+    """就地修改待确认的候选稿。
+
+    参数:
+        session: 当前会话。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+        payload: 完整文档与乐观锁版本号。
+
+    返回:
+        ResumeDraft: 更新后的候选稿。
+
+    异常:
+        ResourceNotFoundError: 简历或候选稿不存在。
+        ConflictError: 简历已归档、候选稿已处理，或版本号过期。
+
+    注意:
+        只允许改 `DRAFT` 状态的候选稿：确认或丢弃之后它就是一次历史决定，
+        再允许修改会让"当初确认的到底是什么内容"无从回答。
+        状态条件同时写进 `WHERE`（不只做读取时判断），使并发下"确认"与"编辑"不会同时成功——
+        否则会出现"内容在确认之后又被改掉，但版本已经生成"的错位。
+    """
+    resume = await _require_resume(session, resume_id)
+    _ensure_active(resume)
+    draft = await _require_owned_draft(session, resume.id, draft_id)
+    _ensure_draft_pending(draft)
+    await apply_versioned_update(
+        session,
+        draft,
+        payload.version,
+        {"document_json": payload.document.model_dump(mode="json")},
+        extra_conditions=[table_of(draft).c["status"] == DraftStatus.DRAFT],
+    )
+    await session.commit()
+    return draft
+
+
 async def confirm_draft(
     session: AsyncSession,
     resume_id: uuid.UUID,
@@ -514,7 +727,7 @@ async def confirm_draft(
     异常:
         ResourceNotFoundError: 简历或候选稿不存在。
         ConflictError: 候选稿已处理，或并发确认导致状态已被改变。
-        ValidationFailedError: 资料修订或证据不可用。
+        ValidationFailedError: 资料修订或证据不可用，或文档引用了该修订中不存在的事实。
 
     注意:
         "新建版本"与"更新候选稿状态"在同一事务内完成，且状态条件写进 `WHERE`：
@@ -525,13 +738,14 @@ async def confirm_draft(
     _ensure_active(resume)
     draft = await _require_owned_draft(session, resume.id, draft_id)
     _ensure_draft_pending(draft)
-    await _ensure_revision_exists(session, payload.profile_revision_id)
+    revision = await _require_revision(session, payload.profile_revision_id)
+    await _ensure_facts_traceable(revision, draft.document_json)
     evidence_ids = await _ensure_evidences_usable(session, payload.evidence_ids)
 
     version = ResumeVersion(
         resume_id=resume.id,
         version_no=await repo.next_version_no(session, resume.id),
-        profile_revision_id=payload.profile_revision_id,
+        profile_revision_id=revision.id,
         document_json=draft.document_json,
         render_schema_version=_document_schema_version(draft),
         created_reason=payload.created_reason,

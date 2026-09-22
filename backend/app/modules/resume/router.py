@@ -36,6 +36,7 @@ from .schemas import (
     ResumeDraftCreate,
     ResumeDraftDiscard,
     ResumeDraftRead,
+    ResumeDraftUpdate,
     ResumeRead,
     ResumeUpdate,
     ResumeVersionCreate,
@@ -356,6 +357,69 @@ async def create_draft(
         VALIDATION_ERROR: 基线版本不存在或不属于该简历。
     """
     draft = await service.create_draft(session, resume_id, payload)
+    return success(ResumeDraftRead.model_validate(draft))
+
+
+@router.get(
+    "/resumes/{resume_id}/drafts/{draft_id}",
+    summary="读取候选稿",
+    description="按主键读取一份候选稿；编辑与预览都以它为唯一数据来源。",
+    response_model=ApiResponse[ResumeDraftRead],
+)
+async def get_draft(
+    session: SessionDep,
+    resume_id: uuid.UUID,
+    draft_id: uuid.UUID,
+) -> ApiResponse[ResumeDraftRead]:
+    """读取候选稿。
+
+    参数:
+        session: 请求级数据库会话。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+
+    返回:
+        ApiResponse[ResumeDraftRead]: 候选稿内容。
+
+    异常:
+        RESOURCE_NOT_FOUND: 简历或候选稿不存在（含不属于该简历的候选稿）。
+    """
+    draft = await service.get_draft(session, resume_id, draft_id)
+    return success(ResumeDraftRead.model_validate(draft))
+
+
+@router.patch(
+    "/resumes/{resume_id}/drafts/{draft_id}",
+    summary="修改候选稿",
+    description=(
+        "就地修改待确认的候选稿内容，必须提交完整文档与当前版本号。"
+        "已确认或已丢弃的候选稿返回 409；编辑候选稿不会产生正式版本，正式版本只能由确认产生。"
+    ),
+    response_model=ApiResponse[ResumeDraftRead],
+)
+async def update_draft(
+    session: SessionDep,
+    resume_id: uuid.UUID,
+    draft_id: uuid.UUID,
+    payload: ResumeDraftUpdate,
+) -> ApiResponse[ResumeDraftRead]:
+    """修改候选稿。
+
+    参数:
+        session: 请求级数据库会话。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+        payload: 替换后的完整文档与乐观锁版本号。
+
+    返回:
+        ApiResponse[ResumeDraftRead]: 更新后的候选稿。
+
+    异常:
+        RESOURCE_NOT_FOUND: 简历或候选稿不存在（含不属于该简历的候选稿）。
+        CONFLICT: 简历已归档、候选稿已处理，或版本号已过期。
+        VALIDATION_ERROR: 文档结构非法。
+    """
+    draft = await service.update_draft(session, resume_id, draft_id, payload)
     return success(ResumeDraftRead.model_validate(draft))
 
 

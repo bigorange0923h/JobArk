@@ -91,6 +91,20 @@ def _document(**overrides: Any) -> dict[str, Any]:
     return document
 
 
+def _ensure_profile(client: TestClient) -> None:
+    """确保个人档案存在。
+
+    参数:
+        client: 测试客户端。
+
+    注意:
+        事实与修订都挂在档案之下，因此"先建事实、再建修订"的用例必须先建档案；
+        档案已存在时创建返回 409，对调用方而言同样表示"档案可用"。
+    """
+    profile = client.post(f"{API}/profile", json={"full_name": "张伟", "email": "zhang@example.com"})
+    assert profile.status_code in {201, 409}, profile.text
+
+
 def _create_revision(client: TestClient) -> dict[str, Any]:
     """确保存在档案并创建一份资料修订。
 
@@ -103,8 +117,7 @@ def _create_revision(client: TestClient) -> dict[str, Any]:
     注意:
         简历版本必须指向修订，因此每个涉及版本的用例都需要这一步。
     """
-    profile = client.post(f"{API}/profile", json={"full_name": "张伟", "email": "zhang@example.com"})
-    assert profile.status_code in {201, 409}, profile.text
+    _ensure_profile(client)
 
     revision = client.post(f"{API}/profile/revisions", json={"reason": "生成简历"})
     assert revision.status_code == 201, revision.text
@@ -152,6 +165,7 @@ def _create_version(
     resume_id: str,
     revision_id: str,
     *,
+    document: dict[str, Any] | None = None,
     evidence_ids: list[str] | None = None,
     reason: str = "首次创建",
 ) -> Any:
@@ -161,6 +175,7 @@ def _create_version(
         client: 测试客户端。
         resume_id: 简历主键。
         revision_id: 资料修订主键。
+        document: 完整文档；默认用最小合法文档。
         evidence_ids: 关联证据。
         reason: 创建原因。
 
@@ -171,11 +186,31 @@ def _create_version(
         f"{API}/resumes/{resume_id}/versions",
         json={
             "profile_revision_id": revision_id,
-            "document": _document(),
+            "document": document if document is not None else _document(),
             "created_reason": reason,
             "evidence_ids": evidence_ids or [],
         },
     )
+
+
+def _create_skill(client: TestClient, name: str = "Python") -> dict[str, Any]:
+    """创建一条技能事实。
+
+    参数:
+        client: 测试客户端。
+        name: 技能名。
+
+    返回:
+        dict[str, Any]: 技能响应体。
+
+    注意:
+        事实的主键由服务端生成，而"文档能否引用它"取决于它是否落在目标修订的快照里，
+        因此用例需要拿到真实主键而不是自己编一个。
+    """
+    _ensure_profile(client)
+    response = client.post(f"{API}/profile/skills", json={"name": name, "category": "编程语言"})
+    assert response.status_code == 201, response.text
+    return _data(response)
 
 
 def _create_draft(client: TestClient, resume_id: str, **overrides: Any) -> dict[str, Any]:
@@ -510,3 +545,338 @@ def test_drafts_are_scoped_to_their_resume(db_client: TestClient) -> None:
 
     assert cross.status_code == 404
     assert _data(db_client.get(f"{API}/resumes/{first['id']}/drafts"))[0]["status"] == "DRAFT"
+
+
+# --------------------------------------------------------------------------------------------
+# 候选稿的确认前编辑
+# --------------------------------------------------------------------------------------------
+
+
+def _draft_by_id(client: TestClient, resume_id: str, draft_id: str) -> dict[str, Any]:
+    """按主键取候选稿。
+
+    参数:
+        client: 测试客户端。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+
+    返回:
+        dict[str, Any]: 候选稿响应体。
+
+    注意:
+        断言"已处理的候选稿不能再编辑"时必须提交它**当前**的版本号，
+        否则用旧版本号也会得到 409，测试就分不清拒绝是因为状态还是因为版本过期。
+    """
+    drafts = _data(client.get(f"{API}/resumes/{resume_id}/drafts"))
+    return next(item for item in drafts if item["id"] == draft_id)
+
+
+def _edit_draft(
+    client: TestClient,
+    resume_id: str,
+    draft_id: str,
+    *,
+    version: int,
+    document: dict[str, Any] | None = None,
+) -> Any:
+    """提交候选稿编辑请求。
+
+    参数:
+        client: 测试客户端。
+        resume_id: 简历主键。
+        draft_id: 候选稿主键。
+        version: 提交的乐观锁版本号。
+        document: 完整文档；默认用最小合法文档。
+
+    返回:
+        Any: 测试客户端返回的响应。
+    """
+    return client.patch(
+        f"{API}/resumes/{resume_id}/drafts/{draft_id}",
+        json={"version": version, "document": document if document is not None else _document()},
+    )
+
+
+def test_draft_can_be_edited_before_confirmation(db_client: TestClient) -> None:
+    """待确认的候选稿可以就地修改，版本号随之自增，且不产生正式版本。"""
+    resume = _create_resume(db_client)
+    draft = _create_draft(db_client, resume["id"])
+
+    response = _edit_draft(
+        db_client,
+        resume["id"],
+        draft["id"],
+        version=draft["version"],
+        document=_document(summary={"text": "改写后的简介。"}),
+    )
+
+    assert response.status_code == 200, response.text
+    edited = _data(response)
+    assert edited["document_json"]["summary"]["text"] == "改写后的简介。"
+    assert edited["version"] == draft["version"] + 1
+    assert edited["status"] == "DRAFT"
+    # 编辑候选稿不产生正式版本：确认才是唯一的产出路径。
+    assert _data(db_client.get(f"{API}/resumes/{resume['id']}/versions")) == []
+
+
+def test_draft_edit_does_not_touch_confirmed_versions(db_client: TestClient) -> None:
+    """编辑候选稿不影响已存在的正式版本，历史内容保持原样。"""
+    revision = _create_revision(db_client)
+    resume = _create_resume(db_client)
+    version = _data(_create_version(db_client, resume["id"], revision["id"]))
+    draft = _create_draft(db_client, resume["id"])
+
+    edited = _edit_draft(
+        db_client,
+        resume["id"],
+        draft["id"],
+        version=draft["version"],
+        document=_document(summary={"text": "候选稿里的新写法。"}),
+    )
+
+    assert edited.status_code == 200, edited.text
+    stored = _data(db_client.get(f"{API}/resume-versions/{version['id']}"))
+    assert stored["document_json"]["summary"]["text"] == "5 年后端开发经验。"
+
+
+def test_draft_edit_with_stale_version_is_rejected(db_client: TestClient) -> None:
+    """乐观锁过期时拒绝保存，库中内容保持原样。"""
+    resume = _create_resume(db_client)
+    draft = _create_draft(db_client, resume["id"])
+    first = _edit_draft(
+        db_client,
+        resume["id"],
+        draft["id"],
+        version=draft["version"],
+        document=_document(summary={"text": "第一次修改。"}),
+    )
+    assert first.status_code == 200, first.text
+
+    stale = _edit_draft(
+        db_client,
+        resume["id"],
+        draft["id"],
+        version=draft["version"],
+        document=_document(summary={"text": "基于旧版本的写入。"}),
+    )
+
+    assert stale.status_code == 409
+    assert "version" in _detail_fields(_error(stale))
+    assert _draft_by_id(db_client, resume["id"], draft["id"])["document_json"]["summary"]["text"] == "第一次修改。"
+
+
+def test_processed_draft_cannot_be_edited(db_client: TestClient) -> None:
+    """已确认或已丢弃的候选稿不能再修改：它们已经是历史决定。"""
+    revision = _create_revision(db_client)
+    resume = _create_resume(db_client)
+
+    confirmed = _create_draft(db_client, resume["id"])
+    db_client.post(
+        f"{API}/resumes/{resume['id']}/drafts/{confirmed['id']}/confirm",
+        json={"version": confirmed["version"], "profile_revision_id": revision["id"]},
+    )
+    discarded = _create_draft(db_client, resume["id"])
+    db_client.post(
+        f"{API}/resumes/{resume['id']}/drafts/{discarded['id']}/discard",
+        json={"version": discarded["version"]},
+    )
+
+    confirmed_edit = _edit_draft(
+        db_client,
+        resume["id"],
+        confirmed["id"],
+        version=_draft_by_id(db_client, resume["id"], confirmed["id"])["version"],
+        document=_document(summary={"text": "确认后的追加修改。"}),
+    )
+    discarded_edit = _edit_draft(
+        db_client,
+        resume["id"],
+        discarded["id"],
+        version=_draft_by_id(db_client, resume["id"], discarded["id"])["version"],
+        document=_document(summary={"text": "丢弃后的追加修改。"}),
+    )
+
+    assert confirmed_edit.status_code == 409
+    assert "status" in _detail_fields(_error(confirmed_edit))
+    assert discarded_edit.status_code == 409
+    assert "status" in _detail_fields(_error(discarded_edit))
+
+
+def test_draft_edit_rejects_invalid_document(db_client: TestClient) -> None:
+    """文档结构非法时返回 422，并且不写入任何内容。"""
+    resume = _create_resume(db_client)
+    draft = _create_draft(db_client, resume["id"])
+
+    response = _edit_draft(
+        db_client,
+        resume["id"],
+        draft["id"],
+        version=draft["version"],
+        document=_document(section_order=["SUMMARY", "SUMMARY", "PROJECTS", "SKILLS", "EDUCATIONS", "LANGUAGES"]),
+    )
+
+    assert response.status_code == 422
+    assert _error(response)["code"] == "VALIDATION_ERROR"
+    assert _draft_by_id(db_client, resume["id"], draft["id"])["version"] == draft["version"]
+
+
+def test_draft_of_another_resume_is_not_found(db_client: TestClient) -> None:
+    """跨简历编辑按不存在处理，不暴露另一份简历的候选稿。"""
+    first = _create_resume(db_client, name="Java 后端")
+    second = _create_resume(db_client, name="AI 应用")
+    draft = _create_draft(db_client, first["id"])
+
+    response = _edit_draft(db_client, second["id"], draft["id"], version=draft["version"])
+
+    assert response.status_code == 404
+
+
+def test_archived_resume_rejects_draft_edit(db_client: TestClient) -> None:
+    """归档表示方向已停用，其候选稿也不能再修改。"""
+    resume = _create_resume(db_client)
+    draft = _create_draft(db_client, resume["id"])
+    db_client.delete(f"{API}/resumes/{resume['id']}")
+
+    response = _edit_draft(db_client, resume["id"], draft["id"], version=draft["version"])
+
+    assert response.status_code == 409
+
+
+# --------------------------------------------------------------------------------------------
+# 事实溯源校验
+# --------------------------------------------------------------------------------------------
+
+
+def test_version_rejects_facts_absent_from_revision(db_client: TestClient) -> None:
+    """文档引用的事实必须真实存在于所指向的修订中；不存在的引用逐条报出并拒绝创建版本。"""
+    revision = _create_revision(db_client)
+    resume = _create_resume(db_client)
+    invented_skill = str(uuid.uuid4())
+    invented_experience = str(uuid.uuid4())
+
+    response = _create_version(
+        db_client,
+        resume["id"],
+        revision["id"],
+        document=_document(
+            skills=[{"name": "Kubernetes", "source_fact_id": invented_skill}],
+            experiences=[
+                {
+                    "company": "某公司",
+                    "title": "后端工程师",
+                    "source_fact_id": invented_experience,
+                    "highlights": ["负责订单系统重构"],
+                }
+            ],
+        ),
+    )
+
+    assert response.status_code == 422
+    error = _error(response)
+    assert error["code"] == "VALIDATION_ERROR"
+    assert {"skills.0.source_fact_id", "experiences.0.source_fact_id"} <= _detail_fields(error)
+    assert _data(db_client.get(f"{API}/resumes/{resume['id']}/versions")) == []
+
+
+def test_version_accepts_fact_present_in_revision(db_client: TestClient) -> None:
+    """引用该修订快照中确实存在的事实时可以创建版本。"""
+    skill = _create_skill(db_client, name="Python")
+    revision = _create_revision(db_client)
+    resume = _create_resume(db_client)
+
+    response = _create_version(
+        db_client,
+        resume["id"],
+        revision["id"],
+        document=_document(skills=[{"name": "Python", "source_fact_id": skill["id"]}]),
+    )
+
+    assert response.status_code == 201, response.text
+    assert _data(response)["document_json"]["skills"][0]["source_fact_id"] == skill["id"]
+
+
+def test_version_rejects_fact_created_after_revision(db_client: TestClient) -> None:
+    """修订是时点快照：修订之后才加入的事实不在其中，不能作为该版本的溯源依据。"""
+    revision = _create_revision(db_client)
+    later_skill = _create_skill(db_client, name="Rust")
+    resume = _create_resume(db_client)
+
+    response = _create_version(
+        db_client,
+        resume["id"],
+        revision["id"],
+        document=_document(skills=[{"name": "Rust", "source_fact_id": later_skill["id"]}]),
+    )
+
+    assert response.status_code == 422
+    assert "skills.0.source_fact_id" in _detail_fields(_error(response))
+
+
+def test_summary_may_reference_the_profile_itself(db_client: TestClient) -> None:
+    """简介的依据可以是档案本身：档案主键也出现在修订快照中，因此是合法溯源。"""
+    revision = _create_revision(db_client)
+    profile = _data(db_client.get(f"{API}/profile"))
+    resume = _create_resume(db_client)
+
+    response = _create_version(
+        db_client,
+        resume["id"],
+        revision["id"],
+        document=_document(summary={"text": "5 年后端开发经验。", "source_fact_id": profile["id"]}),
+    )
+
+    assert response.status_code == 201, response.text
+
+
+def test_draft_saves_untraceable_fact_but_confirm_rejects_it(db_client: TestClient) -> None:
+    """候选稿允许保存尚未溯源的条目（它是可变的工作状态），确认成版本时才必须可溯源。"""
+    revision = _create_revision(db_client)
+    resume = _create_resume(db_client)
+    invented = str(uuid.uuid4())
+
+    draft = _create_draft(
+        db_client,
+        resume["id"],
+        document=_document(skills=[{"name": "Kubernetes", "source_fact_id": invented}]),
+    )
+    confirmed = db_client.post(
+        f"{API}/resumes/{resume['id']}/drafts/{draft['id']}/confirm",
+        json={"version": draft["version"], "profile_revision_id": revision["id"]},
+    )
+
+    assert confirmed.status_code == 422
+    assert "skills.0.source_fact_id" in _detail_fields(_error(confirmed))
+    assert _draft_by_id(db_client, resume["id"], draft["id"])["status"] == "DRAFT"
+    assert _data(db_client.get(f"{API}/resumes/{resume['id']}/versions")) == []
+
+
+# --------------------------------------------------------------------------------------------
+# 按主键读取候选稿
+# --------------------------------------------------------------------------------------------
+
+
+def test_draft_can_be_read_by_id(db_client: TestClient) -> None:
+    """候选稿可按主键直接读取：编辑器只需要这一份内容，不必拉整张列表再筛。"""
+    resume = _create_resume(db_client)
+    draft = _create_draft(db_client, resume["id"])
+
+    response = db_client.get(f"{API}/resumes/{resume['id']}/drafts/{draft['id']}")
+
+    assert response.status_code == 200, response.text
+    body = _data(response)
+    assert body["id"] == draft["id"]
+    assert body["document_json"] == draft["document_json"]
+    assert body["version"] == draft["version"]
+    assert body["status"] == "DRAFT"
+
+
+def test_draft_of_another_resume_is_not_readable(db_client: TestClient) -> None:
+    """跨简历读取按不存在处理，不泄露另一份简历的候选稿内容。"""
+    first = _create_resume(db_client, name="Java 后端")
+    second = _create_resume(db_client, name="AI 应用")
+    draft = _create_draft(db_client, first["id"])
+
+    response = db_client.get(f"{API}/resumes/{second['id']}/drafts/{draft['id']}")
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "RESOURCE_NOT_FOUND"

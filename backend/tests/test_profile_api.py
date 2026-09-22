@@ -331,3 +331,56 @@ def test_revision_snapshot_excludes_contact_details(db_client: TestClient) -> No
     assert "zhang@example.com" not in serialized
     assert "13800000000" not in serialized
     assert "AWS 解决方案架构师认证" in serialized
+
+
+def _create_facts(
+    client: TestClient,
+    endpoint: str,
+    field: str,
+    facts: list[tuple[str, int]],
+    *,
+    extra: dict[str, Any] | None = None,
+) -> None:
+    """按给定的 (取值, sort_order) 创建一组事实。
+
+    参数:
+        client: 测试客户端。
+        endpoint: 事实列表路径，例如 `/profile/skills`。
+        field: 该事实的展示字段名。
+        facts: (字段取值, sort_order) 列表，刻意按与 sort_order 相反的次序提交。
+        extra: 该事实除展示字段外的必填字段。
+    """
+    for value, order in facts:
+        payload = {field: value, "sort_order": order, **(extra or {})}
+        created = client.post(f"{API}{endpoint}", json=payload)
+        assert created.status_code == 201, created.text
+
+
+def test_fact_lists_follow_sort_order(db_client: TestClient) -> None:
+    """事实列表按 sort_order 排序，而不是按插入顺序。
+
+    注意:
+        五类事实走同一条聚合读取路径，因此逐一覆盖：只要有一类的关系上漏了排序，
+        界面上对该类的排序操作就会"看起来不生效"，而数据其实是写进去了。
+        提交次序刻意与 sort_order 相反，避免用例在"恰好按插入顺序返回"时误通过。
+    """
+    _create_profile(db_client)
+    _create_facts(db_client, "/profile/skills", "name", [("Python", 2), ("Go", 0), ("SQL", 1)])
+    _create_facts(db_client, "/profile/languages", "language", [("英语", 2), ("日语", 0), ("法语", 1)])
+    _create_facts(db_client, "/profile/projects", "name", [("项目乙", 2), ("项目甲", 0), ("项目丙", 1)])
+    _create_facts(db_client, "/profile/educations", "school", [("学校乙", 2), ("学校甲", 0), ("学校丙", 1)])
+    _create_facts(
+        db_client,
+        "/profile/experiences",
+        "company",
+        [("甲公司", 2), ("乙公司", 0), ("丙公司", 1)],
+        extra={"title": "后端工程师", "start_date": "2020-01-01"},
+    )
+
+    profile = _data(db_client.get(f"{API}/profile"))
+
+    assert [item["name"] for item in profile["skills"]] == ["Go", "SQL", "Python"]
+    assert [item["language"] for item in profile["languages"]] == ["日语", "法语", "英语"]
+    assert [item["name"] for item in profile["projects"]] == ["项目甲", "项目丙", "项目乙"]
+    assert [item["school"] for item in profile["educations"]] == ["学校甲", "学校丙", "学校乙"]
+    assert [item["company"] for item in profile["experiences"]] == ["乙公司", "丙公司", "甲公司"]

@@ -289,6 +289,17 @@ class ResumeDraftCreate(BaseModel):
     generator_version: str | None = Field(default=None, max_length=64)
 
 
+class ResumeDraftUpdate(BaseModel):
+    """就地修改候选稿的请求体。
+
+    只接受**整份文档**而不是局部字段：`document` 是自包含整体，"删掉一条经历"只能通过提交
+    不含该条目的完整文档来表达；逐字段合并无法区分"这一项被删了"与"这一项没提交"。
+    """
+
+    version: int = Field(ge=1, description="候选稿当前版本号；不一致返回 409。")
+    document: ResumeDocument = Field(description="替换后的完整文档。")
+
+
 class ResumeDraftConfirm(BaseModel):
     """确认候选稿的请求体。"""
 

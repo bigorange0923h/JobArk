@@ -87,11 +87,35 @@ class PersonalProfile(UuidPrimaryKeyMixin, EditableMixin, Base):
         lazy="selectin",
         order_by="ProfileEvidence.created_at",
     )
-    skills: Mapped[list[ProfileSkill]] = relationship(back_populates="profile", lazy="selectin")
-    experiences: Mapped[list[ProfileExperience]] = relationship(back_populates="profile", lazy="selectin")
-    projects: Mapped[list[ProfileProject]] = relationship(back_populates="profile", lazy="selectin")
-    educations: Mapped[list[ProfileEducation]] = relationship(back_populates="profile", lazy="selectin")
-    languages: Mapped[list[ProfileLanguage]] = relationship(back_populates="profile", lazy="selectin")
+    # 事实列表统一按 (sort_order, created_at) 排序：`sort_order` 是展示顺序的唯一依据，
+    # `created_at` 只在排序值并列时提供稳定次序——不排序时数据库返回的次序未定义，
+    # 会让"改了排序值但界面没变"这种问题看起来像前端没生效。
+    # 排序写在关系上而不是各个查询里：聚合读取、修订快照等所有加载路径才能得到同一次序。
+    skills: Mapped[list[ProfileSkill]] = relationship(
+        back_populates="profile",
+        lazy="selectin",
+        order_by="(ProfileSkill.sort_order, ProfileSkill.created_at)",
+    )
+    experiences: Mapped[list[ProfileExperience]] = relationship(
+        back_populates="profile",
+        lazy="selectin",
+        order_by="(ProfileExperience.sort_order, ProfileExperience.created_at)",
+    )
+    projects: Mapped[list[ProfileProject]] = relationship(
+        back_populates="profile",
+        lazy="selectin",
+        order_by="(ProfileProject.sort_order, ProfileProject.created_at)",
+    )
+    educations: Mapped[list[ProfileEducation]] = relationship(
+        back_populates="profile",
+        lazy="selectin",
+        order_by="(ProfileEducation.sort_order, ProfileEducation.created_at)",
+    )
+    languages: Mapped[list[ProfileLanguage]] = relationship(
+        back_populates="profile",
+        lazy="selectin",
+        order_by="(ProfileLanguage.sort_order, ProfileLanguage.created_at)",
+    )
     preference: Mapped[ProfilePreference | None] = relationship(back_populates="profile", lazy="selectin")
 
 
