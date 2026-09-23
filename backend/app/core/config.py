@@ -51,6 +51,9 @@ class Settings(BaseSettings):
     database_echo: bool = False
     ai_gateway_url: str = ""
     ai_gateway_token: SecretStr = SecretStr("")
+    # 服务商 API Key 的可逆加密根密钥；只允许 LOCAL 环境缺省使用开发默认值。
+    # 根密钥必须留在数据库之外：数据库泄露时密文仍不可读，测试/生产缺失时安全失败。
+    ai_credential_encryption_key: SecretStr = SecretStr("")
     ai_timeout_seconds: float = Field(default=30, gt=0, le=120)
     # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
     # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；
