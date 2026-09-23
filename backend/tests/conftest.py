@@ -33,6 +33,9 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 
 # 领域表清单：清空测试数据时使用，顺序无关（TRUNCATE 带 CASCADE）。
 _DOMAIN_TABLES = (
+    # AI 配置表：先于其父表出现，保持"子表在前"的可读顺序。
+    "ai_models",
+    "ai_providers",
     "job_parse_results",
     "match_results",
     "application_events",
