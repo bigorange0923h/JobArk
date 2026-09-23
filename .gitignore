@@ -50,3 +50,4 @@ blob-report/
 *.dump
 tmp/
 temp/
+.worktrees/
