@@ -1,0 +1,77 @@
+/* 工作台设计令牌：页面与组件只从这里取颜色、间距和圆角，打印简历另有独立样式。 */
+:root {
+  --ja-color-primary: #165dff;
+  --ja-color-primary-soft: #e8f3ff;
+  --ja-color-text: #1d2129;
+  --ja-color-muted: #86909c;
+  --ja-color-subtle: #a9aeb8;
+  --ja-color-border: #e5e6eb;
+  --ja-color-canvas: #f7f8fa;
+  --ja-color-surface: #fff;
+  --ja-radius: 6px;
+  --ja-space-page: 28px;
+  --ja-space-section: 18px;
+}
+
+body { background: var(--ja-color-canvas); color: var(--ja-color-text); }
+#app { min-height: 100vh; }
+
+.app-main > section > .page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 20px;
+  max-width: none;
+  margin-bottom: 24px;
+}
+
+.app-main > section > .page-header h1 {
+  margin: 0;
+  color: var(--ja-color-text);
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.25;
+}
+
+.page-eyebrow {
+  margin: 0 0 6px;
+  color: var(--ja-color-primary);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: .13em;
+}
+
+.page-subtitle {
+  margin: 7px 0 0;
+  color: var(--ja-color-muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.section-gap { margin-top: var(--ja-space-section); }
+.card-hint { color: var(--ja-color-muted); font-size: 12px; line-height: 1.6; }
+
+.app-main .ant-card {
+  border-color: var(--ja-color-border);
+  border-radius: var(--ja-radius);
+  box-shadow: none;
+}
+
+.app-main .ant-card .ant-card-head { font-weight: 650; }
+.app-main > section > .ant-card + .ant-card { margin-top: var(--ja-space-section); }
+.app-main > section > .ant-card + .ant-table-wrapper { margin-top: var(--ja-space-section); }
+.app-main .ant-table-wrapper { overflow-x: auto; }
+.app-main .ant-table-wrapper .ant-table-thead > tr > th {
+  color: #4e5969;
+  background: var(--ja-color-canvas);
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-main .ant-table-wrapper .ant-table-tbody > tr > td { color: var(--ja-color-text); }
+.app-main .ant-form-item-label > label { color: #4e5969; font-weight: 550; }
+
+@media (max-width: 900px) {
+  :root { --ja-space-page: 20px; }
+  .app-main > section > .page-header { flex-wrap: wrap; }
+}

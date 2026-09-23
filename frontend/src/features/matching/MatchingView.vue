@@ -17,6 +17,11 @@ const revisionId = ref('')
 const versionId = ref('')
 const error = ref('')
 const busy = ref(false)
+const requirementColumns = [
+  { title: 'JD 原文条件', key: 'text', width: '38%' },
+  { title: '证据', key: 'evidence', width: '30%' },
+  { title: '判断边界', dataIndex: 'explanation', key: 'explanation' },
+]
 /** 切换职位立即清空旧快照，慢响应不能覆盖新选择。 */
 async function selectJob(): Promise<void> {
   const selected = jobId.value
@@ -40,9 +45,42 @@ async function analyze(): Promise<void> {
 onMounted(load)
 </script>
 <template>
-  <section><h1>匹配分析</h1><p>本地字面证据检索。展示已有依据与未知项，结果不代表满足全部条件或录用概率。</p><p v-if="error" role="alert">{{ error }}</p>
-    <form @submit.prevent="analyze"><label>职位 <select v-model="jobId" required @change="selectJob"><option value="" disabled>选择职位</option><option v-for="j in jobs" :key="j.id" :value="j.id">{{ j.company_name }} · {{ j.title }}</option></select></label><label>JD <select v-model="snapshotId" required><option v-for="s in snapshots" :key="s.id" :value="s.id">{{ s.captured_at }}</option></select></label><label>匹配对象 <select v-model="versionId"><option value="">个人资料</option><option v-for="v in versions" :key="v.id" :value="v.id">{{ v.label }}</option></select></label><label v-if="!versionId">资料修订 <select v-model="revisionId" required><option v-for="r in revisions" :key="r.id" :value="r.id">修订 {{ r.revision_no }}</option></select></label><button :disabled="busy || !snapshotId">生成并保存报告</button></form>
-    <p v-if="!reports.length">暂无分析报告。</p><details v-for="report in reports" :key="report.id"><summary>{{ report.created_at }} · {{ report.match_kind === 'PROFILE' ? '资料匹配' : '简历匹配' }}</summary><p>JD：{{ report.job_snapshot_id }} · 资料修订：{{ report.profile_revision_id }}</p><table><thead><tr><th>原文条件</th><th>证据</th><th>判断边界</th></tr></thead><tbody><tr v-for="(row, index) in report.report_json.requirements" :key="index"><td>{{ row.hard ? '明确强制：' : '' }}{{ row.text }}</td><td><span v-if="!row.evidence.length">未知</span><ul v-else><li v-for="e in row.evidence" :key="e.fact_id">{{ e.name }}（{{ e.claim_status }}）</li></ul></td><td>{{ row.explanation }}</td></tr></tbody></table><ul><li v-for="note in report.report_json.uncertainties" :key="note">{{ note }}</li></ul></details>
+  <section class="matching-view">
+    <header class="page-header"><div><p class="page-eyebrow">MATCHING</p><h1>匹配分析</h1><p class="page-subtitle">逐条核对职位条件、证据与未知项。</p></div></header>
+    <a-alert type="info" show-icon message="匹配报告是辅助判断" description="当前使用本地字面证据检索；结果不代表满足全部条件或录用概率。" class="section-gap" />
+    <a-alert v-if="error" type="error" show-icon :message="error" class="section-gap" role="alert" />
+    <a-card title="生成报告" class="section-gap">
+      <a-form layout="vertical" @submit.prevent="analyze">
+        <div class="form-grid">
+          <a-form-item label="职位" required><a-select v-model:value="jobId" placeholder="选择职位" :options="jobs.map(j => ({ value: j.id, label: `${j.company_name} · ${j.title}` }))" @change="selectJob" /></a-form-item>
+          <a-form-item label="JD 快照" required><a-select v-model:value="snapshotId" placeholder="选择快照" :options="snapshots.map(s => ({ value: s.id, label: new Date(s.captured_at).toLocaleString() }))" /></a-form-item>
+          <a-form-item label="匹配对象"><a-select v-model:value="versionId" :options="[{ value: '', label: '个人资料' }, ...versions.map(v => ({ value: v.id, label: v.label }))]" /></a-form-item>
+          <a-form-item v-if="!versionId" label="资料修订" required><a-select v-model:value="revisionId" placeholder="选择修订" :options="revisions.map(r => ({ value: r.id, label: `修订 ${r.revision_no}` }))" /></a-form-item>
+        </div>
+        <a-button type="primary" :loading="busy" :disabled="!snapshotId || (!versionId && !revisionId)" @click="analyze">生成并保存报告</a-button>
+      </a-form>
+    </a-card>
+    <a-card title="历史报告" class="section-gap">
+      <a-empty v-if="!reports.length" description="暂无分析报告" />
+      <a-collapse v-else accordion>
+        <a-collapse-panel v-for="report in reports" :key="report.id" :header="`${new Date(report.created_at).toLocaleString()} · ${report.match_kind === 'PROFILE' ? '资料匹配' : '简历匹配'}`">
+          <p class="report-source">JD 快照：{{ report.job_snapshot_id }} · 资料修订：{{ report.profile_revision_id }}</p>
+          <a-table :columns="requirementColumns" :data-source="report.report_json.requirements" :pagination="false" size="small" :row-key="(_row: unknown, index: number) => index">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'text'"><a-tag v-if="record.hard" color="orange">硬性条件</a-tag>{{ record.text }}</template>
+              <template v-else-if="column.key === 'evidence'"><span v-if="!record.evidence.length" class="muted">未知</span><div v-for="e in record.evidence" v-else :key="e.fact_id">{{ e.name }}（{{ e.claim_status }}）</div></template>
+            </template>
+          </a-table>
+          <a-alert v-if="report.report_json.uncertainties.length" type="warning" class="uncertainties"><template #message>仍需确认</template><template #description><ul><li v-for="note in report.report_json.uncertainties" :key="note">{{ note }}</li></ul></template></a-alert>
+        </a-collapse-panel>
+      </a-collapse>
+    </a-card>
   </section>
 </template>
-<style scoped>form,label{display:grid;gap:.5rem;margin:.7rem 0}select,button{font:inherit;padding:.5rem}table{border-collapse:collapse}th,td{padding:.6rem;border-bottom:1px solid #ddd}details{margin:1rem 0}[role=alert]{color:#b42318}</style>
+<style scoped>
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
+.report-source, .muted { color: var(--ja-color-muted); font-size: 12px; }
+.uncertainties { margin-top: 16px; }
+.uncertainties ul { margin: 0; padding-left: 18px; }
+@media (max-width: 800px) { .form-grid { grid-template-columns: 1fr; } }
+</style>

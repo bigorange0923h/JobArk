@@ -45,17 +45,13 @@ onMounted(() => {
 
 <template>
   <section class="status">
-    <h1>工程状态</h1>
-    <p class="hint">本页用于验证前端、开发代理与后端契约是否已打通。</p>
-
-    <p v-if="loading" class="pending">检查中…</p>
-    <p v-else-if="health" class="ok">后端存活：{{ health.status }}</p>
-    <div v-else class="failed">
-      <p>{{ errorMessage }}</p>
-      <p v-if="errorRequestId" class="request-id">错误编号：{{ errorRequestId }}</p>
-    </div>
-
-    <button type="button" :disabled="loading" @click="check">重新检查</button>
+    <header class="page-header"><div><h1>工程状态</h1><p class="hint">验证前端代理与后端的连通情况。</p></div></header>
+    <a-card title="后端服务">
+      <a-spin v-if="loading" tip="检查中…" />
+      <a-alert v-else-if="health" type="success" show-icon :message="`后端存活：${health.status}`" />
+      <a-alert v-else type="error" show-icon :message="errorMessage ?? '连接失败'" :description="errorRequestId ? `错误编号：${errorRequestId}` : undefined" />
+      <a-button class="retry-button" :loading="loading" @click="check">重新检查</a-button>
+    </a-card>
   </section>
 </template>
 
@@ -68,20 +64,5 @@ onMounted(() => {
   color: #6b7280;
 }
 
-.ok {
-  color: #15803d;
-}
-
-.failed {
-  color: #b91c1c;
-}
-
-.request-id {
-  font-family: ui-monospace, 'Cascadia Mono', monospace;
-  color: #6b7280;
-}
-
-button {
-  padding: 0.4rem 1rem;
-}
+.retry-button { margin-top: 18px; }
 </style>

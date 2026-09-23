@@ -244,6 +244,7 @@ onMounted(() => {
   <section class="resume-detail-view">
     <header class="page-header">
       <div>
+        <p class="page-eyebrow">RESUME DETAIL</p>
         <h1>{{ resume?.name ?? '简历' }}</h1>
         <RouterLink :to="`/resumes/${resumeId}/optimize`">AI 优化与对比</RouterLink>
         <p v-if="resume?.target_direction" class="target-direction">目标方向：{{ resume.target_direction }}</p>
@@ -397,19 +398,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: flex-start;
-  justify-content: space-between;
-  gap: 1rem;
-  max-width: 60rem;
-}
-
-.page-header h1 {
-  font-size: 1.25rem;
-  margin: 0 0 0.25rem;
-}
-
 .target-direction,
 .card-hint {
   color: #6b7280;

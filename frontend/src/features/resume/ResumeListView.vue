@@ -124,12 +124,9 @@ onMounted(() => {
 <template>
   <section class="resume-list-view">
     <header class="page-header">
-      <h1>简历</h1>
+      <div><p class="page-eyebrow">RESUMES</p><h1>简历</h1><p class="page-subtitle">按目标方向管理候选稿与不可变版本。</p></div>
       <a-space>
-        <label class="archived-toggle">
-          <input v-model="includeArchived" type="checkbox" data-testid="include-archived" @change="load" />
-          包含已归档
-        </label>
+        <a-checkbox v-model:checked="includeArchived" data-testid="include-archived" @change="load">包含已归档</a-checkbox>
         <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
       </a-space>
     </header>
@@ -226,25 +223,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  max-width: 60rem;
-}
-
-.page-header h1 {
-  font-size: 1.25rem;
-  margin: 0 0 1rem;
-}
-
-.archived-toggle {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.35rem;
-  color: #4b5563;
-}
-
 .action-error,
 .load-error {
   max-width: 60rem;

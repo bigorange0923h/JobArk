@@ -13,6 +13,15 @@ interface Metric { label: string; count: number }
 interface Dashboard { pending_jobs: number; application_count: number; funnel: Metric[]; sources: Metric[]; trend: Metric[]; versions: { resume_version_id: string; attempts: number; applied: number; interviewed: number; offered: number }[] }
 const stats = ref<Dashboard | null>(null)
 const error = ref('')
+const metricColumns = [{ title: '阶段', dataIndex: 'label', key: 'label' }, { title: '尝试数', dataIndex: 'count', key: 'count', align: 'right' as const }]
+const versionColumns = [
+  { title: '版本', dataIndex: 'resume_version_id', key: 'resume_version_id' },
+  { title: '样本', dataIndex: 'attempts', key: 'attempts' },
+  { title: '已投递', dataIndex: 'applied', key: 'applied' },
+  { title: '面试', dataIndex: 'interviewed', key: 'interviewed' },
+  { title: '录用', dataIndex: 'offered', key: 'offered' },
+  { title: '面试率', key: 'rate' },
+]
 const chartElement = ref<HTMLElement | null>(null)
 let chart: ECharts | undefined
 let observer: ResizeObserver | undefined
@@ -33,14 +42,71 @@ onMounted(load)
 onBeforeUnmount(() => { observer?.disconnect(); chart?.dispose() })
 </script>
 <template>
-  <section><h1>求职概览</h1><button @click="load">刷新</button><p v-if="error" role="alert">{{ error }}</p>
-    <template v-if="stats"><p>待处理职位 {{ stats.pending_jobs }} · 申请尝试 {{ stats.application_count }}</p><p v-if="stats.application_count === 0">暂无申请数据，从职位详情创建申请后将在这里显示。</p>
-      <h2>阶段分布</h2><p>按事件中实际到达过该阶段的申请尝试计数；跳过的阶段不推算。</p><div ref="chartElement" style="height:300px" role="img" aria-label="申请阶段柱状图，数值见下表" />
-      <table><thead><tr><th>阶段</th><th>尝试数</th></tr></thead><tbody><tr v-for="row in stats.funnel" :key="row.label"><td>{{ statusLabels[row.label] ?? row.label }}</td><td>{{ row.count }}</td></tr></tbody></table>
-      <h2>来源分布</h2><p v-if="!stats.sources.length">暂无数据</p><ul><li v-for="row in stats.sources" :key="row.label">{{ row.label === 'MANUAL' ? '手工录入' : row.label }}：{{ row.count }}</li></ul>
-      <h2>投递趋势（UTC 日期）</h2><p v-if="!stats.trend.length">暂无投递记录</p><table><tbody><tr v-for="row in stats.trend" :key="row.label"><th>{{ row.label }}</th><td>{{ row.count }}</td></tr></tbody></table>
-      <h2>简历版本转化</h2><p>转化率 = 到达阶段的尝试数 / 此版本全部申请尝试数。</p><table><thead><tr><th>版本</th><th>样本</th><th>已投递</th><th>面试</th><th>录用</th><th>面试率</th></tr></thead><tbody><tr v-for="row in stats.versions" :key="row.resume_version_id"><td>{{ row.resume_version_id }}</td><td>{{ row.attempts }}</td><td>{{ row.applied }}</td><td>{{ row.interviewed }}</td><td>{{ row.offered }}</td><td>{{ row.attempts ? `${(100 * row.interviewed / row.attempts).toFixed(1)}%` : '—' }}</td></tr></tbody></table>
+  <section class="dashboard-view">
+    <header class="page-header">
+      <div>
+        <p class="page-eyebrow">OVERVIEW</p>
+        <h1>求职概览</h1>
+        <p class="page-subtitle">从职位到申请，掌握当前进展。</p>
+      </div>
+      <a-button @click="load">刷新数据</a-button>
+    </header>
+    <a-alert v-if="error" type="error" show-icon :message="error" class="section-gap" role="alert" />
+    <template v-if="stats">
+      <div class="stat-grid">
+        <a-card>
+          <a-statistic title="待处理职位" :value="stats.pending_jobs" />
+          <span class="stat-note">仍在跟进的机会</span>
+        </a-card>
+        <a-card>
+          <a-statistic title="申请尝试" :value="stats.application_count" />
+          <span class="stat-note">已记录的申请次数</span>
+        </a-card>
+      </div>
+      <a-alert v-if="stats.application_count === 0" type="info" show-icon message="暂无申请数据" description="从职位详情选择简历版本创建申请后，这里会展示进度。" class="section-gap" />
+      <div class="dashboard-grid">
+        <a-card title="阶段分布" class="section-gap">
+          <p class="card-hint">按实际到达过的阶段计数，跳过的阶段不推算。</p>
+          <div ref="chartElement" class="chart" role="img" aria-label="申请阶段柱状图，数值见下表" />
+          <a-table :columns="metricColumns" :data-source="stats.funnel" row-key="label" size="small" :pagination="false">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'label'">{{ statusLabels[record.label] ?? record.label }}</template>
+            </template>
+          </a-table>
+        </a-card>
+        <div class="side-panels">
+          <a-card title="来源分布" class="section-gap">
+            <a-empty v-if="!stats.sources.length" description="暂无来源数据" />
+            <a-list v-else :data-source="stats.sources" size="small">
+              <template #renderItem="{ item }">
+                <a-list-item><span>{{ item.label === 'MANUAL' ? '手工录入' : item.label }}</span><strong>{{ item.count }}</strong></a-list-item>
+              </template>
+            </a-list>
+          </a-card>
+          <a-card title="投递趋势（UTC 日期）" class="section-gap">
+            <a-empty v-if="!stats.trend.length" description="暂无投递记录" />
+            <a-table v-else :columns="[{ title: '日期', dataIndex: 'label' }, { title: '次数', dataIndex: 'count' }]" :data-source="stats.trend" row-key="label" size="small" :pagination="false" />
+          </a-card>
+        </div>
+      </div>
+      <a-card title="简历版本转化" class="section-gap">
+        <p class="card-hint">面试率 = 到达面试阶段的尝试数 / 此版本全部申请尝试数。</p>
+        <a-table :columns="versionColumns" :data-source="stats.versions" row-key="resume_version_id" size="small" :pagination="false">
+          <template #bodyCell="{ column, record }">
+            <template v-if="column.key === 'rate'">{{ record.attempts ? `${(100 * record.interviewed / record.attempts).toFixed(1)}%` : '—' }}</template>
+          </template>
+        </a-table>
+      </a-card>
     </template>
   </section>
 </template>
-<style scoped>table{border-collapse:collapse}td,th{padding:.6rem;text-align:left;border-bottom:1px solid #ddd}[role=alert]{color:#b42318}</style>
+<style scoped>
+.stat-note { display: block; margin-top: 7px; color: var(--ja-color-muted); font-size: 12px; }
+.stat-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.dashboard-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(260px, 1fr); gap: 16px; }
+.side-panels { min-width: 0; }
+.chart { height: 270px; }
+.card-hint { margin: 0 0 12px; }
+:deep(.ant-list-item) { display: flex; justify-content: space-between; }
+@media (max-width: 1000px) { .dashboard-grid { grid-template-columns: 1fr; } }
+</style>

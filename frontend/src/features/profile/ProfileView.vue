@@ -101,7 +101,7 @@ onMounted(() => {
 <template>
   <section class="profile-view">
     <header class="page-header">
-      <h1>个人资料</h1>
+      <div><p class="page-eyebrow">PROFILE</p><h1>个人资料</h1><p class="page-subtitle">维护可追溯的职业事实，供简历和匹配使用。</p></div>
       <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
     </header>
 
@@ -166,18 +166,6 @@ onMounted(() => {
 </template>
 
 <style scoped>
-.page-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  max-width: 60rem;
-}
-
-.page-header h1 {
-  font-size: 1.25rem;
-  margin: 0 0 1rem;
-}
-
 .conflict-banner {
   max-width: 60rem;
   margin-bottom: 1rem;

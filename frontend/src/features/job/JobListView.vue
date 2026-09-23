@@ -112,7 +112,7 @@ onMounted(() => void load())
 <template>
   <section class="job-list-view">
     <header class="page-header">
-      <h1>职位</h1>
+      <div><p class="page-eyebrow">JOBS</p><h1>职位</h1><p class="page-subtitle">保存原始 JD，按机会持续跟进。</p></div>
       <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
     </header>
 
@@ -156,8 +156,6 @@ onMounted(() => void load())
 </template>
 
 <style scoped>
-.page-header { display: flex; align-items: center; justify-content: space-between; max-width: 70rem; }
-.page-header h1 { font-size: 1.25rem; margin: 0 0 1rem; }
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; }
 .action-error, .load-error, .job-table { margin-top: 1rem; }
 </style>

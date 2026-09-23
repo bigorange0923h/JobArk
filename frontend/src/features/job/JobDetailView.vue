@@ -71,33 +71,49 @@ async function action(kind: 'save' | 'snapshot' | 'apply'): Promise<void> {
 onMounted(load)
 </script>
 <template>
-  <section>
-    <RouterLink to="/jobs">返回职位</RouterLink><h1>职位详情</h1>
-    <p v-if="error" role="alert">{{ error }} <button @click="load">重新加载</button></p>
+  <section class="job-detail-view">
+    <header class="page-header"><div><RouterLink to="/jobs" class="back-link">← 返回职位列表</RouterLink><h1>{{ job?.title ?? '职位详情' }}</h1><p class="page-subtitle">{{ job?.company.name ?? '职位资料与 JD 历史' }}</p></div><a-tag v-if="job" :color="job.status === 'ACTIVE' ? 'blue' : 'default'">{{ job.status === 'ACTIVE' ? '处理中' : '已归档' }}</a-tag></header>
+    <a-alert v-if="error" type="error" show-icon :message="error" class="section-gap" role="alert"><template #action><a-button size="small" @click="load">重新加载</a-button></template></a-alert>
     <template v-if="job">
-      <h2>{{ job.company.name }}</h2>
-      <form @submit.prevent="action('save')">
-        <label>职位 <input v-model="job.title" required maxlength="200"></label>
-        <label>地点 <input v-model="job.location" maxlength="200"></label>
-        <label>备注 <textarea v-model="job.notes" maxlength="10000" /></label>
-        <label>状态 <select v-model="job.status"><option value="ACTIVE">处理中</option><option value="ARCHIVED">已归档</option></select></label>
-        <button :disabled="busy">保存修改</button>
-      </form>
-      <h2>JD 历史</h2>
-      <p v-if="!snapshots.length">暂无快照</p>
-      <details v-for="snapshot in snapshots" :key="snapshot.id"><summary>{{ new Date(snapshot.captured_at).toLocaleString() }}</summary><pre>{{ snapshot.raw_jd }}</pre></details>
-      <form @submit.prevent="action('snapshot')"><label>来源页面 <select v-model="posting"><option v-for="p in job.postings" :key="p.id" :value="p.id">{{ p.canonical_url ?? '手工录入' }}</option></select></label><label>更新 JD 原文 <textarea v-model="newJd" required maxlength="100000" /></label><button :disabled="busy || !newJd.trim()">保存新快照</button></form>
-      <label>JD 快照 <select v-model="selectedSnapshot" required :disabled="busy"><option v-for="s in snapshots" :key="s.id" :value="s.id">{{ new Date(s.captured_at).toLocaleString() }}</option></select></label>
-      <h2>JD 解析</h2><p>使用上方选中的 JD 快照；提取结果仍需人工核对。</p><button :disabled="busy" @click="parse('LOCAL')">本地提取条件</button><label><input v-model="external" type="checkbox">同意将所选 JD 原文发送到已配置的 AI 网关</label><button :disabled="busy || !external" @click="parse('AI')">AI 解析</button>
-      <details v-for="result in parseResults" :key="result.id"><summary>{{ result.status === 'FAILED' ? '解析失败，原文已保留' : '解析结果' }}</summary><p v-if="result.failure_code">解析未成功，请检查网关配置或稍后重试。错误码：{{ result.failure_code }}</p><template v-if="result.result_json"><ul><li v-for="(item, index) in result.result_json.requirements" :key="index">{{ item.hard ? '明确强制：' : '' }}{{ item.text }}</li></ul><p v-for="(item, index) in result.result_json.uncertainties" :key="index">{{ item }}</p></template></details>
-      <h2>创建申请记录</h2><p>使用所选 JD 和下方简历版本。记录不会自动投递。</p>
-      <form @submit.prevent="action('apply')">
-        <label>简历版本 <select v-model="selectedVersion" required><option value="" disabled>请选择正式版本</option><option v-for="v in versions" :key="v.id" :value="v.id">{{ v.label }}</option></select></label>
-        <label><input v-model="repeat" type="checkbox">如已有申请，确认新增一次申请尝试</label><button :disabled="busy || !selectedVersion">创建申请</button>
-      </form>
+      <div class="detail-grid">
+        <div class="primary-column">
+          <a-card title="职位信息" class="section-gap">
+            <a-form layout="vertical" @submit.prevent="action('save')">
+              <div class="form-grid"><a-form-item label="职位" required><a-input v-model:value="job.title" :maxlength="200" /></a-form-item><a-form-item label="地点"><a-input v-model:value="job.location" :maxlength="200" /></a-form-item></div>
+              <a-form-item label="备注"><a-textarea v-model:value="job.notes" :rows="3" :maxlength="10000" /></a-form-item>
+              <a-form-item label="状态"><a-select v-model:value="job.status" :options="[{ value: 'ACTIVE', label: '处理中' }, { value: 'ARCHIVED', label: '已归档' }]" /></a-form-item>
+              <a-button type="primary" :loading="busy" :disabled="!job.title.trim()" @click="action('save')">保存修改</a-button>
+            </a-form>
+          </a-card>
+          <a-card title="JD 历史" class="section-gap">
+            <a-empty v-if="!snapshots.length" description="暂无快照" />
+            <a-collapse v-else accordion><a-collapse-panel v-for="snapshot in snapshots" :key="snapshot.id" :header="new Date(snapshot.captured_at).toLocaleString()"><pre class="jd-original">{{ snapshot.raw_jd }}</pre></a-collapse-panel></a-collapse>
+            <a-divider />
+            <a-form layout="vertical" @submit.prevent="action('snapshot')"><a-form-item label="来源页面"><a-select v-model:value="posting" :options="job.postings.map(p => ({ value: p.id, label: p.canonical_url ?? '手工录入' }))" /></a-form-item><a-form-item label="更新 JD 原文" required><a-textarea v-model:value="newJd" :rows="6" :maxlength="100000" /></a-form-item><a-button type="primary" :loading="busy" :disabled="!newJd.trim()" @click="action('snapshot')">保存新快照</a-button></a-form>
+          </a-card>
+        </div>
+        <div class="secondary-column">
+          <a-card title="JD 解析" class="section-gap">
+            <p class="card-hint">提取条件后仍需人工核对，原始 JD 始终保留。</p>
+            <a-form-item label="选择 JD 快照"><a-select v-model:value="selectedSnapshot" :disabled="busy" :options="snapshots.map(s => ({ value: s.id, label: new Date(s.captured_at).toLocaleString() }))" /></a-form-item>
+            <a-space wrap><a-button :loading="busy" :disabled="!selectedSnapshot" @click="parse('LOCAL')">本地提取条件</a-button><a-button :loading="busy" :disabled="!external || !selectedSnapshot" @click="parse('AI')">AI 解析</a-button></a-space>
+            <div class="confirm-line"><a-checkbox v-model:checked="external">同意将所选 JD 原文发送到已配置的 AI 网关</a-checkbox></div>
+            <a-collapse v-if="parseResults.length" class="parse-results"><a-collapse-panel v-for="result in parseResults" :key="result.id" :header="result.status === 'FAILED' ? '解析失败，原文已保留' : '解析结果'"><a-alert v-if="result.failure_code" type="warning" :message="`解析未成功，请检查网关配置或稍后重试。错误码：${result.failure_code}`" /><template v-if="result.result_json"><ul><li v-for="(item, index) in result.result_json.requirements" :key="index">{{ item.hard ? '明确强制：' : '' }}{{ item.text }}</li></ul><p v-for="(item, index) in result.result_json.uncertainties" :key="index">{{ item }}</p></template></a-collapse-panel></a-collapse>
+          </a-card>
+          <a-card title="创建申请记录" class="section-gap"><p class="card-hint">使用所选 JD 和正式简历版本；创建记录不会自动投递。</p><a-form layout="vertical" @submit.prevent="action('apply')"><a-form-item label="简历版本" required><a-select v-model:value="selectedVersion" placeholder="请选择正式版本" :options="versions.map(v => ({ value: v.id, label: v.label }))" /></a-form-item><a-form-item><a-checkbox v-model:checked="repeat">如已有申请，确认新增一次申请尝试</a-checkbox></a-form-item><a-button type="primary" :loading="busy" :disabled="!selectedVersion || !selectedSnapshot" @click="action('apply')">创建申请</a-button></a-form></a-card>
+        </div>
+      </div>
     </template>
   </section>
 </template>
 <style scoped>
-section{max-width:70rem}form{display:grid;gap:1rem;padding:1rem;border:1px solid #ddd;margin-bottom:1rem}label{display:grid;gap:.4rem}input,select,textarea,button{font:inherit;padding:.5rem}textarea{min-height:6rem}pre{white-space:pre-wrap;overflow-wrap:anywhere}button{width:fit-content}p[role=alert]{color:#b42318}
+.back-link { display: inline-block; margin-bottom: 12px; font-size: 12px; }
+.card-hint { margin: 0 0 16px; }
+.detail-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, 1fr); gap: 16px; }
+.form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 16px; }
+.jd-original { max-height: 360px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; font: inherit; font-size: 12px; line-height: 1.7; }
+.confirm-line { margin-top: 14px; }
+.parse-results { margin-top: 18px; }
+@media (max-width: 1060px) { .detail-grid { grid-template-columns: 1fr; } }
+@media (max-width: 600px) { .form-grid { grid-template-columns: 1fr; } }
 </style>
