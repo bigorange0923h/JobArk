@@ -24,6 +24,7 @@ from .modules.dashboard.router import router as dashboard_router
 from .modules.job.parsing import router as parsing_router
 from .modules.job.router import router as job_router
 from .modules.matching.router import router as matching_router
+from .modules.profile.import_router import router as profile_import_router
 from .modules.profile.router import router as profile_router
 from .modules.resume.optimization import router as optimization_router
 from .modules.resume.router import router as resume_router
@@ -123,6 +124,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 统一挂到 /api/v1，使后续版本演进不需要改动已发布的路径。
     api_v1 = APIRouter(prefix=resolved_settings.api_v1_prefix)
     api_v1.include_router(profile_router)
+    api_v1.include_router(profile_import_router)
     api_v1.include_router(resume_router)
     api_v1.include_router(job_router)
     api_v1.include_router(application_router)

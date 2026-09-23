@@ -78,6 +78,8 @@ describe('ProfileView', () => {
     await flushPromises()
 
     expect(wrapper.text()).toContain('创建个人档案')
+    expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('创建后即可单独维护工作经历和教育经历')
     expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
     // 未创建时不应渲染依赖档案存在与否的面板。
     expect(wrapper.find('[data-testid="panel-skills"]').exists()).toBe(false)
@@ -100,6 +102,7 @@ describe('ProfileView', () => {
     expect(alert.text()).toContain('无法连接到服务，请确认后端是否已启动。')
     expect(alert.text()).toContain('req-network')
     expect(wrapper.find('[data-testid="panel-evidences"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(false)
   })
 
   it('加载成功后显示全部面板，并把档案内容回填到表单', async () => {
@@ -109,6 +112,7 @@ describe('ProfileView', () => {
     // 姓名以输入框的值呈现，不在文本节点里，因此断言元素值而不是页面文本。
     const fullName = wrapper.find('[data-testid="panel-basics"] input')
     expect((fullName.element as HTMLInputElement).value).toBe('张伟')
+    expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(true)
     for (const key of [
       'basics',
       'preference',

@@ -153,6 +153,50 @@ export interface Profile extends EditableResource {
   preference: Preference | null
 }
 
+/** AI 从上传简历提取的待确认条目；摘录用于人工比对，并非已核验事实。 */
+export interface SourcedSkill { name: string; source_quote: string }
+export interface SourcedExperience {
+  company: string
+  title: string
+  start_date: string
+  end_date: string | null
+  location: string | null
+  responsibilities: string | null
+  achievements: string | null
+  source_quote: string
+}
+export interface SourcedEducation {
+  school: string
+  major: string | null
+  degree: string | null
+  start_date: string | null
+  end_date: string | null
+  source_quote: string
+}
+export interface ProfileImportCandidate {
+  full_name: string
+  name_quote: string
+  headline: string | null
+  email: string | null
+  phone: string | null
+  city: string | null
+  skills: SourcedSkill[]
+  experiences: SourcedExperience[]
+  educations: SourcedEducation[]
+}
+export interface ProfileImportPreview {
+  filename: string
+  source_hash: string
+  candidate: ProfileImportCandidate
+}
+export interface ProfileImportResult {
+  profile_id: string
+  created_profile: boolean
+  skills_added: number
+  experiences_added: number
+  educations_added: number
+}
+
 // --------------------------------------------------------------------------------------------
 // 请求体类型
 // --------------------------------------------------------------------------------------------
@@ -303,6 +347,38 @@ export const languagesApi = createFactApi<Language, LanguageInput>('/profile/lan
  */
 export function fetchProfile(): Promise<Profile> {
   return requestV1<Profile>('/profile')
+}
+
+/** 明确同意后发送已上传文件；后端本地抽取文字，AI 候选此时不落库。 */
+export function previewProfileImport(filename: string, contentBase64: string, confirmExternal: boolean): Promise<ProfileImportPreview> {
+  return requestV1<ProfileImportPreview>('/profile/import-preview', {
+    timeoutMs: 90_000,
+    init: jsonInit('POST', { filename, content_base64: contentBase64, confirm_external: confirmExternal }),
+  })
+}
+
+/** 用户逐项核对后重传原文件并确认写入，后端会校验哈希与摘录。 */
+export function confirmProfileImport(input: {
+  filename: string
+  contentBase64: string
+  preview: ProfileImportPreview
+  skillIndices: number[]
+  experienceIndices: number[]
+  educationIndices: number[]
+}): Promise<ProfileImportResult> {
+  return requestV1<ProfileImportResult>('/profile/import-confirm', {
+    timeoutMs: 30_000,
+    init: jsonInit('POST', {
+      filename: input.filename,
+      content_base64: input.contentBase64,
+      source_hash: input.preview.source_hash,
+      candidate: input.preview.candidate,
+      skill_indices: input.skillIndices,
+      experience_indices: input.experienceIndices,
+      education_indices: input.educationIndices,
+      confirmed: true,
+    }),
+  })
 }
 
 /** 创建个人档案。V1 只允许一份，重复创建返回 409。 */

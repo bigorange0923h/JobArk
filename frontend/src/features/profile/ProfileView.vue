@@ -19,6 +19,7 @@ import { parseServerError, type ParsedServerError } from '@/shared/forms/serverE
 import FactPanel from './components/FactPanel.vue'
 import PreferencePanel from './components/PreferencePanel.vue'
 import ProfileBasicsPanel from './components/ProfileBasicsPanel.vue'
+import ProfileImportPanel from './components/ProfileImportPanel.vue'
 import RevisionPanel from './components/RevisionPanel.vue'
 import {
   educationDescriptor,
@@ -128,6 +129,21 @@ onMounted(() => {
       data-testid="load-error"
     />
 
+    <ProfileImportPanel
+      v-if="notCreated || profile !== null"
+      :has-profile="profile !== null"
+      @changed="reload"
+    />
+
+    <a-alert
+      v-if="notCreated"
+      type="info"
+      show-icon
+      message="尚未创建个人档案"
+      description="可先从简历导入，或在下方手动创建。创建后即可单独维护工作经历和教育经历。"
+      class="conflict-banner"
+    />
+
     <ProfileBasicsPanel
       v-if="notCreated || profile !== null"
       :profile="profile"
@@ -151,13 +167,13 @@ onMounted(() => {
         @changed="reload"
         @conflict="onConflict"
       />
-      <FactPanel :descriptor="projectsDescriptor" :items="profile.projects" @changed="reload" @conflict="onConflict" />
       <FactPanel
         :descriptor="educationsDescriptor"
         :items="profile.educations"
         @changed="reload"
         @conflict="onConflict"
       />
+      <FactPanel :descriptor="projectsDescriptor" :items="profile.projects" @changed="reload" @conflict="onConflict" />
       <FactPanel :descriptor="languagesDescriptor" :items="profile.languages" @changed="reload" @conflict="onConflict" />
 
       <RevisionPanel />
