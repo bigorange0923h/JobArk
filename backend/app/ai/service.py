@@ -34,7 +34,7 @@ from app.ai.schemas.config import (
     ProviderRead,
     ProviderUpdate,
 )
-from app.core.config import get_settings
+from app.core.config import Settings, get_settings
 from app.core.errors import ConflictError, ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ErrorDetail
 from app.core.versioning import apply_versioned_update
@@ -435,3 +435,38 @@ async def test_connection(session: AsyncSession, model_id: uuid.UUID) -> Connect
     await session.rollback()
     await gateway.check_connection(config)
     return ConnectionTestRead(ok=True)
+
+
+async def resolve_default_model(session: AsyncSession, settings: Settings) -> gateway.ResolvedAiModel:
+    """解析当前唯一默认启用模型，返回仅存在于内存的请求配置。
+
+    参数:
+        session: 当前会话。
+        settings: 应用配置，用于解析凭据加密根密钥。
+
+    返回:
+        gateway.ResolvedAiModel: 默认模型的基地址、远端模型标识与解密后的凭据。
+
+    异常:
+        ConflictError: 尚未配置默认模型、模型或其服务商已停用，或根密钥缺失/无法解密。
+
+    注意:
+        本函数只读取配置并解密凭据，不修改任何数据；调用方必须在等待外部 HTTP 前
+        再结束一次读事务，使网络等待期间不持有数据库事务（见 ADR 0002）。
+    """
+    model = await repo.get_default_model(session)
+    if model is None or not model.is_enabled:
+        raise ConflictError("尚未配置默认 AI 模型，请先在 AI 模型配置中启用一个模型。")
+    provider = await repo.get_provider(session, model.provider_id)
+    if provider is None or not provider.is_enabled:
+        raise ConflictError("默认 AI 模型的服务商已停用，请先在 AI 模型配置中启用。")
+    api_key = (
+        CredentialCipher.from_settings(settings).decrypt(provider.api_key_ciphertext)
+        if provider.api_key_ciphertext is not None
+        else None
+    )
+    return gateway.ResolvedAiModel(
+        base_url=provider.base_url,
+        remote_model_id=model.remote_model_id,
+        api_key=api_key,
+    )

@@ -17,7 +17,9 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from pypdf import PdfReader
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import service as ai_service
 from app.ai.llm import gateway
+from app.core.config import get_settings
 from app.core.errors import ConflictError, ValidationFailedError
 
 from . import repository as repo
@@ -231,12 +233,29 @@ def _check_candidate(candidate: ImportCandidate, text: str) -> None:
         raise ValidationFailedError("教育经历的结束日期早于开始日期，未写入个人档案。")
 
 
-async def preview(upload: ResumeUpload, *, confirm_external: bool) -> ImportPreviewRead:
-    """本地抽取后经明确同意调用已有 AI 网关，返回未落库候选。"""
+async def preview(session: AsyncSession, upload: ResumeUpload, *, confirm_external: bool) -> ImportPreviewRead:
+    """本地抽取后经明确同意调用默认模型，返回未落库候选。
+
+    参数:
+        session: 当前会话；仅用于解析默认模型，读取后立即结束事务再发起请求。
+        upload: 上传的简历文件。
+        confirm_external: 用户是否确认将提取文字发送到外部模型。
+
+    返回:
+        ImportPreviewRead: 带原文摘录、等待人工核对的候选。
+
+    异常:
+        ValidationFailedError: 未确认发送，或模型返回的候选格式无效、摘录无法定位。
+        ConflictError: 尚未配置默认模型，或凭据无法解密。
+    """
     if not confirm_external:
         raise ValidationFailedError("请先确认将简历文字发送到已配置的 AI 网关。")
     document = await asyncio.to_thread(parse_document, upload)
+    config = await ai_service.resolve_default_model(session, get_settings())
+    # 解析默认模型开启新的读事务；等待网络前必须结束它（见 ADR 0002）。
+    await session.rollback()
     result = await gateway.generate(
+        config,
         "extract_profile_from_resume",
         {
             "resume_text": document.text,

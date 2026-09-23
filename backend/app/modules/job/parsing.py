@@ -8,7 +8,9 @@ from pydantic import BaseModel, ValidationError
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import service as ai_service
 from app.ai.llm import gateway
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.errors import AppError, ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ApiResponse, ORMModel, success
@@ -54,18 +56,27 @@ async def parse_snapshot(session: SessionDep, snapshot_id: UUID, payload: ParseR
         raise ValidationFailedError("请确认将 JD 原文发送到已配置的 AI 网关。")
     raw = snapshot.raw_jd
     await session.rollback()
+    # 默认模型解析必须放在"解析失败可保存为 FAILED 产物"的 try 之外：
+    # 没有默认模型属于配置缺失（409），不是 JD 解析失败，不能被吞成一条失败记录。
+    config: gateway.ResolvedAiModel | None = None
+    if payload.engine == "AI":
+        config = await ai_service.resolve_default_model(session, get_settings())
+        # 解析默认模型开启新的读事务；等待网络前必须再次结束事务（见 ADR 0002）。
+        await session.rollback()
     result: JDAnalysis | None = None
     failure = None
     try:
-        result = (
-            parse_jd(raw)
-            if payload.engine == "LOCAL"
-            else JDAnalysis.model_validate(
+        if config is None:
+            result = parse_jd(raw)
+        else:
+            result = JDAnalysis.model_validate(
                 await gateway.generate(
-                    "jd_requirements_with_verbatim_quotes", {"raw_jd": raw}, JDAnalysis.model_json_schema()
+                    config,
+                    "jd_requirements_with_verbatim_quotes",
+                    {"raw_jd": raw},
+                    JDAnalysis.model_json_schema(),
                 )
             )
-        )
         if any(
             not item.source_quote.strip() or item.source_quote not in raw or item.text != item.source_quote
             for item in result.requirements

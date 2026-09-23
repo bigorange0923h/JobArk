@@ -31,9 +31,9 @@ class ImportPreviewRequest(ResumeUpload):
     ),
     response_model=ApiResponse[ImportPreviewRead],
 )
-async def preview_import(payload: ImportPreviewRequest) -> ApiResponse[ImportPreviewRead]:
+async def preview_import(session: SessionDep, payload: ImportPreviewRequest) -> ApiResponse[ImportPreviewRead]:
     """返回待人工核对的档案候选，不保存原文件或模型输出。"""
-    result = await import_service.preview(payload, confirm_external=payload.confirm_external)
+    result = await import_service.preview(session, payload, confirm_external=payload.confirm_external)
     return success(result)
 
 

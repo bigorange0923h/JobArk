@@ -8,7 +8,9 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.ai import service as ai_service
 from app.ai.llm import gateway
+from app.core.config import get_settings
 from app.core.database import get_session
 from app.core.errors import ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ApiResponse, success
@@ -59,8 +61,14 @@ async def optimize(
     baseline_id = base.id
     sections = {key: document.get(key, []) for key in Selection.model_fields}
     await session.rollback()
+    config = await ai_service.resolve_default_model(session, get_settings())
+    # 解析默认模型开启新的读事务；等待网络前必须再次结束事务（见 ADR 0002）。
+    await session.rollback()
     result = await gateway.generate(
-        "resume_select_existing_items", {"target": payload.target, "sections": sections}, Selection.model_json_schema()
+        config,
+        "resume_select_existing_items",
+        {"target": payload.target, "sections": sections},
+        Selection.model_json_schema(),
     )
     try:
         selection = Selection.model_validate(result)

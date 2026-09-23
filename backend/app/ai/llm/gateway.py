@@ -14,7 +14,7 @@ from typing import Any, cast
 from urllib.parse import urlsplit
 
 from app.core.config import get_settings
-from app.core.errors import ConflictError, ValidationFailedError
+from app.core.errors import ValidationFailedError
 
 # 响应体上限：防止上游返回超大内容占满内存。读取时多读 1 字节，用于判断是否超限。
 _MAX_RESPONSE_BYTES = 1_000_000
@@ -144,46 +144,78 @@ async def check_connection(config: ResolvedAiModel) -> None:
         raise ValidationFailedError("AI 服务返回的内容不符合 OpenAI 兼容格式。")
 
 
-def _request(task: str, input_data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    """【待移除】向旧的环境变量网关发送一次请求；禁止重定向，失败不自动重试。
+def _extract_message_content(response: dict[str, Any]) -> str:
+    """从 OpenAI 兼容响应中取出 `choices[0].message.content` 字符串。
+
+    参数:
+        response: 上游返回的 JSON 对象。
+
+    返回:
+        str: 模型输出的文本内容；调用方还需按业务 Schema 二次校验。
+
+    异常:
+        ValidationFailedError: 缺少 `choices`、`message` 或文本内容时抛出安全错误。
 
     注意:
-        该实现只在默认模型功能落地前的过渡期保留；调用方将统一切换到
-        `generate(ResolvedAiModel, ...)`，本函数与旧配置项随后移除。
+        只接受字符串内容：有些兼容实现会返回结构化数组或对象，那些形态无法与
+        "模型必须输出 JSON 文本"的既有契约对齐，宁可安全失败也不做猜测解析。
     """
-    settings = get_settings()
-    if not settings.ai_gateway_url:
-        raise ConflictError("尚未配置 AI 网关，请配置后再使用 AI 功能。")
-    address = urlsplit(settings.ai_gateway_url)
-    if (
-        not address.hostname
-        or address.username is not None
-        or address.password is not None
-        or not (address.scheme == "https" or (address.scheme == "http" and address.hostname in _LOCAL_HOSTNAMES))
-    ):
-        raise ConflictError("AI 网关必须使用 HTTPS 或本地回环地址。")
-    headers = {"Content-Type": "application/json"}
-    if settings.ai_gateway_token.get_secret_value():
-        headers["Authorization"] = f"Bearer {settings.ai_gateway_token.get_secret_value()}"
-    request = urllib.request.Request(
-        settings.ai_gateway_url,
-        data=json.dumps({"task": task, "input": input_data, "output_schema": schema}, ensure_ascii=False).encode(),
-        headers=headers,
-        method="POST",
-    )
+    raw_choices = response.get("choices")
+    if not isinstance(raw_choices, list) or not raw_choices:
+        raise ValidationFailedError("AI 服务返回的内容不符合 OpenAI 兼容格式。")
+    first = cast("list[object]", raw_choices)[0]
+    if not isinstance(first, dict):
+        raise ValidationFailedError("AI 服务返回的内容不符合 OpenAI 兼容格式。")
+    message = cast("dict[str, object]", first).get("message")
+    if not isinstance(message, dict):
+        raise ValidationFailedError("AI 服务返回的内容不符合 OpenAI 兼容格式。")
+    content = cast("dict[str, object]", message).get("content")
+    if not isinstance(content, str) or not content.strip():
+        raise ValidationFailedError("AI 服务返回的内容不符合 OpenAI 兼容格式。")
+    return content
+
+
+async def generate(
+    config: ResolvedAiModel, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+) -> dict[str, Any]:
+    """向默认模型发送一次受限的 OpenAI 兼容结构化请求，不写业务事实。
+
+    参数:
+        config: 已解析的默认模型请求配置（基地址、远端模型标识与明文凭据）。
+        task: 固定任务名，写入系统消息，便于上游按用途区分。
+        input_data: 任务输入；只应包含已获用户同意发送的内容。
+        schema: 期望的输出 JSON Schema。
+
+    返回:
+        dict[str, Any]: 模型返回的 JSON 对象；**尚未**按业务 Schema 校验。
+
+    异常:
+        ValidationFailedError: 地址不安全、上游错误、超时、响应超限、非 JSON 或缺少内容。
+
+    注意:
+        请求体包含 `response_format={"type": "json_object"}` 与一个 JSON 用户消息；
+        不自动重试，调用方必须在等待本协程前结束数据库事务。
+    """
+    body = {
+        "model": config.remote_model_id,
+        "messages": [
+            {
+                "role": "system",
+                "content": f"你是受控的 JSON 服务，任务标识为 {task}。只返回一个 JSON 对象，不要输出解释或额外文本。",
+            },
+            {
+                "role": "user",
+                "content": json.dumps({"input": input_data, "output_schema": schema}, ensure_ascii=False),
+            },
+        ],
+        "response_format": {"type": "json_object"},
+    }
+    response = await asyncio.to_thread(_post_chat, config, body)
+    content = _extract_message_content(response)
     try:
-        with urllib.request.build_opener(_NoRedirect()).open(request, timeout=settings.ai_timeout_seconds) as response:
-            body = response.read(_MAX_RESPONSE_BYTES + 1)
-        if len(body) > _MAX_RESPONSE_BYTES:
-            raise ValueError("oversize")
-        result: Any = json.loads(body)
-        if not isinstance(result, dict):
-            raise ValueError("invalid envelope")
-        return cast(dict[str, Any], result)
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as error:
-        raise ValidationFailedError("AI 请求失败或结果无效，原始资料已保留，请稍后手动重试。") from error
-
-
-async def generate(task: str, input_data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-    """【待移除】在线程中执行有超时的一次旧网关请求，返回待验证 JSON，不写业务事实。"""
-    return await asyncio.to_thread(_request, task, input_data, schema)
+        parsed: Any = json.loads(content)
+    except (TypeError, ValueError) as error:
+        raise ValidationFailedError("AI 返回的内容不是有效 JSON，原始资料已保留，请稍后手动重试。") from error
+    if not isinstance(parsed, dict):
+        raise ValidationFailedError("AI 返回的 JSON 不是对象，原始资料已保留，请稍后手动重试。")
+    return cast(dict[str, Any], parsed)
