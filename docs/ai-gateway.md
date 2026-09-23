@@ -2,7 +2,9 @@
 
 AI 默认关闭。本地逐行 JD 提取和字面证据匹配无需外部服务，不能当成语义模型评估或招聘概率。
 
-配置 `JOBARK_AI_GATEWAY_URL`、`JOBARK_AI_GATEWAY_TOKEN` 和 `JOBARK_AI_TIMEOUT_SECONDS` 后，可以使用自有推理网关。协议是 POST JSON：`{task, input, output_schema}`，响应为满足 output_schema 的 JSON 对象。网关负责选定模型与结构化输出；本项目不绑定商业服务或代填凭据。URL 必须 HTTPS 或本地回环，拒绝重定向，每次请求有超时且不自动重试。
+用户在“AI 模型配置”页面添加 OpenAI 兼容服务商、模型与 API Key，并设置唯一默认模型。API Key 以应用层可逆加密的密文保存在 PostgreSQL，页面和读取 API 仅显示掩码。`JOBARK_AI_CREDENTIAL_ENCRYPTION_KEY` 是数据库外的根密钥；仅 `LOCAL` 环境允许开发默认值，测试与生产必须显式提供。服务商基地址必须为 HTTPS 或本地回环 HTTP，拒绝用户名、密码、查询参数、片段和重定向；本项目不绑定商业 SDK 或代填凭据。
+
+当前固定任务协议会调整为默认模型的 OpenAI 兼容结构化输出请求。无默认启用模型、连接失败或结果不符合 Schema 时，均安全失败；每次请求有超时且不自动重试。
 
 `resume_select_existing_items` 输入包含目标方向和已有简历经历、项目、技能、学历、语言条目；不发送 basics/contact。输出为这五类条目的索引列表，只允许筛选和重排。正文从本地原文复制，模型不能创建新技能或业绩。条目自由文本可能包含个人信息，界面需明确确认；请根据网关部署方的数据留存政策决定是否启用。失败保留基线，未确认候选不会覆盖正式版本。
 
