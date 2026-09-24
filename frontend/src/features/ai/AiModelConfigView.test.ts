@@ -22,6 +22,8 @@ import {
   listAiProviders,
   setDefaultAiModel,
   testAiModel,
+  updateAiModel,
+  updateAiProvider,
   type AiModel,
   type AiProvider,
 } from '@/shared/api/ai'
@@ -83,6 +85,25 @@ function mountView(): VueWrapper {
   return mount(AiModelConfigView)
 }
 
+/**
+ * 归一化按钮文案后按文案点击。
+ *
+ * Ant Design 会在两个汉字之间插入空格（渲染为 `保 存`），直接按原文案比较会失败，
+ * 而失败信息看起来像是"按钮不存在"。
+ */
+async function clickButton(wrapper: VueWrapper, text: string): Promise<void> {
+  const target = text.replace(/[\s\u200b]/g, '')
+  const button = wrapper.findAll('button').find((candidate) => candidate.text().replace(/[\s\u200b]/g, '') === target)
+  if (button === undefined) {
+    const found = wrapper
+      .findAll('button')
+      .map((candidate) => JSON.stringify(candidate.text()))
+      .join(', ')
+    throw new Error(`没有找到按钮「${text}」；当前按钮为：${found}`)
+  }
+  await button.trigger('click')
+}
+
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(listAiProviders).mockResolvedValue([providerFixture()])
@@ -91,6 +112,8 @@ beforeEach(() => {
   vi.mocked(createAiModel).mockResolvedValue(modelFixture())
   vi.mocked(setDefaultAiModel).mockResolvedValue(modelFixture())
   vi.mocked(testAiModel).mockResolvedValue({ ok: true })
+  vi.mocked(updateAiProvider).mockResolvedValue(providerFixture({ name: '改名后的服务商' }))
+  vi.mocked(updateAiModel).mockResolvedValue(modelFixture())
 })
 
 enableAutoUnmount(afterEach)
@@ -265,5 +288,182 @@ describe('AiModelConfigView', () => {
     await flushPromises()
 
     expect(wrapper.find('.ai-config-grid').exists()).toBe(true)
+  })
+})
+
+describe('AiModelConfigView 编辑与启停', () => {
+  it('打开服务商编辑器时不回填凭据，只在提示里显示掩码', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('.ant-modal').exists()).toBe(true)
+    const keyInput = wrapper.find('[data-testid="editor-provider-api-key"]')
+    // 凭据输入只能为空或新明文：绝不能预填、也不能回显已保存内容。
+    expect((keyInput.element as HTMLInputElement).value).toBe('')
+    expect(keyInput.attributes('placeholder')).toContain('••••alue')
+    expect(wrapper.text()).not.toContain('secret-value')
+    expect(wrapper.html()).not.toContain('ciphertext')
+    expect((wrapper.find('[data-testid="editor-provider-name"]').element as HTMLInputElement).value).toBe(
+      '本地兼容服务',
+    )
+  })
+
+  it('编辑服务商：未填 Key 时不提交凭据，保存后重新加载并关闭弹窗', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-provider-name"]').setValue('改名后的服务商')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    expect(updateAiProvider).toHaveBeenCalledTimes(1)
+    const [providerId, payload] = vi.mocked(updateAiProvider).mock.calls[0]
+    expect(providerId).toBe('provider-1')
+    expect(payload).toEqual({
+      version: 1,
+      name: '改名后的服务商',
+      base_url: 'http://localhost:11434/v1',
+      description: null,
+      is_enabled: true,
+    })
+    expect(payload).not.toHaveProperty('api_key')
+    expect(listAiProviders).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('.ant-modal').exists()).toBe(false)
+  })
+
+  it('替换 API Key 时提交新明文', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-provider-api-key"]').setValue('new-secret')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    expect(vi.mocked(updateAiProvider).mock.calls[0][1]).toHaveProperty('api_key', 'new-secret')
+  })
+
+  it('停用服务商时提交 is_enabled=false', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-provider-enabled"]').trigger('click')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    expect(vi.mocked(updateAiProvider).mock.calls[0][1].is_enabled).toBe(false)
+  })
+
+  it('编辑模型提交名称、远端标识与启停状态', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-model-name"]').setValue('新模型名')
+    await wrapper.find('[data-testid="editor-model-remote-id"]').setValue('qwen3-max')
+    await wrapper.find('[data-testid="editor-model-enabled"]').trigger('click')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    expect(updateAiModel).toHaveBeenCalledWith('model-1', {
+      version: 1,
+      name: '新模型名',
+      remote_model_id: 'qwen3-max',
+      is_enabled: false,
+    })
+    expect(listAiProviders).toHaveBeenCalledTimes(2)
+  })
+
+  it('停用默认模型冲突时展示后端文案与错误编号，并保持弹窗打开', async () => {
+    vi.mocked(updateAiModel).mockRejectedValue(
+      new ApiError({
+        code: 'CONFLICT',
+        message: '默认模型不能被停用，请先设置其他启用模型为默认。',
+        status: 409,
+        requestId: 'req-conflict',
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-model-enabled"]').trigger('click')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    const alert = wrapper.find('[data-testid="editor-error"]')
+    expect(alert.exists()).toBe(true)
+    expect(alert.text()).toContain('默认模型不能被停用')
+    expect(alert.text()).toContain('req-conflict')
+    expect(wrapper.find('.ant-modal').exists()).toBe(true)
+    // 冲突时不重新加载：界面保持用户已填内容，交由用户决定下一步。
+    expect(listAiProviders).toHaveBeenCalledTimes(1)
+  })
+
+  it('停用承载默认模型的服务商时展示后端冲突文案', async () => {
+    vi.mocked(updateAiProvider).mockRejectedValue(
+      new ApiError({
+        code: 'CONFLICT',
+        message: '该服务商下存在默认模型，请先设置其他启用模型为默认，再停用服务商。',
+        status: 409,
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="editor-provider-enabled"]').trigger('click')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="editor-error"]').text()).toContain('该服务商下存在默认模型')
+    expect(wrapper.find('.ant-modal').exists()).toBe(true)
+  })
+
+  it('删除服务商遇到后端冲突时展示安全文案', async () => {
+    vi.mocked(listAiProviders).mockResolvedValue([
+      providerFixture({ has_default_model: false, models: [modelFixture({ is_default: false })] }),
+    ])
+    vi.mocked(deleteAiProvider).mockRejectedValue(
+      new ApiError({
+        code: 'CONFLICT',
+        message: '该服务商下存在默认模型，请先设置其他启用模型为默认，再删除服务商。',
+        status: 409,
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.findComponent({ name: 'APopconfirm' }).vm.$emit('confirm')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="form-error"]').text()).toContain('该服务商下存在默认模型')
+    expect(listAiProviders).toHaveBeenCalledTimes(1)
+  })
+
+  it('编辑保存期间重复点击只提交一次', async () => {
+    let resolveUpdate: ((provider: AiProvider) => void) | undefined
+    vi.mocked(updateAiProvider).mockReturnValue(
+      new Promise<AiProvider>((resolve) => {
+        resolveUpdate = resolve
+      }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="edit-provider-1"]').trigger('click')
+    await clickButton(wrapper, '保存')
+    await clickButton(wrapper, '保存')
+
+    expect(updateAiProvider).toHaveBeenCalledTimes(1)
+
+    resolveUpdate?.(providerFixture())
+    await flushPromises()
+    expect(wrapper.find('.ant-modal').exists()).toBe(false)
   })
 })

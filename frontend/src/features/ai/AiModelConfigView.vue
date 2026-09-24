@@ -22,8 +22,11 @@ import {
   listAiProviders,
   setDefaultAiModel,
   testAiModel,
+  updateAiModel,
+  updateAiProvider,
   type AiModel,
   type AiProvider,
+  type AiProviderUpdateInput,
 } from '@/shared/api/ai'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
@@ -31,6 +34,25 @@ import { parseServerError, type ParsedServerError } from '@/shared/forms/serverE
 interface ModelForm {
   name: string
   remoteModelId: string
+}
+
+/**
+ * 服务商编辑器的目标与凭据展示信息。
+ *
+ * 只保留"服务端才知道的事实"（主键、版本、掩码、是否已配置）；
+ * 凭据只以 `mask` 作为提示展示，绝不承载明文或密文。
+ */
+interface ProviderEditorTarget {
+  id: string
+  version: number
+  mask: string | null
+  configured: boolean
+}
+
+/** 模型编辑器的目标。 */
+interface ModelEditorTarget {
+  id: string
+  version: number
 }
 
 const providers = ref<AiProvider[]>([])
@@ -47,6 +69,24 @@ const providerBaseUrl = ref('')
 const providerApiKey = ref('')
 const providerDescription = ref('')
 const modelForms = ref<Record<string, ModelForm>>({})
+
+// 服务商编辑器：`editorApiKey` 恒以空串开始，绝不回填已保存凭据。
+const providerEditorTarget = ref<ProviderEditorTarget | null>(null)
+const editorName = ref('')
+const editorBaseUrl = ref('')
+const editorDescription = ref('')
+const editorApiKey = ref('')
+const editorEnabled = ref(true)
+
+// 模型编辑器。
+const modelEditorTarget = ref<ModelEditorTarget | null>(null)
+const editorModelName = ref('')
+const editorModelRemoteId = ref('')
+const editorModelEnabled = ref(true)
+
+/** 编辑器内的失败提示；与页面级 `actionError` 分开，避免弹窗打开时提示被挡在后面。 */
+const editorError = ref<ParsedServerError | null>(null)
+const savingEditor = ref(false)
 
 const columns = [
   { key: 'name', title: '模型', dataIndex: 'name' },
@@ -69,6 +109,7 @@ function describeError(error: ParsedServerError | null): string | undefined {
 
 const loadErrorDescription = computed(() => describeError(loadError.value))
 const actionErrorDescription = computed(() => describeError(actionError.value))
+const editorErrorDescription = computed(() => describeError(editorError.value))
 
 /** 构造前端本地校验错误；字段级原因留空，整体提示即可定位。 */
 function localError(message: string): ParsedServerError {
@@ -258,6 +299,126 @@ async function removeModel(model: AiModel): Promise<void> {
 onMounted(() => {
   void load()
 })
+
+// --------------------------------------------------------------------------------------------
+// 编辑服务商 / 模型
+// --------------------------------------------------------------------------------------------
+
+/** 打开服务商编辑器；凭据输入恒为空，已保存内容只以掩码提示展示。 */
+function openProviderEditor(provider: AiProvider): void {
+  editorError.value = null
+  providerEditorTarget.value = {
+    id: provider.id,
+    version: provider.version,
+    mask: provider.api_key_mask,
+    configured: provider.api_key_configured,
+  }
+  editorName.value = provider.name
+  editorBaseUrl.value = provider.base_url
+  editorDescription.value = provider.description ?? ''
+  editorApiKey.value = ''
+  editorEnabled.value = provider.is_enabled
+}
+
+/** 关闭服务商编辑器并丢弃未保存内容。 */
+function closeProviderEditor(): void {
+  providerEditorTarget.value = null
+  editorError.value = null
+}
+
+/**
+ * 保存服务商编辑。
+ *
+ * 注意:
+ *     只有输入了新明文时才提交 `api_key`；留空表示"保留已有密文"，因此界面无法意外清空凭据。
+ *     停用仍在承载默认模型的服务商会被后端拒绝（409），这里就地展示后端文案。
+ */
+async function saveProviderEditor(): Promise<void> {
+  const target = providerEditorTarget.value
+  if (target === null || savingEditor.value) {
+    return
+  }
+  const name = editorName.value.trim()
+  const baseUrl = editorBaseUrl.value.trim()
+  if (name === '' || baseUrl === '') {
+    editorError.value = localError('请填写服务商名称与接口地址。')
+    return
+  }
+  if (!isSafeBaseUrl(baseUrl)) {
+    editorError.value = localError('服务商地址必须使用 HTTPS 或本地回环 HTTP（localhost、127.0.0.1、::1）。')
+    return
+  }
+
+  savingEditor.value = true
+  editorError.value = null
+  try {
+    const description = editorDescription.value.trim()
+    const payload: AiProviderUpdateInput = {
+      version: target.version,
+      name,
+      base_url: baseUrl,
+      description: description === '' ? null : description,
+      is_enabled: editorEnabled.value,
+    }
+    if (editorApiKey.value !== '') {
+      payload.api_key = editorApiKey.value
+    }
+    await updateAiProvider(target.id, payload)
+    closeProviderEditor()
+    // 写入后统一重新加载：默认状态与掩码都以后端返回为准，不在本地推断。
+    await load()
+  } catch (error: unknown) {
+    editorError.value = parseServerError(error)
+  } finally {
+    savingEditor.value = false
+  }
+}
+
+/** 打开模型编辑器。 */
+function openModelEditor(model: AiModel): void {
+  editorError.value = null
+  modelEditorTarget.value = { id: model.id, version: model.version }
+  editorModelName.value = model.name
+  editorModelRemoteId.value = model.remote_model_id
+  editorModelEnabled.value = model.is_enabled
+}
+
+/** 关闭模型编辑器并丢弃未保存内容。 */
+function closeModelEditor(): void {
+  modelEditorTarget.value = null
+  editorError.value = null
+}
+
+/** 保存模型编辑；停用默认模型会被后端拒绝（409），提示就地展示。 */
+async function saveModelEditor(): Promise<void> {
+  const target = modelEditorTarget.value
+  if (target === null || savingEditor.value) {
+    return
+  }
+  const name = editorModelName.value.trim()
+  const remoteModelId = editorModelRemoteId.value.trim()
+  if (name === '' || remoteModelId === '') {
+    editorError.value = localError('请填写模型名称与远端模型标识。')
+    return
+  }
+
+  savingEditor.value = true
+  editorError.value = null
+  try {
+    await updateAiModel(target.id, {
+      version: target.version,
+      name,
+      remote_model_id: remoteModelId,
+      is_enabled: editorModelEnabled.value,
+    })
+    closeModelEditor()
+    await load()
+  } catch (error: unknown) {
+    editorError.value = parseServerError(error)
+  } finally {
+    savingEditor.value = false
+  }
+}
 </script>
 
 <template>
@@ -364,6 +525,9 @@ onMounted(() => {
         <template #extra>
           <a-space>
             <a-tag v-if="!provider.is_enabled" color="default">已停用</a-tag>
+            <a-button size="small" :data-testid="`edit-${provider.id}`" @click="openProviderEditor(provider)">
+              编辑
+            </a-button>
             <a-popconfirm
               title="删除后将永久移除该服务商的 API Key；此操作不可恢复。"
               ok-text="确认删除"
@@ -423,6 +587,14 @@ onMounted(() => {
                 >
                   测试连接
                 </a-button>
+                <a-button
+                  type="link"
+                  size="small"
+                  :data-testid="`edit-${(record as AiModel).id}`"
+                  @click="openModelEditor(record as AiModel)"
+                >
+                  编辑
+                </a-button>
                 <a-popconfirm
                   title="删除后不可恢复；默认模型需先切换为其他模型。"
                   ok-text="确认删除"
@@ -472,6 +644,96 @@ onMounted(() => {
         </a-form>
       </a-card>
     </template>
+
+    <!--
+      编辑弹窗的可见性由 `v-if` 控制，并关闭到 body 的传送门（`:get-container="false"`）：
+      关闭时直接卸载，既避免 jdom 下的传送门移除报错，也让"弹窗是否打开"成为可直接断言的渲染事实。
+      代价是每次打开都是新实例，因此表单状态必须在 open* 中显式初始化。
+    -->
+    <a-modal
+      v-if="providerEditorTarget"
+      :open="true"
+      data-testid="provider-editor"
+      title="编辑服务商"
+      :confirm-loading="savingEditor"
+      :get-container="false"
+      ok-text="保存"
+      cancel-text="取消"
+      @ok="saveProviderEditor"
+      @cancel="closeProviderEditor"
+    >
+      <a-alert
+        v-if="editorError"
+        type="error"
+        show-icon
+        class="editor-alert"
+        :message="editorError.message"
+        :description="editorErrorDescription"
+        data-testid="editor-error"
+      />
+      <a-form layout="vertical">
+        <a-form-item label="显示名称" required>
+          <a-input v-model:value="editorName" :maxlength="100" data-testid="editor-provider-name" />
+        </a-form-item>
+        <a-form-item label="接口基地址" required>
+          <a-input v-model:value="editorBaseUrl" :maxlength="2048" data-testid="editor-provider-base-url" />
+        </a-form-item>
+        <a-form-item label="说明">
+          <a-input v-model:value="editorDescription" :maxlength="500" data-testid="editor-provider-description" />
+        </a-form-item>
+        <a-form-item label="替换 API Key">
+          <a-input
+            v-model:value="editorApiKey"
+            type="password"
+            autocomplete="off"
+            :maxlength="4096"
+            :placeholder="
+              providerEditorTarget.configured
+                ? `留空表示保留现有凭据（${providerEditorTarget.mask ?? '已配置'}）`
+                : '留空表示暂不配置凭据'
+            "
+            data-testid="editor-provider-api-key"
+          />
+        </a-form-item>
+        <a-form-item label="启用">
+          <a-switch v-model:checked="editorEnabled" data-testid="editor-provider-enabled" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
+
+    <a-modal
+      v-if="modelEditorTarget"
+      :open="true"
+      data-testid="model-editor"
+      title="编辑模型"
+      :confirm-loading="savingEditor"
+      :get-container="false"
+      ok-text="保存"
+      cancel-text="取消"
+      @ok="saveModelEditor"
+      @cancel="closeModelEditor"
+    >
+      <a-alert
+        v-if="editorError"
+        type="error"
+        show-icon
+        class="editor-alert"
+        :message="editorError.message"
+        :description="editorErrorDescription"
+        data-testid="editor-error"
+      />
+      <a-form layout="vertical">
+        <a-form-item label="模型名称" required>
+          <a-input v-model:value="editorModelName" :maxlength="100" data-testid="editor-model-name" />
+        </a-form-item>
+        <a-form-item label="远端模型标识" required>
+          <a-input v-model:value="editorModelRemoteId" :maxlength="200" data-testid="editor-model-remote-id" />
+        </a-form-item>
+        <a-form-item label="启用">
+          <a-switch v-model:checked="editorModelEnabled" data-testid="editor-model-enabled" />
+        </a-form-item>
+      </a-form>
+    </a-modal>
   </section>
 </template>
 
@@ -493,6 +755,10 @@ onMounted(() => {
 .model-form {
   margin-top: 12px;
   row-gap: 8px;
+}
+
+.editor-alert {
+  margin-bottom: 16px;
 }
 
 @media (max-width: 800px) {
