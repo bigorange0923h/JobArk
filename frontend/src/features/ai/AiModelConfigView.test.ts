@@ -283,11 +283,14 @@ describe('AiModelConfigView', () => {
     expect(listAiProviders).toHaveBeenCalledTimes(2)
   })
 
-  it('窄窗口使用可换行的栅格类，避免页面横向溢出', async () => {
+  it('窄窗口使用可换行的栅格类，且宽表格自身横向滚动', async () => {
     const wrapper = mountView()
     await flushPromises()
 
+    // 表单栅格在窄窗口收成单列（见组件的 @media 规则），避免页面级横向溢出。
     expect(wrapper.find('.ai-config-grid').exists()).toBe(true)
+    // 模型表格内容可能较宽，必须由表格自身横向滚动，而不是把整个页面撑宽。
+    expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 'max-content' })
   })
 })
 
