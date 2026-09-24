@@ -47,6 +47,10 @@ defineProps<{ name: NavIconName }>()
       <circle cx="12" cy="12" r="5" />
       <circle cx="12" cy="12" r="1" fill="currentColor" stroke="none" />
     </template>
+    <template v-else-if="name === 'ai'">
+      <rect x="7" y="7" width="10" height="10" rx="2" />
+      <path d="M12 3v4M12 17v4M3 12h4M17 12h4M6.5 6.5l2 2M15.5 15.5l2 2M17.5 6.5l-2 2M8.5 15.5l-2 2" />
+    </template>
   </svg>
 </template>
 

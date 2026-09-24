@@ -29,7 +29,7 @@ export interface NavItem {
 }
 
 /** 只列当前工作台实际存在的导航语义。 */
-export type NavIconName = 'dashboard' | 'profile' | 'resume' | 'job' | 'application' | 'matching'
+export type NavIconName = 'dashboard' | 'profile' | 'resume' | 'job' | 'application' | 'matching' | 'ai'
 
 /**
  * 导航项清单。
@@ -44,6 +44,8 @@ export const navItems: readonly NavItem[] = [
   { name: 'jobs', label: '职位', icon: 'job' },
   { name: 'applications', label: '申请', icon: 'application' },
   { name: 'matching', label: '匹配', icon: 'matching' },
+  // AI 模型配置是基础设施入口：维护服务商、模型与唯一默认模型，不产出业务事实。
+  { name: 'ai-models', label: 'AI 模型配置', icon: 'ai' },
   // 工程状态页保留为连通性自检入口（前端 → 开发代理 → 后端契约），不属于业务功能。
   { name: 'app-status', label: '工程状态' },
 ]
@@ -59,6 +61,7 @@ export const router = createRouter({
     { path: '/applications', name: 'applications', component: () => import('@/features/application/ApplicationView.vue') },
     { path: '/dashboard', name: 'dashboard', component: () => import('@/features/dashboard/DashboardView.vue') },
     { path: '/matching', name: 'matching', component: () => import('@/features/matching/MatchingView.vue') },
+    { path: '/ai-models', name: 'ai-models', component: () => import('@/features/ai/AiModelConfigView.vue') },
     { path: '/resumes', name: 'resumes', component: ResumeListView },
     // `props: true` 把路径参数作为 props 传入：页面组件因此不依赖 `useRoute()`，
     // 测试也只需要传 props，不必构造一个路由环境。
