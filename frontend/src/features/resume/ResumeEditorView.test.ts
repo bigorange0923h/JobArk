@@ -12,6 +12,7 @@
  */
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { notification } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
@@ -19,6 +20,9 @@ import { fetchProfile, type Profile } from '@/shared/api/profile'
 import { fetchDraft, updateDraft, type ResumeDocument, type ResumeDraft } from '@/shared/api/resume'
 
 import ResumeEditorView from './ResumeEditorView.vue'
+
+/** 拦截全局通知，验证"字段错误留在编辑器、无字段信息的失败才弹通知"。 */
+const noticeSpy = vi.spyOn(notification, 'error')
 
 const RESUME_ID = 'resume-1'
 const DRAFT_ID = 'draft-1'
@@ -133,6 +137,7 @@ function mountView(): VueWrapper {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  noticeSpy.mockImplementation(() => undefined)
   vi.mocked(fetchDraft).mockResolvedValue(draftFixture())
   vi.mocked(updateDraft).mockResolvedValue(draftFixture({ version: 2 }))
   vi.mocked(fetchProfile).mockResolvedValue(profileFixture())
@@ -258,5 +263,23 @@ describe('ResumeEditorView', () => {
     const alert = wrapper.find('[data-testid="action-error"]')
     expect(alert.text()).toContain('该候选稿已处理')
     expect(wrapper.find('[data-testid="reload"]').exists()).toBe(true)
+  })
+
+  it('网络错误保存失败走全局通知，不在编辑器顶部插入错误块', async () => {
+    vi.mocked(updateDraft).mockRejectedValueOnce(
+      new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="basics-headline"]').setValue('触发保存')
+    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await flushPromises()
+
+    expect(noticeSpy).toHaveBeenCalledTimes(1)
+    expect(noticeSpy.mock.calls[0][0]).toMatchObject({ message: '保存候选稿失败' })
+    expect(wrapper.find('[data-testid="action-error"]').exists()).toBe(false)
+    // 失败不丢用户已填内容，改完即可重试。
+    expect((wrapper.find('[data-testid="basics-headline"]').element as HTMLInputElement).value).toBe('触发保存')
   })
 })

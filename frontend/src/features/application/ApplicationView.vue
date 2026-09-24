@@ -1,10 +1,11 @@
 <script setup lang="ts">
 /** 申请列表和事件时间线，合法目标由服务端返回。 */
-import { onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 import { listApplications, fetchApplication, transitionApplication, statusLabels, type Application, type ApplicationDetail } from '@/shared/api/application'
 import { listJobs, type JobListItem } from '@/shared/api/job'
 import { fetchVersion, type ResumeVersion } from '@/shared/api/resume'
-import { parseServerError } from '@/shared/forms/serverErrors'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
+import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 const items = ref<Application[]>([])
 const jobs = ref<JobListItem[]>([])
 const selected = ref<ApplicationDetail | null>(null)
@@ -12,39 +13,62 @@ const resumeVersion = ref<ResumeVersion | null>(null)
 const status = ref('')
 const confirmed = ref(false)
 const notes = ref('')
-const error = ref('')
+/** 页面初始加载失败：留在页面上并保留重试入口，不用会自动消失的通知替代。 */
+const loadError = ref<ParsedServerError | null>(null)
+/** 用户操作失败：只有需要字段或操作上下文的原因才内联展示，其余走全局通知。 */
+const actionError = ref<ParsedServerError | null>(null)
 const busy = ref(false)
+
+/** 把解析后的错误拼成"补充原因 + 错误编号"的说明文本。 */
+function describeError(error: ParsedServerError | null): string | undefined {
+  if (error === null) return undefined
+  const parts = [...error.general]
+  if (error.requestId !== null) parts.push(`错误编号：${error.requestId}`)
+  return parts.length === 0 ? undefined : parts.join(' ')
+}
+
+const loadErrorDescription = computed(() => describeError(loadError.value))
+const actionErrorDescription = computed(() => describeError(actionError.value))
+
 const columns = [
   { title: '职位', key: 'job' },
   { title: '申请尝试', dataIndex: 'attempt_no', key: 'attempt_no' },
   { title: '当前阶段', key: 'status' },
   { title: '操作', key: 'actions' },
 ]
-async function load(): Promise<void> { try { [items.value, jobs.value] = await Promise.all([listApplications(), listJobs()]) } catch(e) { error.value = parseServerError(e).message } }
+async function load(): Promise<void> {
+  loadError.value = null
+  try { [items.value, jobs.value] = await Promise.all([listApplications(), listJobs()]) }
+  catch (error: unknown) { loadError.value = parseServerError(error) }
+}
 /** 查看绑定的历史版本，不读取简历的当前版本。 */
 async function open(id: string): Promise<void> {
   if (busy.value) return
-  busy.value = true; error.value = ''; resumeVersion.value = null
+  busy.value = true; actionError.value = null; resumeVersion.value = null
   try {
     selected.value = await fetchApplication(id)
     status.value = ''; confirmed.value = false; notes.value = ''
     resumeVersion.value = await fetchVersion(selected.value.resume_version_id)
-  } catch(e) { error.value = parseServerError(e).message }
+  } catch (error: unknown) { actionError.value = resolveActionFailure(error, '读取申请时间线') }
   finally { busy.value = false }
 }
 async function save(): Promise<void> {
   if (!selected.value || busy.value || !status.value || (status.value === 'APPLIED' && !confirmed.value)) return
-  busy.value = true; error.value = ''
+  busy.value = true; actionError.value = null
+  // 版本冲突（409）会原样返回并内联展示：用户需要在原备注与阶段选择上重试，而不是丢掉已填内容。
   try { selected.value = await transitionApplication(selected.value.id, { version: selected.value.version, status: status.value, confirm_applied: confirmed.value, notes: notes.value || null }); notes.value = ''; status.value = ''; confirmed.value = false; await load() }
-  catch(e) { error.value = parseServerError(e).message }
+  catch (error: unknown) { actionError.value = resolveActionFailure(error, '记录申请变更') }
   finally { busy.value = false }
 }
 onMounted(load)
 </script>
 <template>
   <section class="application-view">
-    <header class="page-header"><div><p class="page-eyebrow">APPLICATIONS</p><h1>申请记录</h1><p class="page-subtitle">每次申请和阶段变化都有独立记录。</p></div><a-button @click="load">刷新</a-button></header>
-    <a-alert v-if="error" type="error" show-icon :message="error" class="section-gap" role="alert" />
+    <header class="page-header"><div><p class="page-eyebrow">APPLICATIONS</p><h1>申请记录</h1><p class="page-subtitle">每次申请和阶段变化都有独立记录。</p></div><a-button data-testid="reload" @click="load">刷新</a-button></header>
+    <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="loadErrorDescription" class="section-gap" data-testid="load-error" role="alert">
+      <template #action><a-button size="small" data-testid="retry-load" @click="load">重新加载</a-button></template>
+    </a-alert>
+    <a-alert v-if="actionError" type="error" show-icon closable :message="actionError.message" :description="actionErrorDescription" class="section-gap" data-testid="action-error" role="alert" @close="actionError = null" />
     <a-card title="申请列表">
       <a-table :columns="columns" :data-source="items" row-key="id" :pagination="false" size="small">
         <template #bodyCell="{ column, record }">

@@ -3,7 +3,8 @@
 import { computed, ref } from 'vue'
 
 import { confirmProfileImport, previewProfileImport, type ProfileImportPreview } from '@/shared/api/profile'
-import { parseServerError } from '@/shared/forms/serverErrors'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
+import { createLocalError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 defineProps<{ hasProfile: boolean }>()
 const emit = defineEmits<{ changed: [] }>()
@@ -16,12 +17,25 @@ const consent = ref(false)
 const reviewed = ref(false)
 const busyPreview = ref(false)
 const busyConfirm = ref(false)
-const error = ref('')
+/** 本地文件校验与服务端失败共用一个提示位置；无法定位字段的失败走全局通知。 */
+const error = ref<ParsedServerError | null>(null)
 const result = ref('')
 const selectedSkills = ref<number[]>([])
 const selectedExperiences = ref<number[]>([])
 const selectedEducations = ref<number[]>([])
 const busy = computed(() => busyPreview.value || busyConfirm.value)
+
+/** 失败提示的补充说明；本地校验没有错误编号，因此只在有值时展示。 */
+const errorDescription = computed(() => {
+  if (error.value === null) {
+    return undefined
+  }
+  const parts = [...error.value.general]
+  if (error.value.requestId !== null) {
+    parts.push(`错误编号：${error.value.requestId}`)
+  }
+  return parts.length === 0 ? undefined : parts.join(' ')
+})
 
 function chooseFile(): void {
   fileInput.value?.click()
@@ -38,10 +52,10 @@ function onFileChange(event: Event): void {
   reviewed.value = false
   consent.value = false
   result.value = ''
-  error.value = ''
+  error.value = null
   if (!next) return
   if (!/\.(pdf|html|htm)$/i.test(next.name) || next.size === 0 || next.size > 3 * 1024 * 1024) {
-    error.value = '请选择不超过 3 MB 的 PDF 或 HTML 简历文件。'
+    error.value = createLocalError('请选择不超过 3 MB 的 PDF 或 HTML 简历文件。')
     return
   }
   file.value = next
@@ -66,7 +80,7 @@ function encodeFile(selected: File): Promise<string> {
 async function generate(): Promise<void> {
   if (!file.value || !consent.value || busy.value) return
   busyPreview.value = true
-  error.value = ''
+  error.value = null
   result.value = ''
   preview.value = null
   try {
@@ -78,8 +92,9 @@ async function generate(): Promise<void> {
     selectedEducations.value = next.candidate.educations.map((_, index) => index)
     reviewed.value = false
   } catch (cause: unknown) {
+    // 文件读取失败是本地问题，需要就地提示；服务端失败中无法定位字段的走全局通知。
     error.value = cause instanceof Error && cause.message === '文件读取失败。'
-      ? cause.message : parseServerError(cause).message
+      ? createLocalError(cause.message) : resolveActionFailure(cause, '生成导入候选')
   } finally {
     busyPreview.value = false
   }
@@ -97,7 +112,7 @@ function toggle(section: Section, index: number, checked: boolean): void {
 async function apply(): Promise<void> {
   if (!preview.value || !file.value || !reviewed.value || busy.value) return
   busyConfirm.value = true
-  error.value = ''
+  error.value = null
   try {
     const saved = await confirmProfileImport({
       filename: file.value.name,
@@ -115,7 +130,7 @@ async function apply(): Promise<void> {
     consent.value = false
     emit('changed')
   } catch (cause: unknown) {
-    error.value = parseServerError(cause).message
+    error.value = resolveActionFailure(cause, '导入简历候选')
   } finally {
     busyConfirm.value = false
   }
@@ -137,7 +152,7 @@ async function apply(): Promise<void> {
     <div class="import-actions">
       <a-button type="primary" :loading="busyPreview" :disabled="!file || !consent || busy" data-testid="preview-import" @click="generate">生成待核对候选</a-button>
     </div>
-    <a-alert v-if="error" type="error" show-icon :message="error" class="import-notice" data-testid="profile-import-error" />
+    <a-alert v-if="error" type="error" show-icon :message="error.message" :description="errorDescription" class="import-notice" data-testid="profile-import-error" />
     <a-alert v-if="result" type="success" show-icon :message="result" class="import-notice" data-testid="profile-import-success" />
 
     <div v-if="preview" class="candidate" data-testid="profile-import-preview">

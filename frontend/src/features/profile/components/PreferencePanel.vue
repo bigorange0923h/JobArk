@@ -15,6 +15,7 @@
 import { computed, ref, watch } from 'vue'
 
 import { savePreference, type Preference, type PreferenceInput, type RemotePreference } from '@/shared/api/profile'
+import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import { REMOTE_PREFERENCE_LABELS } from '../descriptors'
@@ -97,7 +98,12 @@ async function submit(): Promise<void> {
   } catch (error: unknown) {
     const parsed = parseServerError(error)
     fieldErrors.value = parsed.fields
-    panelError.value = parsed
+    // 字段错误与版本冲突留在表单上下文里；无法定位字段的失败走全局通知。
+    const global = isGlobalFailure(parsed)
+    panelError.value = global ? null : parsed
+    if (global) {
+      notifyFailure(parsed, '保存求职偏好')
+    }
     if (parsed.code === 'CONFLICT' && parsed.fields['version'] !== undefined) {
       emit('conflict', parsed.message)
     }

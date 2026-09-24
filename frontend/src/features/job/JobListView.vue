@@ -9,12 +9,15 @@
 import { computed, onMounted, ref } from 'vue'
 
 import { createManualJob, listJobs, type JobListItem, type ManualJobCreate } from '@/shared/api/job'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 const jobs = ref<JobListItem[]>([])
 const loading = ref(false)
 const submitting = ref(false)
+/** 页面初始加载失败：保留页面内提示与重试入口。 */
 const loadError = ref<ParsedServerError | null>(null)
+/** 保存失败：字段级原因内联展示，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
 const form = ref<ManualJobCreate>(emptyForm())
 
@@ -31,6 +34,13 @@ const errorDescription = computed(() => {
   if (loadError.value === null) return undefined
   const content = [...loadError.value.general]
   if (loadError.value.requestId) content.push(`错误编号：${loadError.value.requestId}`)
+  return content.join(' ') || undefined
+})
+
+const actionErrorDescription = computed(() => {
+  if (actionError.value === null) return undefined
+  const content = [...actionError.value.general]
+  if (actionError.value.requestId) content.push(`错误编号：${actionError.value.requestId}`)
   return content.join(' ') || undefined
 })
 
@@ -92,7 +102,8 @@ async function submit(): Promise<void> {
     form.value = emptyForm()
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    // 422 字段错误与冲突留在表单上方；网络、超时与服务端错误走全局通知，不再插入页面内错误块。
+    actionError.value = resolveActionFailure(error, '保存职位')
   } finally {
     submitting.value = false
   }
@@ -122,6 +133,7 @@ onMounted(() => void load())
       show-icon
       closable
       :message="actionError.message"
+      :description="actionErrorDescription"
       class="action-error"
       data-testid="form-error"
       @close="actionError = null"

@@ -15,12 +15,17 @@
 import { onMounted, ref } from 'vue'
 
 import { createRevision, listRevisions, type Revision } from '@/shared/api/profile'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 const revisions = ref<Revision[]>([])
 const reason = ref('')
 const loading = ref(false)
 const creating = ref(false)
+/**
+ * 面板提示：加载失败留在面板内（顶部有刷新），创建失败只保留需要就地解释的原因
+ * （本地校验、被事实引用而无法删除的冲突），无法定位字段的失败走全局通知。
+ */
 const error = ref<ParsedServerError | null>(null)
 
 const columns = [
@@ -61,7 +66,7 @@ async function create(): Promise<void> {
     reason.value = ''
     await load()
   } catch (caught: unknown) {
-    error.value = parseServerError(caught)
+    error.value = resolveActionFailure(caught, '创建资料修订')
   } finally {
     creating.value = false
   }

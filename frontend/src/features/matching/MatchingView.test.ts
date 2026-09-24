@@ -1,0 +1,76 @@
+/** @vitest-environment jsdom */
+
+/** 匹配页错误反馈分流：加载失败留在页面，生成动作的网络失败走全局通知。 */
+import { flushPromises, mount } from '@vue/test-utils'
+import { notification } from 'ant-design-vue'
+import { beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { ApiError, requestV1 } from '@/shared/api/client'
+import { listJobs } from '@/shared/api/job'
+import { listResumes } from '@/shared/api/resume'
+
+import MatchingView from './MatchingView.vue'
+
+const noticeSpy = vi.spyOn(notification, 'error')
+
+vi.mock('@/shared/api/client', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/shared/api/client')>()
+  return { ...actual, requestV1: vi.fn() }
+})
+
+vi.mock('@/shared/api/job', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/shared/api/job')>()
+  return { ...actual, listJobs: vi.fn() }
+})
+
+vi.mock('@/shared/api/resume', async importOriginal => {
+  const actual = await importOriginal<typeof import('@/shared/api/resume')>()
+  return { ...actual, listResumes: vi.fn(), listVersions: vi.fn() }
+})
+
+beforeEach(() => {
+  vi.clearAllMocks()
+  noticeSpy.mockImplementation(() => undefined)
+  vi.mocked(listJobs).mockResolvedValue([])
+  vi.mocked(listResumes).mockResolvedValue([])
+  vi.mocked(requestV1).mockImplementation(async path => {
+    if (path === '/matches') return [] as never
+    if (path === '/profile/revisions') return [] as never
+    throw new Error(`未处理的请求：${path}`)
+  })
+})
+
+describe('MatchingView', () => {
+  it('初始加载失败保留页面内错误与重试入口，不弹全局通知', async () => {
+    vi.mocked(listJobs).mockRejectedValue(
+      new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' }),
+    )
+
+    const wrapper = mount(MatchingView)
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="retry-load"]').exists()).toBe(true)
+    expect(noticeSpy).not.toHaveBeenCalled()
+  })
+
+  it('生成报告的网络失败只弹一次全局通知，不插入操作错误块', async () => {
+    vi.mocked(requestV1).mockImplementation(async (path, options) => {
+      if (path === '/matches' && options?.init?.method === 'POST') {
+        throw new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' })
+      }
+      if (path === '/matches' || path === '/profile/revisions') return [] as never
+      throw new Error(`未处理的请求：${path}`)
+    })
+    const wrapper = mount(MatchingView)
+    await flushPromises()
+
+    // 按钮禁用只保护真实交互；直接触发表单提交可以验证分析逻辑本身的失败分流。
+    await wrapper.find('form').trigger('submit')
+    await flushPromises()
+
+    expect(noticeSpy).toHaveBeenCalledTimes(1)
+    expect(noticeSpy.mock.calls[0][0]).toMatchObject({ message: '生成匹配报告失败' })
+    expect(wrapper.find('[data-testid="action-error"]').exists()).toBe(false)
+  })
+})

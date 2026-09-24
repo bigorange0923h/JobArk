@@ -30,6 +30,7 @@ import {
   type ResumeDraft,
   type ResumeVersion,
 } from '@/shared/api/resume'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import { createDocumentFromProfile } from './document'
@@ -98,6 +99,18 @@ const loadErrorDescription = computed(() => {
   return parts.length === 0 ? undefined : parts.join(' ')
 })
 
+/** 操作失败的补充说明；本地提示没有错误编号，因此只在有值时展示。 */
+const actionErrorDescription = computed(() => {
+  if (actionError.value === null) {
+    return undefined
+  }
+  const parts = [...actionError.value.general]
+  if (actionError.value.requestId !== null) {
+    parts.push(`错误编号：${actionError.value.requestId}`)
+  }
+  return parts.length === 0 ? undefined : parts.join(' ')
+})
+
 /** 拉取简历、版本与候选稿；任一处失败都按页面级错误处理。 */
 async function load(): Promise<void> {
   loading.value = true
@@ -156,7 +169,7 @@ async function createDraftFromProfile(): Promise<void> {
       params: { resumeId: props.resumeId, draftId: draft.id },
     })
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '从资料生成候选稿')
   } finally {
     busy.value = false
   }
@@ -180,7 +193,7 @@ async function confirm(draft: ResumeDraft): Promise<void> {
     selectedRevisionId.value = null
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '确认候选稿')
   } finally {
     busy.value = false
   }
@@ -195,7 +208,7 @@ async function discard(draft: ResumeDraft): Promise<void> {
     await discardDraft(props.resumeId, draft.id, draft.version)
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '丢弃候选稿')
   } finally {
     busy.value = false
   }
@@ -290,6 +303,7 @@ onMounted(() => {
       closable
       class="hint"
       :message="actionMessage"
+      :description="actionErrorDescription"
       data-testid="action-error"
       @close="clearActionMessage"
     />

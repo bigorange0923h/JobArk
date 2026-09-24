@@ -1,5 +1,6 @@
 /** @vitest-environment jsdom */
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
+import { notification } from 'ant-design-vue'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 import { listApplications, fetchApplication, transitionApplication, type ApplicationDetail } from '@/shared/api/application'
 import { listJobs } from '@/shared/api/job'
@@ -7,6 +8,9 @@ import { fetchVersion, type ResumeVersion } from '@/shared/api/resume'
 import { ApiError } from '@/shared/api/client'
 import { router } from '@/app/router'
 import ApplicationView from './ApplicationView.vue'
+
+/** 页面只通过统一入口弹通知，因此拦截通知调用即可验证"哪些失败不该弹通知"。 */
+const noticeSpy = vi.spyOn(notification, 'error')
 
 vi.mock('@/shared/api/application', async importOriginal => ({
   ...await importOriginal<typeof import('@/shared/api/application')>(),
@@ -32,6 +36,7 @@ async function chooseApplied(wrapper: ReturnType<typeof mount>): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  noticeSpy.mockImplementation(() => undefined)
   vi.mocked(listApplications).mockResolvedValue([detail])
   vi.mocked(listJobs).mockResolvedValue([])
   vi.mocked(fetchApplication).mockResolvedValue(detail)
@@ -71,4 +76,40 @@ it('冲突时保留备注并显示错误，不伪造时间线', async () => {
   expect(wrapper.find('[role=alert]').text()).toContain('版本已过期')
   expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('测试备注')
   expect(wrapper.findAll('.ant-timeline-item')).toHaveLength(0)
+  // 409 是"基于当前界面就能理解并处理"的失败：必须留在操作上下文里，不能只弹通知。
+  expect(wrapper.find('[data-testid="action-error"]').exists()).toBe(true)
+  expect(noticeSpy).not.toHaveBeenCalled()
+})
+
+it('首次加载失败保留页面内提示与重新加载入口，且不弹通知', async () => {
+  vi.mocked(listApplications).mockRejectedValue(
+    new ApiError({ code: 'INTERNAL_ERROR', message: '服务器内部错误，请稍后重试。', status: 500, requestId: 'req-load' }),
+  )
+  const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
+  await flushPromises()
+
+  const alert = wrapper.find('[data-testid="load-error"]')
+  expect(alert.text()).toContain('服务器内部错误')
+  expect(alert.text()).toContain('req-load')
+  expect(wrapper.find('[data-testid="retry-load"]').exists()).toBe(true)
+  expect(noticeSpy).not.toHaveBeenCalled()
+})
+
+it('读取时间线的网络错误只弹一次通知，不插入内联错误块', async () => {
+  vi.mocked(fetchApplication).mockRejectedValue(
+    new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' }),
+  )
+  const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
+  await flushPromises()
+
+  await wrapper.find('tbody button').trigger('click')
+  await flushPromises()
+  // 再次点击同一入口：相同动作与相同错误在去重窗口内只提示一次。
+  await wrapper.find('tbody button').trigger('click')
+  await flushPromises()
+
+  expect(noticeSpy).toHaveBeenCalledTimes(1)
+  expect(noticeSpy.mock.calls[0][0]).toMatchObject({ message: '读取申请时间线失败' })
+  expect(wrapper.find('[data-testid="action-error"]').exists()).toBe(false)
+  expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
 })

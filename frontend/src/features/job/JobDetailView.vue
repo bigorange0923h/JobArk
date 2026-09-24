@@ -1,12 +1,13 @@
 <script setup lang="ts">
 /** 职位详情、历史 JD 和申请创建；历史内容只读。 */
-import { onMounted, ref, watch } from 'vue'
+import { computed, onMounted, ref, watch } from 'vue'
 import { useRouter } from 'vue-router'
 import { fetchJob, listSnapshots, updateJob, saveSnapshot, type JobOpportunity, type JobSnapshot } from '@/shared/api/job'
 import { listResumes, listVersions, type ResumeVersion } from '@/shared/api/resume'
 import { createApplication } from '@/shared/api/application'
-import { parseServerError } from '@/shared/forms/serverErrors'
 import { requestV1 } from '@/shared/api/client'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
+import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 const props = defineProps<{ jobId: string }>()
 const router = useRouter()
 const job = ref<JobOpportunity | null>(null)
@@ -17,9 +18,24 @@ const selectedVersion = ref('')
 const repeat = ref(false)
 const newJd = ref('')
 const posting = ref('')
-const error = ref('')
+/** 页面初始加载失败：留在页面上并保留重试入口。 */
+const loadError = ref<ParsedServerError | null>(null)
+/** 用户操作失败：多数情况不需要占用页面位置，只有需要就地处理的原因才内联展示。 */
+const actionError = ref<ParsedServerError | null>(null)
 const busy = ref(false)
 const external = ref(false)
+
+/** 把解析后的错误拼成"补充原因 + 错误编号"的说明文本。 */
+function describeError(error: ParsedServerError | null): string | undefined {
+  if (error === null) return undefined
+  const parts = [...error.general]
+  if (error.requestId !== null) parts.push(`错误编号：${error.requestId}`)
+  return parts.length === 0 ? undefined : parts.join(' ')
+}
+
+const loadErrorDescription = computed(() => describeError(loadError.value))
+const actionErrorDescription = computed(() => describeError(actionError.value))
+
 interface ParseResult {
   id: string
   status: string
@@ -35,19 +51,22 @@ async function loadParses(): Promise<void> {
   try {
     const results = await requestV1<ParseResult[]>(`/job-snapshots/${snapshotId}/parses`)
     if (selectedSnapshot.value === snapshotId) parseResults.value = results
-  } catch (e) { if (selectedSnapshot.value === snapshotId) error.value = parseServerError(e).message }
+  } catch (error: unknown) {
+    if (selectedSnapshot.value === snapshotId) actionError.value = resolveActionFailure(error, '读取 JD 解析结果')
+  }
 }
 watch(selectedSnapshot, loadParses)
 /** 解析前确认外部发送，结果与原始快照并存。 */
 async function parse(engine: 'LOCAL' | 'AI'): Promise<void> {
   if (busy.value || !selectedSnapshot.value) return
-  busy.value = true; error.value = ''
+  busy.value = true; actionError.value = null
   try { await requestV1(`/job-snapshots/${selectedSnapshot.value}/parses`, { init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ engine, confirm_external: external.value }) } }); await loadParses() }
-  catch(e) { error.value = parseServerError(e).message }
+  catch (error: unknown) { actionError.value = resolveActionFailure(error, '解析 JD') }
   finally { busy.value = false }
 }
-/** 重新读取服务端状态，保留错误供用户处理。 */
+/** 重新读取服务端状态；加载失败留在页面上，用户可直接重试。 */
 async function load(): Promise<void> {
+  loadError.value = null
   try {
     job.value = await fetchJob(props.jobId)
     snapshots.value = await listSnapshots(props.jobId)
@@ -55,17 +74,18 @@ async function load(): Promise<void> {
     posting.value ||= job.value.postings[0]?.id ?? ''
     const resumes = await listResumes()
     versions.value = (await Promise.all(resumes.map(async r => (await listVersions(r.id)).map(v => ({ ...v, label: `${r.name} · v${v.version_no}` }))))).flat()
-  } catch (e) { error.value = parseServerError(e).message }
+  } catch (error: unknown) { loadError.value = parseServerError(error) }
 }
 /** 执行写入且禁止重复点击；失败不清空用户输入。 */
 async function action(kind: 'save' | 'snapshot' | 'apply'): Promise<void> {
   if (!job.value || busy.value) return
-  busy.value = true; error.value = ''
+  busy.value = true; actionError.value = null
+  const label = kind === 'save' ? '保存职位修改' : kind === 'snapshot' ? '保存 JD 快照' : '创建申请'
   try {
     if (kind === 'save') job.value = await updateJob(props.jobId, { version: job.value.version, title: job.value.title, location: job.value.location, notes: job.value.notes, status: job.value.status })
     if (kind === 'snapshot') { await saveSnapshot(props.jobId, posting.value, newJd.value); newJd.value = ''; await load() }
     if (kind === 'apply') { await createApplication({ job_opportunity_id: props.jobId, job_snapshot_id: selectedSnapshot.value, resume_version_id: selectedVersion.value, confirm_repeat: repeat.value }); await router.push({ name: 'applications' }) }
-  } catch (e) { error.value = parseServerError(e).message }
+  } catch (error: unknown) { actionError.value = resolveActionFailure(error, label) }
   finally { busy.value = false }
 }
 onMounted(load)
@@ -73,7 +93,8 @@ onMounted(load)
 <template>
   <section class="job-detail-view">
     <header class="page-header"><div><RouterLink to="/jobs" class="back-link">← 返回职位列表</RouterLink><h1>{{ job?.title ?? '职位详情' }}</h1><p class="page-subtitle">{{ job?.company.name ?? '职位资料与 JD 历史' }}</p></div><a-tag v-if="job" :color="job.status === 'ACTIVE' ? 'blue' : 'default'">{{ job.status === 'ACTIVE' ? '处理中' : '已归档' }}</a-tag></header>
-    <a-alert v-if="error" type="error" show-icon :message="error" class="section-gap" role="alert"><template #action><a-button size="small" @click="load">重新加载</a-button></template></a-alert>
+    <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="loadErrorDescription" class="section-gap" data-testid="load-error" role="alert"><template #action><a-button size="small" data-testid="retry-load" @click="load">重新加载</a-button></template></a-alert>
+    <a-alert v-if="actionError" type="error" show-icon closable :message="actionError.message" :description="actionErrorDescription" class="section-gap" data-testid="action-error" role="alert" @close="actionError = null" />
     <template v-if="job">
       <div class="detail-grid">
         <div class="primary-column">

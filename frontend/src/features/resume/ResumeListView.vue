@@ -16,6 +16,7 @@ import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
 import { archiveResume, createResume, listResumes, type Resume, type ResumeStatus } from '@/shared/api/resume'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 const router = useRouter()
@@ -25,6 +26,7 @@ const includeArchived = ref(false)
 const loading = ref(false)
 const submitting = ref(false)
 const loadError = ref<ParsedServerError | null>(null)
+/** 写入失败：重名与校验原因留在操作提示里，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
 const name = ref('')
 const targetDirection = ref('')
@@ -49,6 +51,18 @@ const loadErrorDescription = computed(() => {
   const parts = [...loadError.value.general]
   if (loadError.value.requestId !== null) {
     parts.push(`错误编号：${loadError.value.requestId}`)
+  }
+  return parts.length === 0 ? undefined : parts.join(' ')
+})
+
+/** 操作失败的补充说明；与加载失败分开，便于在操作提示里保留错误编号。 */
+const actionErrorDescription = computed(() => {
+  if (actionError.value === null) {
+    return undefined
+  }
+  const parts = [...actionError.value.general]
+  if (actionError.value.requestId !== null) {
+    parts.push(`错误编号：${actionError.value.requestId}`)
   }
   return parts.length === 0 ? undefined : parts.join(' ')
 })
@@ -85,7 +99,8 @@ async function submit(): Promise<void> {
     targetDirection.value = ''
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    // 重名（409）与字段校验（422）需要留在表单旁；无字段信息的失败不再插入页面内错误块。
+    actionError.value = resolveActionFailure(error, '创建简历方向')
   } finally {
     submitting.value = false
   }
@@ -107,7 +122,7 @@ async function archive(resume: Resume): Promise<void> {
     await archiveResume(resume.id)
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '归档简历方向')
   }
 }
 
@@ -138,6 +153,7 @@ onMounted(() => {
       closable
       class="action-error"
       :message="actionError.message"
+      :description="actionErrorDescription"
       data-testid="form-error"
       @close="actionError = null"
     />

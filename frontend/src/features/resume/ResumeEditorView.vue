@@ -30,6 +30,7 @@ import {
   type ResumeSection,
   type ResumeSkillItem,
 } from '@/shared/api/resume'
+import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import SectionSettingsPanel from './components/SectionSettingsPanel.vue'
@@ -191,8 +192,15 @@ async function save(): Promise<void> {
     savedSnapshot.value = JSON.stringify(document.value)
   } catch (error: unknown) {
     const parsed = parseServerError(error)
-    actionError.value = parsed
     fieldErrors.value = parsed.fields
+    // 字段级原因必须留在编辑器里（条目下方与顶部摘要）；没有字段信息的失败（网络、超时、
+    // 服务端错误）改走全局通知，避免在编辑中的文档顶部插一块与当前内容无关的错误。
+    if (isGlobalFailure(parsed)) {
+      notifyFailure(parsed, '保存候选稿')
+      actionError.value = null
+    } else {
+      actionError.value = parsed
+    }
   } finally {
     saving.value = false
   }

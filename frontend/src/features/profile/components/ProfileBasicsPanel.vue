@@ -21,6 +21,7 @@ import {
   type ProfileCreateInput,
   type ProfileLink,
 } from '@/shared/api/profile'
+import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 const props = defineProps<{
@@ -161,7 +162,13 @@ async function submit(): Promise<void> {
 function handleError(error: unknown): void {
   const parsed = parseServerError(error)
   fieldErrors.value = parsed.fields
-  panelError.value = parsed
+  // 字段错误、版本冲突与"档案已被删除"必须留在表单上下文里；只有无法定位字段的失败
+  // （网络、超时、服务端错误）改为全局通知，避免卡片上方插一块与当前输入无关的错误。
+  const global = isGlobalFailure(parsed)
+  panelError.value = global ? null : parsed
+  if (global) {
+    notifyFailure(parsed, '保存基本资料')
+  }
   if (parsed.code === 'CONFLICT' && parsed.fields['version'] !== undefined) {
     emit('conflict', parsed.message)
   } else if (error instanceof ApiError && parsed.code === 'RESOURCE_NOT_FOUND') {

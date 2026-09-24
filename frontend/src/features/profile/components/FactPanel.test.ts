@@ -121,6 +121,8 @@ describe('FactPanel', () => {
     const { wrapper, onChanged, onConflict } = mountPanel([stubItem()])
 
     await clickButton(wrapper, '编辑')
+    const nameInput = wrapper.find('.ant-modal input.ant-input')
+    await nameInput.setValue('Python 3')
     await clickButton(wrapper, '保存')
     await flushPromises()
 
@@ -128,6 +130,8 @@ describe('FactPanel', () => {
     expect(wrapper.text()).toContain('名称过长。')
     // 弹窗保持打开，用户可以就地修正；不应触发整页重载。
     expect(wrapper.find('.ant-modal').exists()).toBe(true)
+    // 弹窗内的提交失败不得丢失已填内容：用户改完即可直接重试。
+    expect((wrapper.find('.ant-modal input.ant-input').element as HTMLInputElement).value).toBe('Python 3')
     expect(onChanged).not.toHaveBeenCalled()
     expect(onConflict).not.toHaveBeenCalled()
   })
