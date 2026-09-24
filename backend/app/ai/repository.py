@@ -8,15 +8,24 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from typing import NoReturn
 
-from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base
 from app.core.errors import ConflictError
 
 from .models import AiModel, AiProvider
+
+WRITE_CONFLICT_MESSAGE = "配置保存失败：存在重复或并发冲突，请刷新后重试。"
+"""数据库写入冲突的默认用户提示；调用方可传入更具体的文案。"""
+
+# 可安全映射为 409 的 PostgreSQL SQLSTATE：
+# 23505 唯一约束冲突、40P01 死锁、40001 序列化失败。
+# 刻意只列这三个：其他数据库错误（连接失败、权限不足等）必须保持原样上抛。
+_CONFLICT_SQLSTATES = frozenset({"23505", "40P01", "40001"})
 
 
 async def list_providers(session: AsyncSession) -> Sequence[AiProvider]:
@@ -84,36 +93,20 @@ async def get_model(session: AsyncSession, model_id: uuid.UUID) -> AiModel | Non
     return await session.get(AiModel, model_id)
 
 
-async def get_model_for_update(session: AsyncSession, model_id: uuid.UUID) -> AiModel | None:
-    """按主键读取模型并加行锁。
-
-    参数:
-        session: 当前会话。
-        model_id: 模型主键。
-
-    返回:
-        AiModel | None: 已加锁的模型实例；不存在时为 None。
-
-    注意:
-        切换默认模型必须锁定目标行，防止并发切换同时通过应用层检查。
-    """
-    return await session.scalar(select(AiModel).where(AiModel.id == model_id).with_for_update())
-
-
-async def get_default_model(session: AsyncSession, *, for_update: bool = False) -> AiModel | None:
+async def get_default_model(session: AsyncSession) -> AiModel | None:
     """读取当前默认模型。
 
     参数:
         session: 当前会话。
-        for_update: 是否加行锁；切换默认时需与目标行一起锁定，形成确定的加锁顺序。
 
     返回:
         AiModel | None: 默认模型；尚未设置时为 None。
+
+    注意:
+        本函数不加锁，仅用于只读判断（例如"是否已有默认模型"）。
+        切换默认模型必须使用 `lock_default_candidates`，它一次性锁定目标与当前默认。
     """
-    statement = select(AiModel).where(AiModel.is_default.is_(True))
-    if for_update:
-        statement = statement.with_for_update()
-    return await session.scalar(statement)
+    return await session.scalar(select(AiModel).where(AiModel.is_default.is_(True)))
 
 
 async def has_default_model(session: AsyncSession, provider_id: uuid.UUID) -> bool:
@@ -179,6 +172,52 @@ async def model_remote_id_exists(
     return bool(await session.scalar(statement))
 
 
+async def map_write_error(session: AsyncSession, error: DBAPIError, message: str) -> NoReturn:
+    """把可安全解释的数据库写入错误映射为 409，其余原样上抛。
+
+    参数:
+        session: 当前会话；映射前会先回滚，丢弃已失败的事务。
+        error: 捕获到的 SQLAlchemy 数据库错误。
+        message: 面向用户的安全冲突提示。
+
+    异常:
+        ConflictError: `error` 的 SQLSTATE 属于唯一冲突、死锁或序列化失败。
+        DBAPIError: 其他数据库错误原样上抛。
+
+    注意:
+        刻意不把所有 `DBAPIError` 都当成 409：若"数据库连不上"被报告成"配置冲突"，
+        可诊断的故障会被藏起来，用户还会反复重试无效操作。
+    """
+    if getattr(error.orig, "sqlstate", None) in _CONFLICT_SQLSTATES:
+        await session.rollback()
+        raise ConflictError(message) from error
+    raise error
+
+
+async def lock_default_candidates(session: AsyncSession, model_id: uuid.UUID) -> Sequence[AiModel]:
+    """一次性锁定"目标模型"与"当前默认模型"，供默认模型切换使用。
+
+    参数:
+        session: 当前会话。
+        model_id: 目标模型主键。
+
+    返回:
+        Sequence[AiModel]: 命中的行；至多两行（目标 + 当前默认）。
+
+    注意:
+        必须用**单条**语句同时锁定并按主键排序：这样并发切换会以相同顺序获取同一组锁，
+        不会形成互相等待的环；拆成"先锁目标、再锁当前默认"会让两个请求各自持有一行再互相
+        等待，把加锁结果交给调度时序，属于不可控行为。
+    """
+    statement = (
+        select(AiModel)
+        .where(or_(AiModel.id == model_id, AiModel.is_default.is_(True)))
+        .order_by(AiModel.id)
+        .with_for_update()
+    )
+    return (await session.scalars(statement)).all()
+
+
 async def add[ModelT: Base](session: AsyncSession, entity: ModelT) -> ModelT:
     """加入实体并 flush，把约束冲突映射为安全冲突错误。
 
@@ -199,9 +238,8 @@ async def add[ModelT: Base](session: AsyncSession, entity: ModelT) -> ModelT:
     session.add(entity)
     try:
         await session.flush()
-    except IntegrityError as error:
-        await session.rollback()
-        raise ConflictError("配置保存失败：存在重复或并发冲突，请刷新后重试。") from error
+    except DBAPIError as error:
+        await map_write_error(session, error, WRITE_CONFLICT_MESSAGE)
     return entity
 
 

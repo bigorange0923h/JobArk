@@ -17,7 +17,7 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import repository as repo
@@ -195,9 +195,8 @@ async def update_provider(session: AsyncSession, provider_id: uuid.UUID, payload
     if updates:
         try:
             await apply_versioned_update(session, provider, payload.version, updates)
-        except IntegrityError as error:
-            await session.rollback()
-            raise ConflictError(_PROVIDER_NAME_TAKEN) from error
+        except DBAPIError as error:
+            await repo.map_write_error(session, error, repo.WRITE_CONFLICT_MESSAGE)
         await session.commit()
     elif provider.version != payload.version:
         raise ConflictError(
@@ -320,9 +319,8 @@ async def update_model(session: AsyncSession, model_id: uuid.UUID, payload: Mode
     if updates:
         try:
             await apply_versioned_update(session, model, payload.version, updates)
-        except IntegrityError as error:
-            await session.rollback()
-            raise ConflictError(_REMOTE_ID_TAKEN) from error
+        except DBAPIError as error:
+            await repo.map_write_error(session, error, repo.WRITE_CONFLICT_MESSAGE)
         await session.commit()
     elif model.version != payload.version:
         raise ConflictError(
@@ -348,28 +346,33 @@ async def set_default_model(session: AsyncSession, model_id: uuid.UUID) -> Model
         ConflictError: 模型或其服务商已停用。
 
     注意:
-        加锁顺序固定为"先当前默认行、后目标行"，并在同一事务内先清除旧默认再设置新默认，
-        否则部分唯一索引会在设置新默认时立即判定冲突。锁与单事务共同保证并发切换不会
-        产生两个默认模型。
+        只用一个 `SELECT ... FOR UPDATE` 同时锁定目标模型与当前默认模型，并按主键排序：
+        并发切换会以相同顺序获取同一组锁，不会形成等待环（拆成两步加锁则把加锁结果交给调度时序）。
+        随后在同一事务内先清除旧默认、再设置新默认，使部分唯一索引在任何时刻都看不到两个默认模型。
+        数据库唯一冲突与死锁统一映射为 409，不把数据库错误直接暴露为 500。
     """
-    model = await repo.get_model_for_update(session, model_id)
-    if model is None:
-        raise ResourceNotFoundError("AI 模型不存在。")
-    if not model.is_enabled:
-        raise ConflictError("已停用的模型不能被设为默认，请先启用该模型。")
-    provider = await repo.get_provider(session, model.provider_id)
-    if provider is None:
-        raise ResourceNotFoundError("AI 服务商不存在。")
-    if not provider.is_enabled:
-        raise ConflictError("所属服务商已停用，不能设为默认模型。")
+    try:
+        candidates = await repo.lock_default_candidates(session, model_id)
+        model = next((row for row in candidates if row.id == model_id), None)
+        if model is None:
+            raise ResourceNotFoundError("AI 模型不存在。")
+        if not model.is_enabled:
+            raise ConflictError("已停用的模型不能被设为默认，请先启用该模型。")
+        provider = await repo.get_provider(session, model.provider_id)
+        if provider is None:
+            raise ResourceNotFoundError("AI 服务商不存在。")
+        if not provider.is_enabled:
+            raise ConflictError("所属服务商已停用，不能设为默认模型。")
 
-    current = await repo.get_default_model(session, for_update=True)
-    if current is not None and current.id != model.id:
-        current.is_default = False
-        # 先落库清除旧标记，避免新的 is_default 与旧默认同时为真而触发唯一索引冲突。
-        await session.flush()
-    model.is_default = True
-    await session.commit()
+        current = next((row for row in candidates if row.is_default and row.id != model.id), None)
+        if current is not None:
+            current.is_default = False
+            # 先落库清除旧标记，避免新的 is_default 与旧默认同时为真而触发唯一索引冲突。
+            await session.flush()
+        model.is_default = True
+        await session.commit()
+    except DBAPIError as error:
+        await repo.map_write_error(session, error, repo.WRITE_CONFLICT_MESSAGE)
     await session.refresh(model)
     return ModelRead.model_validate(model)
 
