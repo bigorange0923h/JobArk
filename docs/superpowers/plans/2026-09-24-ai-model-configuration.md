@@ -117,11 +117,17 @@ async def test_ai_model_schema_has_single_default_index(migrated_engine: AsyncEn
 
 - [ ] **Step 2: 在隔离库运行测试，确认缺表/索引失败**
 
-Run the following from `backend/` (it derives the dedicated `jobark_test` URL without printing its password):
+在 `backend/` 目录运行下面的凭据片段与测试。片段把仓库根 `.env` 的 `POSTGRES_*` 读进内存变量用于拼接 URL，**不打印密码**，也不会输出连接串：
 
 ```powershell
+# 仓库公共根：`--git-common-dir` 在链接工作树中指向主工作树的 .git，
+# 因此总能找到"只存在于主工作树"的仓库根 .env。
+# 不能用 `..\.env`：在 `.worktrees/<name>/backend/` 下它指向不存在的 `.worktrees/<name>/.env`。
+$commonDir = (git rev-parse --path-format=absolute --git-common-dir).Trim()
+$repoRoot = Split-Path -Parent $commonDir
 $jobarkEnv = @{}
-Get-Content ..\.env | ForEach-Object { if ($_ -match '^(POSTGRES_(?:USER|PASSWORD|PORT))=(.*)$') { $jobarkEnv[$matches[1]] = $matches[2] } }
+Get-Content (Join-Path $repoRoot '.env') | ForEach-Object { if ($_ -match '^(POSTGRES_(?:USER|PASSWORD|PORT))=(.*)$') { $jobarkEnv[$matches[1]] = $matches[2] } }
+if (-not $jobarkEnv['POSTGRES_USER'] -or -not $jobarkEnv['POSTGRES_PASSWORD']) { throw "未在 $repoRoot\.env 找到 POSTGRES_USER/POSTGRES_PASSWORD" }
 $port = $jobarkEnv['POSTGRES_PORT']; if (-not $port) { $port = '5432' }
 $env:JOBARK_TEST_DATABASE_URL = "postgresql+asyncpg://$($jobarkEnv['POSTGRES_USER']):$($jobarkEnv['POSTGRES_PASSWORD'])@127.0.0.1:$port/jobark_test"
 $env:JOBARK_AI_CREDENTIAL_ENCRYPTION_KEY = uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
@@ -129,6 +135,8 @@ uv run pytest tests/test_migrations.py::test_ai_model_schema_has_single_default_
 ```
 
 Expected: FAIL，因为迁移 `0008` 尚不存在。不得把 URL 指向开发数据库。
+
+**注意：本片段是后续所有 `jobark_test` 命令的唯一来源。** Task 3、Task 4 与 Task 6 的测试与门禁都依赖同一个 shell 中的 `JOBARK_TEST_DATABASE_URL`；若中途换了新 shell，先重跑本片段（Task 6 的门禁块已内嵌同一份片段，可独立运行）。
 
 - [ ] **Step 3: 写模型与迁移**
 
@@ -145,7 +153,7 @@ __table_args__ = (
 
 - [ ] **Step 4: 运行迁移与 schema 测试，确认通过**
 
-Run: `cd backend; uv run pytest tests/test_migrations.py -v` in the same shell, where the preceding command has already set `JOBARK_TEST_DATABASE_URL`.
+Run: `cd backend; uv run pytest tests/test_migrations.py -v`，在刚执行凭据片段的同一 shell 中。若换了新 shell，先重跑 Task 2 Step 2 的片段（它会设置 `JOBARK_TEST_DATABASE_URL`）。
 
 Expected: 全部迁移测试通过，且隔离库已升级到 `0008`。
 
@@ -188,7 +196,7 @@ def test_first_model_is_default_and_key_is_never_returned(db_client: TestClient)
 
 - [ ] **Step 2: 运行 API 测试，确认因为路由不存在而失败**
 
-Run: `cd backend; uv run pytest tests/test_ai_config_api.py -v` in the same shell, where the dedicated `jobark_test` URL is set by Task 2.
+Run: `cd backend; uv run pytest tests/test_ai_config_api.py -v`，在刚执行凭据片段的同一 shell 中；若换了新 shell，先重跑 Task 2 Step 2 的片段。
 
 Expected: FAIL with 404 or collection error; failure must not be a test database setup error.
 
@@ -216,7 +224,7 @@ DELETE /ai/models/{model_id}
 
 - [ ] **Step 4: 运行配置 API 测试，确认通过**
 
-Run: `cd backend; uv run pytest tests/test_ai_config_api.py -v` in the same shell, where the dedicated `jobark_test` URL is set by Task 2.
+Run: `cd backend; uv run pytest tests/test_ai_config_api.py -v`，在刚执行凭据片段的同一 shell 中；若换了新 shell，先重跑 Task 2 Step 2 的片段。
 
 Expected: 所有新增 API 测试通过；响应只含统一 `success/data/meta` 契约。
 
@@ -390,14 +398,22 @@ JOBARK_AI_CREDENTIAL_ENCRYPTION_KEY=
 
 - [ ] **Step 4: 运行全量质量门禁**
 
-Run:
+Run（本块可独立运行，不依赖前面 shell 是否还活着）：
 
 ```powershell
 cd backend
 uv run ruff check .
 uv run ruff format --check .
 uv run pyright
-# 复用 Task 2 已设置的专用 jobark_test URL；未设置时先执行 Task 2 的 PowerShell 片段。
+# 复用仓库根 .env 的 POSTGRES_* 拼出专用 jobark_test URL；不打印密码，也不指向开发库。
+$commonDir = (git rev-parse --path-format=absolute --git-common-dir).Trim()
+$repoRoot = Split-Path -Parent $commonDir
+$jobarkEnv = @{}
+Get-Content (Join-Path $repoRoot '.env') | ForEach-Object { if ($_ -match '^(POSTGRES_(?:USER|PASSWORD|PORT))=(.*)$') { $jobarkEnv[$matches[1]] = $matches[2] } }
+if (-not $jobarkEnv['POSTGRES_USER'] -or -not $jobarkEnv['POSTGRES_PASSWORD']) { throw "未在 $repoRoot\.env 找到 POSTGRES_USER/POSTGRES_PASSWORD" }
+$port = $jobarkEnv['POSTGRES_PORT']; if (-not $port) { $port = '5432' }
+$env:JOBARK_TEST_DATABASE_URL = "postgresql+asyncpg://$($jobarkEnv['POSTGRES_USER']):$($jobarkEnv['POSTGRES_PASSWORD'])@127.0.0.1:$port/jobark_test"
+$env:JOBARK_AI_CREDENTIAL_ENCRYPTION_KEY = uv run python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 uv run pytest
 cd ..\frontend
 npm run lint
