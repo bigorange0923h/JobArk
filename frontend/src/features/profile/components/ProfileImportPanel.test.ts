@@ -33,7 +33,11 @@ beforeEach(() => {
 enableAutoUnmount(afterEach)
 
 it('未经外部发送同意不能预览，未经核对不能确认写入', async () => {
-  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  // 用 `attrs` 传入的监听器断言事件，而不是 `wrapper.emitted()`：
+  // VTU 在 `defineEmits` 声明的自定义事件上不会记录到 `emitted()`，
+  // 直接断言会得到"事件从未触发"的假结论（实测如此）。
+  const onChanged = vi.fn()
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false }, attrs: { onChanged } })
   const input = wrapper.find('input[type="file"]')
   const document = new File(['<html><body>张三 熟悉 Python</body></html>'], 'sample.html', { type: 'text/html' })
   Object.defineProperty(input.element, 'files', { configurable: true, value: [document] })
@@ -58,5 +62,5 @@ it('未经外部发送同意不能预览，未经核对不能确认写入', asyn
   await wrapper.find('[data-testid="confirm-import"]').trigger('click')
   await flushPromises()
   expect(confirmProfileImport).toHaveBeenCalledOnce()
-  expect(wrapper.emitted('changed')).toHaveLength(1)
+  expect(onChanged).toHaveBeenCalledTimes(1)
 })

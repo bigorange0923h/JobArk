@@ -5,6 +5,7 @@ import { listApplications, fetchApplication, transitionApplication, type Applica
 import { listJobs } from '@/shared/api/job'
 import { fetchVersion, type ResumeVersion } from '@/shared/api/resume'
 import { ApiError } from '@/shared/api/client'
+import { router } from '@/app/router'
 import ApplicationView from './ApplicationView.vue'
 
 vi.mock('@/shared/api/application', async importOriginal => ({
@@ -38,7 +39,9 @@ beforeEach(() => {
 })
 
 it('已投递需要显式确认；绑定历史版本可回看', async () => {
-  const wrapper = mount(ApplicationView, { global: { stubs: { RouterLink: { template:'<a :href="to"><slot /></a>', props:['to'] } } } })
+  // 必须注入真实 router：`RouterLink` 在未安装 router 时无法解析，会渲染成注释节点，
+  // 断言 `a[href=...]` 会退化成"永远为 false"的假失败。
+  const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
   await flushPromises()
   await wrapper.find('tbody button').trigger('click')
   await flushPromises()
@@ -54,7 +57,7 @@ it('已投递需要显式确认；绑定历史版本可回看', async () => {
 }, 15_000)
 
 it('冲突时保留备注并显示错误，不伪造时间线', async () => {
-  const wrapper = mount(ApplicationView, { global: { stubs: { RouterLink:true } } })
+  const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
   await flushPromises()
   await wrapper.find('tbody button').trigger('click')
   await flushPromises()
