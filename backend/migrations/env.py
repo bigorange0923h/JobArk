@@ -15,6 +15,7 @@ from sqlalchemy import pool
 from sqlalchemy.engine import Connection
 from sqlalchemy.ext.asyncio import async_engine_from_config
 
+from app.ai import models as ai_models  # noqa: F401  # pyright: ignore[reportUnusedImport]
 from app.core.config import get_settings
 from app.core.database import Base
 from app.modules.application import models as application_models  # noqa: F401  # pyright: ignore[reportUnusedImport]

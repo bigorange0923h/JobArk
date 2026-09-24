@@ -1,0 +1,7 @@
+# 行尾策略。
+#
+# `frontend/components.d.ts` 由 unplugin-vue-components 在每次 vite/vitest 运行时重新生成，
+# 且固定写 LF。而 Windows 上常见的 core.autocrlf=true 会让 Git 期望工作区是 CRLF，
+# 于是该文件在本无内容差异的情况下反复出现在 `git status` 中，容易被 `git add -A`
+# 误带进提交。这里显式声明该路径为 LF，使"生成结果"与"Git 期望"一致。
+frontend/components.d.ts text eol=lf

@@ -49,8 +49,13 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
     # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
     database_echo: bool = False
+    # 已废弃：旧环境变量网关地址与令牌。仅为不破坏既有 `.env` 而保留字段，
+    # 任何代码都不再读取它们，也永远不得优先于数据库中的默认模型配置（见 ADR 0004）。
     ai_gateway_url: str = ""
     ai_gateway_token: SecretStr = SecretStr("")
+    # 服务商 API Key 的可逆加密根密钥；只允许 LOCAL 环境缺省使用开发默认值。
+    # 根密钥必须留在数据库之外：数据库泄露时密文仍不可读，测试/生产缺失时安全失败。
+    ai_credential_encryption_key: SecretStr = SecretStr("")
     ai_timeout_seconds: float = Field(default=30, gt=0, le=120)
     # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
     # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；

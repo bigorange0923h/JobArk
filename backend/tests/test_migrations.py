@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0007"
+EXPECTED_HEAD = "0008"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -182,6 +182,8 @@ _EXPECTED_FOREIGN_KEYS = {
     "fk_job_opportunities_company_id_companies",
     "fk_job_postings_opportunity_id_job_opportunities",
     "fk_job_snapshots_posting_id_job_postings",
+    # AI 配置：模型必须挂在服务商下，服务商删除时级联清理其模型。
+    "fk_ai_models_provider_id_ai_providers",
 }
 
 
@@ -195,3 +197,38 @@ def test_schema_has_expected_foreign_keys(alembic_config: Config, test_database_
     command.upgrade(alembic_config, "head")
 
     assert asyncio.run(_foreign_key_names(test_database_url)) == _EXPECTED_FOREIGN_KEYS
+
+
+async def _index_definitions(database_url: str, table_name: str) -> list[str]:
+    """读取指定表的索引定义。
+
+    参数:
+        database_url: 目标数据库连接串。
+        table_name: 目标表名。
+
+    返回:
+        list[str]: `pg_indexes.indexdef` 文本，可直接判断唯一性与条件。
+    """
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            result = await connection.execute(
+                text("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = :table"),
+                {"table": table_name},
+            )
+            return [str(row[0]) for row in result.all()]
+    finally:
+        await engine.dispose()
+
+
+def test_ai_model_schema_has_single_default_index(alembic_config: Config, test_database_url: str) -> None:
+    """AI 模型表必须有"至多一个默认模型"的部分唯一索引。
+
+    为什么需要这条断言：默认模型的唯一性是业务核心约束，而应用层事务只能降低并发写入
+    产生两个默认模型的概率，不能彻底排除；真正的保证来自数据库的部分唯一索引。
+    该索引一旦从迁移里被删掉，功能测试仍然可能通过，问题只会在并发或手工写库时暴露。
+    """
+    command.upgrade(alembic_config, "head")
+
+    definitions = asyncio.run(_index_definitions(test_database_url, "ai_models"))
+    assert any("UNIQUE" in item and "is_default" in item for item in definitions)

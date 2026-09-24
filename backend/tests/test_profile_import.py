@@ -13,6 +13,7 @@ from app.core.errors import ValidationFailedError
 from app.modules.profile.import_service import ResumeUpload, parse_document
 
 API = "/api/v1/profile"
+AI_API = "/api/v1/ai"
 HTML = (
     "<html><head><title>不应出现</title></head><body>"
     "<h1>张三</h1><p>北京 Python</p>"
@@ -54,6 +55,23 @@ def _candidate() -> dict[str, Any]:
             }
         ],
     }
+
+
+def _configure_default_model(client: TestClient) -> None:
+    """创建服务商与首个模型，使唯一默认模型存在。
+
+    不提交 API Key：这些用例只验证候选约束与确认边界，不需要凭据，
+    因此也不依赖 TEST 环境的凭据加密根密钥。
+    """
+    provider = client.post(
+        f"{AI_API}/providers",
+        json={"name": "测试服务商", "base_url": "https://example.test/v1"},
+    ).json()["data"]
+    created = client.post(
+        f"{AI_API}/providers/{provider['id']}/models",
+        json={"name": "测试模型", "remote_model_id": "test-model"},
+    )
+    assert created.status_code == 201, created.text
 
 
 def test_html_parser_ignores_hidden_content() -> None:
@@ -110,17 +128,22 @@ def test_preview_requires_explicit_external_consent(client: TestClient) -> None:
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
-def test_unconfigured_gateway_fails_without_writing(client: TestClient) -> None:
-    """未配置 AI 网关时给出可理解的冲突错误。"""
-    response = client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+def test_import_without_default_model_fails_without_writing(db_client: TestClient) -> None:
+    """没有默认模型时给出可理解的冲突错误，且不写入档案。"""
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "CONFLICT"
+    assert "AI 模型配置" in response.json()["error"]["message"]
+    assert db_client.get(API).status_code == 404
 
 
-def test_preview_checks_model_quotes(client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_checks_model_quotes(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """模型捏造的经历即使 JSON 形状正确也不能进入预览。"""
+    _configure_default_model(db_client)
 
-    async def fake_generate(task: str, input_data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
         """返回故意错误的候选，验证原文校验。"""
         assert task == "extract_profile_from_resume"
         assert "伪造经历" not in input_data["resume_text"]
@@ -129,16 +152,19 @@ def test_preview_checks_model_quotes(client: TestClient, monkeypatch: pytest.Mon
         return candidate
 
     monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
-    response = client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
 
 
 def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """预览不写库；人工确认后创建档案及来源明确的三类事实。"""
+    _configure_default_model(db_client)
 
-    async def fake_generate(task: str, input_data: dict[str, Any], schema: dict[str, Any]) -> dict[str, Any]:
-        """模拟现有 AI 网关返回可验证的候选。"""
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """模拟默认模型返回可验证的候选。"""
         return _candidate()
 
     monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)

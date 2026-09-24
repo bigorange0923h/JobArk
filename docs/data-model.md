@@ -40,6 +40,8 @@ JobSnapshot + ProfileRevision (+ ResumeVersion) ──< MatchResult
 JobOpportunity ──< Application ──< ApplicationEvent
                          │
                          └── JobSnapshot + ResumeVersion + ApplicationDraft
+
+AiProvider ──< AiModel
 ```
 
 ## 3. Profile：事实、证据与修订
@@ -157,7 +159,22 @@ created_at
 
 每个迁移必须在独立 PostgreSQL 测试库执行 `upgrade head → downgrade base → upgrade head`；不得对开发库运行降级验证。
 
-## 9. 明确延后
+## 9. AI 模型配置
+
+AI 配置是基础设施子域而不是业务事实，独立于 Profile/Resume/Job，只描述"用哪个模型"：
+
+| 表 | 核心字段 | 关键约束 |
+| --- | --- | --- |
+| `ai_providers` | `name`、`base_url`、`api_key_ciphertext`、`api_key_mask`、`description`、`is_enabled` | 名称唯一；基地址必须为 HTTPS 或本地回环 HTTP。 |
+| `ai_models` | `provider_id`、`name`、`remote_model_id`、`is_enabled`、`is_default` | `UNIQUE(provider_id, remote_model_id)`；`provider_id` 以 `CASCADE` 外键指向服务商。 |
+
+`AiProvider 1--N AiModel`：同一服务商下的模型共享该服务商的 API Key，凭据只在服务商上保存一次。
+
+密文边界：`api_key_ciphertext` 是应用层可逆加密（Fernet）的产物，`api_key_mask` 只是末四位展示掩码；两者都不出现在读取 API 中，明文既不落库也不返回。加密根密钥存放于数据库之外（`JOBARK_AI_CREDENTIAL_ENCRYPTION_KEY`），仅 `LOCAL` 环境允许开发默认值，`TEST`/`PROD` 缺失时拒绝敏感配置操作；根密钥更换或密文损坏时安全失败并要求重新保存 API Key，报错不包含任何凭据内容。
+
+默认模型：`ai_models.is_default` 由**部分唯一索引** `uq_ai_models_default` 约束为全局至多一行为真，而不是只依赖服务层事务；首个保存成功的模型自动成为默认，切换默认在单个事务内完成。默认模型必须启用，且所属服务商也启用；停用或删除默认模型前必须先切换到另一个启用模型。
+
+## 10. 明确延后
 
 - 用户、角色、多租户、团队共享与权限表。
 - 自动投递任务、浏览器会话、验证码、Cookie 与外部平台账号数据。

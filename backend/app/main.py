@@ -13,6 +13,7 @@ from fastapi import APIRouter, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 
+from .ai.router import router as ai_router
 from .core.config import Settings, get_settings
 from .core.database import Database
 from .core.exception_handlers import register_exception_handlers
@@ -123,6 +124,8 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # 业务领域路由的统一挂载点：各领域模块的 router 在此逐个 include，
     # 统一挂到 /api/v1，使后续版本演进不需要改动已发布的路径。
     api_v1 = APIRouter(prefix=resolved_settings.api_v1_prefix)
+    # AI 配置是基础设施接口（服务商/模型/凭据），与业务领域路由并列挂载。
+    api_v1.include_router(ai_router)
     api_v1.include_router(profile_router)
     api_v1.include_router(profile_import_router)
     api_v1.include_router(resume_router)
