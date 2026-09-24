@@ -384,3 +384,87 @@ def test_fact_lists_follow_sort_order(db_client: TestClient) -> None:
     assert [item["name"] for item in profile["projects"]] == ["项目甲", "项目丙", "项目乙"]
     assert [item["school"] for item in profile["educations"]] == ["学校甲", "学校丙", "学校乙"]
     assert [item["company"] for item in profile["experiences"]] == ["乙公司", "丙公司", "甲公司"]
+
+
+# --------------------------------------------------------------------------------------------
+# 重置档案
+# --------------------------------------------------------------------------------------------
+
+# 与 test_resume_api.py 保持一致的最小合法简历文档：重置冲突用例只需让版本创建成功。
+_MINIMAL_RESUME_DOCUMENT: dict[str, Any] = {
+    "basics": {"full_name": "张伟", "headline": "后端工程师", "city": "上海", "links": []},
+    "contact": {"email": "zhang@example.com", "phone": "13800000000"},
+    "summary": {"text": "5 年后端开发经验。"},
+    "experiences": [
+        {
+            "company": "某公司",
+            "title": "后端工程师",
+            "start_date": "2022-03-01",
+            "highlights": ["负责订单系统重构"],
+        }
+    ],
+    "section_order": ["SUMMARY", "EXPERIENCES", "PROJECTS", "SKILLS", "EDUCATIONS", "LANGUAGES"],
+}
+
+
+def test_reset_profile_clears_all_data(db_client: TestClient) -> None:
+    """重置后档案回到未创建状态：全部子表数据（含不可变修订）被物理删除。"""
+    profile = _create_profile(db_client)
+    evidence = _create_evidence(db_client)
+    created_skill = db_client.post(
+        f"{API}/profile/skills",
+        json={"name": "Python", "source_evidence_id": evidence["id"], "claim_status": "VERIFIED"},
+    )
+    assert created_skill.status_code == 201, created_skill.text
+    created_preference = db_client.put(f"{API}/profile/preference", json={"target_locations": ["上海"]})
+    assert created_preference.status_code == 200, created_preference.text
+    created_revision = db_client.post(f"{API}/profile/revisions", json={"reason": "生成投递简历"})
+    assert created_revision.status_code == 201, created_revision.text
+
+    response = db_client.delete(f"{API}/profile")
+
+    assert response.status_code == 200, response.text
+    assert _data(response)["id"] == profile["id"]
+    # 档案与其全部子项一并消失。
+    assert db_client.get(f"{API}/profile").status_code == 404
+    # 回到未创建状态：可重新建档，版本号与修订号都从头计数。
+    recreated = db_client.post(f"{API}/profile", json={"full_name": "张伟"})
+    assert recreated.status_code == 201, recreated.text
+    assert _data(recreated)["version"] == 1
+    assert _data(recreated)["skills"] == []
+    new_revision = db_client.post(f"{API}/profile/revisions", json={"reason": "重建档案"})
+    assert _data(new_revision)["revision_no"] == 1
+
+
+def test_reset_missing_profile_returns_not_found(db_client: TestClient) -> None:
+    """档案未创建时重置返回 404，与读取语义一致。"""
+    response = db_client.delete(f"{API}/profile")
+
+    assert response.status_code == 404
+    assert _error(response)["code"] == "RESOURCE_NOT_FOUND"
+
+
+def test_reset_blocked_by_resume_version(db_client: TestClient) -> None:
+    """简历版本引用修订时重置返回 409，且档案数据保持原样。"""
+    _create_profile(db_client)
+    revision = _data(db_client.post(f"{API}/profile/revisions", json={"reason": "生成简历"}))
+    resume = _data(db_client.post(f"{API}/resumes", json={"name": "Java 后端"}))
+    version = db_client.post(
+        f"{API}/resumes/{resume['id']}/versions",
+        json={
+            "profile_revision_id": revision["id"],
+            "document": _MINIMAL_RESUME_DOCUMENT,
+            "created_reason": "首次创建",
+            "evidence_ids": [],
+        },
+    )
+    assert version.status_code == 201, version.text
+
+    response = db_client.delete(f"{API}/profile")
+
+    assert response.status_code == 409
+    error = _error(response)
+    assert error["code"] == "CONFLICT"
+    assert "简历版本" in error["details"][0]["reason"]
+    # 报错后数据必须原样保留，避免"报错但数据已变"。
+    assert db_client.get(f"{API}/profile").status_code == 200

@@ -128,6 +128,34 @@ async def update_profile(session: SessionDep, payload: ProfileUpdate) -> ApiResp
     return success(ProfileRead.model_validate(profile))
 
 
+@router.delete(
+    "/profile",
+    summary="重置个人档案",
+    description=(
+        "破坏性维护操作：物理删除档案根与全部子表数据（事实、证据、求职偏好、资料修订），"
+        "回到档案未创建状态，之后需重新 POST /profile 建档。"
+        "简历版本或匹配结果仍引用修订/证据时返回 409，需先清理相关数据。"
+        "该接口不在前端暴露，仅供本地清理使用。"
+    ),
+    response_model=ApiResponse[ResourceRef],
+)
+async def reset_profile(session: SessionDep) -> ApiResponse[ResourceRef]:
+    """重置个人档案，删除全部档案数据。
+
+    参数:
+        session: 请求级数据库会话。
+
+    返回:
+        ApiResponse[ResourceRef]: 被删除档案的主键。
+
+    异常:
+        RESOURCE_NOT_FOUND: 档案尚未创建。
+        CONFLICT: 简历版本或匹配结果仍引用档案的修订/证据。
+    """
+    profile_id = await service.reset_profile(session)
+    return success(ResourceRef(id=profile_id))
+
+
 # --------------------------------------------------------------------------------------------
 # 证据
 # --------------------------------------------------------------------------------------------

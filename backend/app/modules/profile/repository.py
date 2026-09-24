@@ -9,15 +9,21 @@ from __future__ import annotations
 import uuid
 from collections.abc import Sequence
 
-from sqlalchemy import func, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base
 
+from ..matching.models import MatchResult
+from ..resume.models import ResumeVersion, ResumeVersionEvidence
 from .models import (
     PersonalProfile,
+    ProfileEducation,
     ProfileEvidence,
+    ProfileExperience,
+    ProfileLanguage,
     ProfilePreference,
+    ProfileProject,
     ProfileRevision,
     ProfileSkill,
 )
@@ -121,6 +127,65 @@ async def skill_name_exists(
     if exclude_id is not None:
         statement = statement.where(ProfileSkill.id != exclude_id)
     return bool(await session.scalar(statement))
+
+
+async def count_external_references(session: AsyncSession, profile_id: uuid.UUID) -> dict[str, int]:
+    """统计其他领域对当前档案数据的引用数量。
+
+    参数:
+        session: 当前会话。
+        profile_id: 所属档案。
+
+    返回:
+        dict[str, int]: 引用方名称到引用条数的映射，只包含数量大于 0 的引用方。
+
+    注意:
+        读取 resume/matching 的模型是刻意的跨域只读检查：这两域指向
+        profile_revisions / profile_evidences 的外键均为 RESTRICT，
+        重置档案前必须先确认没有引用，否则删除会以 IntegrityError 变成 500。
+        本函数不修改任何 resume/matching 数据，事务边界仍由 profile 服务层控制。
+    """
+    revision_ids = select(ProfileRevision.id).where(ProfileRevision.profile_id == profile_id)
+    evidence_ids = select(ProfileEvidence.id).where(ProfileEvidence.profile_id == profile_id)
+    checks = {
+        "简历版本": select(func.count()).select_from(ResumeVersion).where(
+            ResumeVersion.profile_revision_id.in_(revision_ids)
+        ),
+        "简历版本证据关联": select(func.count()).select_from(ResumeVersionEvidence).where(
+            ResumeVersionEvidence.evidence_id.in_(evidence_ids)
+        ),
+        "匹配结果": select(func.count()).select_from(MatchResult).where(
+            MatchResult.profile_revision_id.in_(revision_ids)
+        ),
+    }
+
+    counts: dict[str, int] = {}
+    for name, statement in checks.items():
+        count = int(await session.scalar(statement) or 0)
+        if count > 0:
+            counts[name] = count
+    return counts
+
+
+async def delete_profile_data(session: AsyncSession, profile_id: uuid.UUID) -> None:
+    """按外键依赖顺序物理删除档案及全部子表数据。
+
+    参数:
+        session: 当前会话。
+        profile_id: 所属档案。
+
+    注意:
+        删除顺序必须满足 RESTRICT 外键：先删修订与各类事实（它们可能引用证据），
+        再删偏好与证据，最后删档案根。本函数不做跨域引用检查、不提交事务：
+        前者由服务层在调用前完成，后者由服务层在全部删除成功后一次性提交，
+        保证重置要么完整生效、要么整体回滚。
+    """
+    await session.execute(delete(ProfileRevision).where(ProfileRevision.profile_id == profile_id))
+    for model in (ProfileSkill, ProfileExperience, ProfileProject, ProfileEducation, ProfileLanguage):
+        await session.execute(delete(model).where(model.profile_id == profile_id))
+    await session.execute(delete(ProfilePreference).where(ProfilePreference.profile_id == profile_id))
+    await session.execute(delete(ProfileEvidence).where(ProfileEvidence.profile_id == profile_id))
+    await session.execute(delete(PersonalProfile).where(PersonalProfile.id == profile_id))
 
 
 async def add[ModelT: Base](session: AsyncSession, entity: ModelT) -> ModelT:

@@ -349,6 +349,42 @@ async def update_profile(session: AsyncSession, payload: ProfileUpdate) -> Perso
     return await _reload_profile(session)
 
 
+async def reset_profile(session: AsyncSession) -> uuid.UUID:
+    """重置个人档案：物理删除档案根与全部子表数据，回到未创建状态。
+
+    参数:
+        session: 当前会话。
+
+    返回:
+        uuid.UUID: 被删除档案的主键。
+
+    异常:
+        ResourceNotFoundError: 档案尚未创建。
+        ConflictError: 简历版本或匹配结果仍引用档案的修订/证据。
+
+    注意:
+        仅供本地维护使用的破坏性操作，不在前端暴露。与单条删除不同，
+        这里连不可变修订也一并删除——这是用户明确选择的重置语义；
+        但其他领域（简历版本、匹配结果）已经引用修订或证据时仍拒绝执行，
+        否则那些历史记录会指向不存在的档案数据。
+    """
+    profile = await require_profile(session)
+    # 先取出主键：提交后会话默认过期实例属性，异步上下文下再访问会触发惰性加载。
+    profile_id = profile.id
+
+    external = await repo.count_external_references(session, profile_id)
+    if external:
+        referenced = "；".join(f"{name} {count} 条" for name, count in external.items())
+        raise ConflictError(
+            "存在引用档案数据的简历版本或匹配结果，无法重置。",
+            details=[ErrorDetail(field=None, reason=f"请先删除相关记录后再重置：{referenced}。")],
+        )
+
+    await repo.delete_profile_data(session, profile_id)
+    await session.commit()
+    return profile_id
+
+
 # --------------------------------------------------------------------------------------------
 # 证据
 # --------------------------------------------------------------------------------------------
