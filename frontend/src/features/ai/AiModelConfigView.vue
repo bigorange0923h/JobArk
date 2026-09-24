@@ -15,6 +15,8 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
+import { PlusOutlined } from '@ant-design/icons-vue'
+
 import {
   createAiModel,
   deleteAiModel,
@@ -597,11 +599,14 @@ async function saveModelEditor(): Promise<void> {
             <a-button
               v-if="addingModelFor !== editingProvider.id"
               type="primary"
+              shape="circle"
               size="small"
+              title="添加模型"
+              aria-label="添加模型"
               :data-testid="`open-add-model-${editingProvider.id}`"
               @click="openAddModelForm(editingProvider)"
             >
-              添加模型
+              <template #icon><PlusOutlined /></template>
             </a-button>
             <a-form
               v-else
@@ -699,6 +704,14 @@ async function saveModelEditor(): Promise<void> {
 .model-form {
   margin-top: 12px;
   row-gap: 8px;
+}
+
+/*
+ * 添加按钮与展开后的表单都需要跟上方模型表明显分开：
+ * 之前紧贴表尾，操作模型时容易误点"添加模型"，现在固定 12px 间距。
+ */
+.model-add-area {
+  margin-top: 12px;
 }
 
 .editor-alert {
