@@ -27,6 +27,24 @@ export interface ParsedServerError {
 const UNKNOWN_ERROR_MESSAGE = '发生未知错误，请重试。'
 
 /**
+ * 构造一个本地产生的失败对象。
+ *
+ * 参数:
+ *     message: 面向用户的中文提示，例如"请选择不超过 3 MB 的 PDF 或 HTML 简历文件。"。
+ *
+ * 返回:
+ *     ParsedServerError: 与后端失败同形状的对象；无字段、无请求编号。
+ *
+ * 注意:
+ *     表单在发请求之前就拦下的问题（必填为空、文件格式不符）与服务端失败共用同一形状，
+ *     页面因此只需维护一个提示状态；把它写成 `code: 'VALIDATION_ERROR'` 是刻意的——
+ *     它属于"需要用户就地修改"的失败，不会被当作可用通知替代的全局失败。
+ */
+export function createLocalError(message: string): ParsedServerError {
+  return { code: 'VALIDATION_ERROR', message, fields: {}, general: [], requestId: null }
+}
+
+/**
  * 解析异常对象。
  *
  * 参数:
