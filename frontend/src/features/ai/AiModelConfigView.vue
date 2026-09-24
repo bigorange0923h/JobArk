@@ -64,10 +64,10 @@ const loadError = ref<ParsedServerError | null>(null)
 const actionError = ref<ParsedServerError | null>(null)
 const actionNotice = ref<string | null>(null)
 
-/** 各服务商展开行里"追加模型"的输入；按服务商主键保存，避免刷新时清空用户输入。 */
-const newModelNames = ref<Record<string, string>>({})
-/** 当前展开"追加模型"表单的服务商主键；同时只有一个表单可见，初始为收起状态。 */
-const addingModelFor = ref<string | null>(null)
+/** 正在为其新增模型的服务商主键；为 null 表示"新增模型"弹框未打开。 */
+const creatingModelFor = ref<string | null>(null)
+/** 新增弹框里唯一的输入：模型名称。创建后默认启用，因此不再单独提供启停开关。 */
+const newModelName = ref('')
 
 // 服务商编辑器：`editorApiKey` 恒以空串开始，绝不回填已保存凭据。
 const providerEditorTarget = ref<ProviderEditorTarget | null>(null)
@@ -122,6 +122,16 @@ const editingProvider = computed(() => {
   return providers.value.find(provider => provider.id === providerEditorTarget.value?.id) ?? null
 })
 
+/**
+ * 是否有模型级弹框（新增或编辑）打开。
+ *
+ * 弹框一律不用传送门（`:get-container="false"`），因此同一时刻只保留一个弹框：
+ * 新增/编辑模型时让服务商编辑弹框退出渲染，避免两层弹框叠加导致关闭时焦点与滚动错乱。
+ */
+const modelModalOpen = computed(
+  () => modelEditorTarget.value !== null || creatingModelFor.value !== null,
+)
+
 /** 构造前端本地校验错误；字段级原因留空，整体提示即可定位。 */
 function localError(message: string): ParsedServerError {
   return { code: 'VALIDATION_ERROR', message, fields: {}, general: [], requestId: null }
@@ -142,14 +152,7 @@ async function load(): Promise<void> {
   loading.value = true
   loadError.value = null
   try {
-    const loaded = await listAiProviders()
-    providers.value = loaded
-    const nextNames: Record<string, string> = {}
-    for (const provider of loaded) {
-      // 保留用户已输入但尚未提交的内容，避免每次刷新把表单清空。
-      nextNames[provider.id] = newModelNames.value[provider.id] ?? ''
-    }
-    newModelNames.value = nextNames
+    providers.value = await listAiProviders()
   } catch (error: unknown) {
     loadError.value = parseServerError(error)
   } finally {
@@ -157,44 +160,50 @@ async function load(): Promise<void> {
   }
 }
 
-/** 打开当前编辑服务商下的"追加模型"表单；先清掉页面级错误，避免旧提示挡在新输入前面。 */
-function openAddModelForm(provider: AiProvider): void {
-  actionError.value = null
-  addingModelFor.value = provider.id
+/** 打开"新增模型"弹框；每次都以空输入、无错误开始，避免沿用上一次的内容。 */
+function openCreateModelForm(provider: AiProvider): void {
+  editorError.value = null
+  newModelName.value = ''
+  creatingModelFor.value = provider.id
 }
 
-/** 关闭"追加模型"表单并丢弃未保存输入；下次再打开时输入框为空。 */
-function closeAddModelForm(): void {
-  const provider = editingProvider.value
-  addingModelFor.value = null
-  if (provider !== null) {
-    newModelNames.value[provider.id] = ''
-  }
+/** 关闭"新增模型"弹框并丢弃未保存输入。 */
+function closeCreateModelForm(): void {
+  creatingModelFor.value = null
+  newModelName.value = ''
+  editorError.value = null
 }
 
-/** 在某个服务商下追加模型；只提交名称，凭据始终复用所属服务商。 */
-async function submitModel(provider: AiProvider): Promise<void> {
-  if (submitting.value) {
+/**
+ * 提交新增模型。
+ *
+ * 注意:
+ *     只提交名称：创建后由后端默认启用（服务商下第一个模型还会自动成为默认模型），
+ *     凭据始终复用所属服务商，这里不涉及任何密钥字段。
+ *     弹框内失败就地展示，保持弹框打开，用户不必重新输入名称。
+ */
+async function saveNewModel(): Promise<void> {
+  const providerId = creatingModelFor.value
+  if (providerId === null || savingEditor.value) {
     return
   }
-  const name = (newModelNames.value[provider.id] ?? '').trim()
+  const name = newModelName.value.trim()
   if (name === '') {
-    actionError.value = localError('请填写模型名称。')
+    editorError.value = localError('请填写模型名称。')
     return
   }
 
-  submitting.value = true
-  actionError.value = null
-  actionNotice.value = null
+  savingEditor.value = true
+  editorError.value = null
   try {
-    await createAiModel(provider.id, { name })
-    // 提交成功后再收起表单并清空输入：UI 进入"未在追加模型"的可继续状态。
-    closeAddModelForm()
+    await createAiModel(providerId, { name })
+    closeCreateModelForm()
+    // 写入后统一重新加载：默认标记与列表顺序都以后端返回为准。
     await load()
   } catch (error: unknown) {
-    actionError.value = resolveActionFailure(error, '追加模型')
+    editorError.value = parseServerError(error)
   } finally {
-    submitting.value = false
+    savingEditor.value = false
   }
 }
 
@@ -281,8 +290,9 @@ onMounted(() => {
 /** 打开服务商编辑器；凭据输入恒为空，已保存内容只以掩码提示展示。 */
 function openProviderEditor(provider: AiProvider): void {
   editorError.value = null
-  // 切换服务商时重置表单展开状态，避免看到上一个服务商的陈旧输入与错误提示。
-  addingModelFor.value = null
+  // 切换服务商时收起重置状态，避免把上一个服务商未完成的新增动作带过来。
+  creatingModelFor.value = null
+  newModelName.value = ''
   providerEditorTarget.value = {
     id: provider.id,
     version: provider.version,
@@ -300,7 +310,8 @@ function openProviderEditor(provider: AiProvider): void {
 function closeProviderEditor(): void {
   providerEditorTarget.value = null
   editorError.value = null
-  addingModelFor.value = null
+  creatingModelFor.value = null
+  newModelName.value = ''
 }
 
 /**
@@ -519,7 +530,7 @@ async function saveModelEditor(): Promise<void> {
       代价是每次打开都是新实例，因此表单状态必须在 open* 中显式初始化。
     -->
     <a-modal
-      v-if="providerEditorTarget && modelEditorTarget === null"
+      v-if="providerEditorTarget && !modelModalOpen"
       :open="true"
       data-testid="provider-editor"
       title="配置服务商"
@@ -590,62 +601,27 @@ async function saveModelEditor(): Promise<void> {
                 </a-space>
               </template>
             </template>
+            <!--
+              表格底部常驻一行"添加模型"，整行可点。
+              用表格自身的 summary 行（渲染进 <tfoot>）而不是往 data-source 塞假数据：
+              模型数量、默认标记等真实数据不会被这一行污染。
+            -->
+            <template #summary>
+              <tr :data-testid="`add-model-row-${editingProvider.id}`">
+                <td :colspan="modelColumns.length" class="add-model-cell">
+                  <a-button
+                    type="text"
+                    block
+                    :data-testid="`open-add-model-${editingProvider.id}`"
+                    @click="openCreateModelForm(editingProvider)"
+                  >
+                    <template #icon><PlusOutlined /></template>
+                    添加模型
+                  </a-button>
+                </td>
+              </tr>
+            </template>
           </a-table>
-          <!--
-            默认只显示"添加模型"按钮，避免无意义的输入框一直占用列表底部。
-            点击后展开输入框与"确定 / 取消"按钮：确定才提交，取消仅关闭并清空。
-          -->
-          <div class="model-add-area" :data-testid="`model-add-${editingProvider.id}`">
-            <a-button
-              v-if="addingModelFor !== editingProvider.id"
-              type="primary"
-              shape="circle"
-              size="small"
-              title="添加模型"
-              aria-label="添加模型"
-              :data-testid="`open-add-model-${editingProvider.id}`"
-              @click="openAddModelForm(editingProvider)"
-            >
-              <template #icon><PlusOutlined /></template>
-            </a-button>
-            <a-form
-              v-else
-              layout="inline"
-              class="model-form"
-              @submit.prevent="submitModel(editingProvider)"
-            >
-              <a-form-item label="模型名称">
-                <a-input
-                  v-model:value="newModelNames[editingProvider.id]"
-                  :maxlength="100"
-                  placeholder="如 deepseek-chat"
-                  :data-testid="`model-name-${editingProvider.id}`"
-                />
-              </a-form-item>
-              <a-form-item>
-                <a-space>
-                  <a-button
-                    type="primary"
-                    size="small"
-                    :loading="submitting"
-                    :disabled="submitting"
-                    :data-testid="`confirm-add-model-${editingProvider.id}`"
-                    @click="submitModel(editingProvider)"
-                  >
-                    确定
-                  </a-button>
-                  <a-button
-                    size="small"
-                    :disabled="submitting"
-                    :data-testid="`cancel-add-model-${editingProvider.id}`"
-                    @click="closeAddModelForm"
-                  >
-                    取消
-                  </a-button>
-                </a-space>
-              </a-form-item>
-            </a-form>
-          </div>
         </div>
       </template>
     </a-modal>
@@ -685,6 +661,48 @@ async function saveModelEditor(): Promise<void> {
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!--
+      新增模型弹框：只填名字，创建后默认启用（首个模型还会自动成为默认模型）。
+      与编辑弹框一样不用传送门，并复用 `editorError` 就地展示失败，避免已填名称丢失。
+    -->
+    <a-modal
+      v-if="creatingModelFor !== null"
+      :open="true"
+      title="新增模型"
+      :confirm-loading="savingEditor"
+      :get-container="false"
+      ok-text="确定"
+      cancel-text="取消"
+      @ok="saveNewModel"
+      @cancel="closeCreateModelForm"
+    >
+      <!--
+        `data-testid` 放在弹框内容而不是 `<a-modal>` 上：Modal 内部自行处理属性透传，
+        写在组件标签上的测试标识不会落到可查询的 DOM，放到内容上才能真实反映"弹框是否打开"。
+      -->
+      <div data-testid="create-model-modal">
+        <a-alert
+          v-if="editorError"
+          type="error"
+          show-icon
+          class="editor-alert"
+          :message="editorError.message"
+          :description="editorErrorDescription"
+          data-testid="editor-error"
+        />
+        <a-form layout="vertical">
+          <a-form-item label="模型名称" required>
+            <a-input
+              v-model:value="newModelName"
+              :maxlength="100"
+              placeholder="如 deepseek-chat"
+              data-testid="create-model-name"
+            />
+          </a-form-item>
+        </a-form>
+      </div>
+    </a-modal>
   </section>
 </template>
 
@@ -701,17 +719,14 @@ async function saveModelEditor(): Promise<void> {
 
 .model-hint { margin: 0 0 12px; color: var(--ja-color-muted); font-size: 12px; }
 
-.model-form {
-  margin-top: 12px;
-  row-gap: 8px;
-}
-
 /*
- * 添加按钮与展开后的表单都需要跟上方模型表明显分开：
- * 之前紧贴表尾，操作模型时容易误点"添加模型"，现在固定 12px 间距。
+ * 表格底部的"添加模型"空行。
+ * 这一行由 summary 插槽渲染进 <tfoot>，不是 body 里的真实数据行，
+ * 因此要自己补齐单元格内边距与上边框，才能和上方表格看起来是一体的。
  */
-.model-add-area {
-  margin-top: 12px;
+.add-model-cell {
+  padding: 0;
+  border-top: 1px solid var(--ja-color-border);
 }
 
 .editor-alert {

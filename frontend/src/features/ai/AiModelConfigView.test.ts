@@ -210,80 +210,85 @@ describe('AiModelConfigView 列表', () => {
     expect(pushMock).toHaveBeenCalledWith({ name: 'ai-provider-new' })
   })
 
-  it('服务商列表只显示摘要，进入配置界面后才显示模型与追加表单', async () => {
+  it('服务商列表只显示摘要，进入配置界面后才显示模型与添加空行', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-model-row-provider-1"]').exists()).toBe(false)
 
     await openProviderConfig(wrapper)
 
     expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="add-model-row-provider-1"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('默认启用')
     // 模型名称列展示真正发给服务商的标识。
     expect(wrapper.text()).toContain('qwen3')
   })
 
-  it('点击"添加模型"才展开输入框与确定按钮，提交后收起且重新拉取', async () => {
+  it('表格底部提供"添加模型"空行，点击后弹出只填名字的弹框，确定后提交并重新拉取', async () => {
     const wrapper = mountView()
     await flushPromises()
     await openProviderConfig(wrapper)
 
-    // 默认只显示添加按钮：输入框、确定、取消都不在 DOM 中，避免噪声。
-    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(false)
+    // 空行常驻在模型表格底部；此时弹框尚未打开。
+    const row = wrapper.find('[data-testid="add-model-row-provider-1"]')
+    expect(row.exists()).toBe(true)
+    expect(row.text()).toContain('添加模型')
+    expect(wrapper.find('[data-testid="create-model-modal"]').exists()).toBe(false)
 
-    // 点击添加后才展开输入与操作按钮。
     await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="cancel-add-model-provider-1"]').exists()).toBe(true)
 
-    await wrapper.find('[data-testid="model-name-provider-1"]').setValue('gpt-4.1-mini')
-    await wrapper.find('[data-testid="confirm-add-model-provider-1"]').trigger('click')
+    // 弹框只提供模型名称一个输入：创建后默认启用，因此不再有启停开关。
+    expect(wrapper.find('[data-testid="create-model-modal"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="create-model-name"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="create-model-name"]').setValue('gpt-4.1-mini')
+    await clickButton(wrapper, '确定')
     await flushPromises()
 
     expect(createAiModel).toHaveBeenCalledWith('provider-1', { name: 'gpt-4.1-mini' })
     expect(listAiProviders).toHaveBeenCalledTimes(2)
-    // 提交成功后表单收起：再次看到"添加模型"按钮，输入与操作按钮都被卸载。
-    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
-    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(false)
+    // 提交成功后弹框关闭，回到带空行的服务商配置界面。
+    expect(wrapper.find('[data-testid="create-model-modal"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="add-model-row-provider-1"]').exists()).toBe(true)
   })
 
-  it('展开后模型名称为空时点击确定不发请求，且表单保持打开便于用户继续填写', async () => {
+  it('弹框内名称为空时点击确定不发请求，弹框保持打开并就地提示', async () => {
     const wrapper = mountView()
     await flushPromises()
     await openProviderConfig(wrapper)
 
     await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
-    await wrapper.find('[data-testid="confirm-add-model-provider-1"]').trigger('click')
+    await flushPromises()
+    await clickButton(wrapper, '确定')
     await flushPromises()
 
     expect(createAiModel).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="form-error"]').text()).toContain('模型名称')
-    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="editor-error"]').text()).toContain('模型名称')
+    // 弹框保持打开，用户可以就地补填，不必重新进入一次。
+    expect(wrapper.find('[data-testid="create-model-modal"]').exists()).toBe(true)
   })
 
-  it('点击取消关闭追加表单，不提交请求且清空未保存的输入', async () => {
+  it('点击取消关闭弹框，不提交请求且清空未保存的名称', async () => {
     const wrapper = mountView()
     await flushPromises()
     await openProviderConfig(wrapper)
 
     await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
-    await wrapper.find('[data-testid="model-name-provider-1"]').setValue('draft-model')
-    await wrapper.find('[data-testid="cancel-add-model-provider-1"]').trigger('click')
+    await flushPromises()
+    await wrapper.find('[data-testid="create-model-name"]').setValue('draft-model')
+    await clickButton(wrapper, '取消')
     await flushPromises()
 
     expect(createAiModel).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
-    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="create-model-modal"]').exists()).toBe(false)
 
-    // 再次打开后输入框为空：取消会丢弃草稿，避免下次误用旧值。
+    // 再次打开时输入框为空：取消会丢弃草稿，避免下次误用旧值。
     await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
-    expect((wrapper.find('[data-testid="model-name-provider-1"]').element as HTMLInputElement).value).toBe('')
+    await flushPromises()
+    expect((wrapper.find('[data-testid="create-model-name"]').element as HTMLInputElement).value).toBe('')
   })
 
   it('切换默认模型后重新拉取，以后端状态为准', async () => {
