@@ -1,22 +1,22 @@
 <script setup lang="ts">
 /**
- * AI 模型配置页。
+ * AI 服务商列表页。
  *
- * 服务商持有 OpenAI 兼容基地址与加密后的 API Key，模型只持有远端标识并复用服务商凭据；
- * 页面只消费掩码 DTO，**永不接收或缓存明文 Key**，编辑时的提示也只用后端返回的掩码。
+ * 页面只做两件事：如实展示已保存的配置，以及在用户明确操作后触发生效的写请求。
+ * 新增服务商与其模型在独立页面（`/ai-models/new`）一次提交：服务端在同一个事务里
+ * 落库，避免"先建服务商、再回来逐个补模型"的两步流程与半成品状态。
  *
- * 默认状态完全以后端为准：任何写操作后重新 `load()`，而不是本地推断"第一个就是默认"。
- * 这与后端的部分唯一索引是同一套事实来源，避免界面与数据库各说一套。
+ * 列表顺序完全以后端为准（最新创建在前），页面不做本地排序——排序规则只存在一处。
+ * 模型管理收在展开行里：列表保持清爽，同时设置默认、测试连接、编辑与删除一个都不少。
  *
- * 删除走 Popconfirm 明确确认；后端还会校验默认模型不可删除、未确认删除返回 422，
- * 两处共同兜底：确认解决"误触"，后端校验解决"绕过页面直接调用接口"。
+ * 凭据只以掩码展示：读取接口不返回明文或密文，编辑输入框恒为空，页面永不接收真实 Key。
  */
 
 import { computed, onMounted, ref } from 'vue'
+import { useRouter } from 'vue-router'
 
 import {
   createAiModel,
-  createAiProvider,
   deleteAiModel,
   deleteAiProvider,
   listAiProviders,
@@ -28,13 +28,8 @@ import {
   type AiProvider,
   type AiProviderUpdateInput,
 } from '@/shared/api/ai'
+import { isSafeBaseUrl } from '@/shared/forms/baseUrl'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
-
-/** 每个服务商的行内模型表单状态。 */
-interface ModelForm {
-  name: string
-  remoteModelId: string
-}
 
 /**
  * 服务商编辑器的目标与凭据展示信息。
@@ -55,6 +50,8 @@ interface ModelEditorTarget {
   version: number
 }
 
+const router = useRouter()
+
 const providers = ref<AiProvider[]>([])
 const loading = ref(false)
 const submitting = ref(false)
@@ -64,11 +61,8 @@ const loadError = ref<ParsedServerError | null>(null)
 const actionError = ref<ParsedServerError | null>(null)
 const actionNotice = ref<string | null>(null)
 
-const providerName = ref('')
-const providerBaseUrl = ref('')
-const providerApiKey = ref('')
-const providerDescription = ref('')
-const modelForms = ref<Record<string, ModelForm>>({})
+/** 各服务商展开行里"追加模型"的输入；按服务商主键保存，避免刷新时清空用户输入。 */
+const newModelNames = ref<Record<string, string>>({})
 
 // 服务商编辑器：`editorApiKey` 恒以空串开始，绝不回填已保存凭据。
 const providerEditorTarget = ref<ProviderEditorTarget | null>(null)
@@ -78,19 +72,26 @@ const editorDescription = ref('')
 const editorApiKey = ref('')
 const editorEnabled = ref(true)
 
-// 模型编辑器。
+// 模型编辑器：界面只有一个「模型名称」，因此只用一份输入状态。
 const modelEditorTarget = ref<ModelEditorTarget | null>(null)
 const editorModelName = ref('')
-const editorModelRemoteId = ref('')
 const editorModelEnabled = ref(true)
 
 /** 编辑器内的失败提示；与页面级 `actionError` 分开，避免弹窗打开时提示被挡在后面。 */
 const editorError = ref<ParsedServerError | null>(null)
 const savingEditor = ref(false)
 
-const columns = [
-  { key: 'name', title: '模型', dataIndex: 'name' },
-  { key: 'remote_model_id', title: '远端标识', dataIndex: 'remote_model_id' },
+const providerColumns = [
+  { key: 'name', title: '服务商', dataIndex: 'name' },
+  { key: 'base_url', title: '接口地址', dataIndex: 'base_url' },
+  { key: 'credential', title: '凭据' },
+  { key: 'models', title: '模型' },
+  { key: 'actions', title: '操作' },
+]
+
+const modelColumns = [
+  // 展示真正发给服务商的模型名称；显示名称与它同值，无需重复一列。
+  { key: 'name', title: '模型名称', dataIndex: 'remote_model_id' },
   { key: 'status', title: '状态' },
   { key: 'actions', title: '操作' },
 ]
@@ -116,24 +117,14 @@ function localError(message: string): ParsedServerError {
   return { code: 'VALIDATION_ERROR', message, fields: {}, general: [], requestId: null }
 }
 
-/**
- * 前端只拦截明显不安全的地址，完整规则仍以后端 422 为准。
- *
- * 这里提前拦截是为了少一次往返与更快的反馈，不替代后端的权威校验。
- */
-function isSafeBaseUrl(value: string): boolean {
-  try {
-    const url = new URL(value)
-    if (url.username !== '' || url.password !== '' || url.search !== '' || url.hash !== '') {
-      return false
-    }
-    if (url.protocol === 'https:') {
-      return true
-    }
-    return url.protocol === 'http:' && ['localhost', '127.0.0.1', '::1', '[::1]'].includes(url.hostname)
-  } catch {
-    return false
-  }
+/** 服务商下的默认模型；用于在列表里直接指出"当前用的是哪个"。 */
+function defaultModelOf(provider: AiProvider): AiModel | undefined {
+  return provider.models.find((model) => model.is_default)
+}
+
+/** 进入新增页；新增与模型配置在一次提交里完成。 */
+function openCreatePage(): void {
+  void router.push({ name: 'ai-provider-new' })
 }
 
 /** 加载配置；写入成功后也走这里，使界面与后端完全一致。 */
@@ -143,12 +134,12 @@ async function load(): Promise<void> {
   try {
     const loaded = await listAiProviders()
     providers.value = loaded
-    const nextForms: Record<string, ModelForm> = {}
+    const nextNames: Record<string, string> = {}
     for (const provider of loaded) {
       // 保留用户已输入但尚未提交的内容，避免每次刷新把表单清空。
-      nextForms[provider.id] = modelForms.value[provider.id] ?? { name: '', remoteModelId: '' }
+      nextNames[provider.id] = newModelNames.value[provider.id] ?? ''
     }
-    modelForms.value = nextForms
+    newModelNames.value = nextNames
   } catch (error: unknown) {
     loadError.value = parseServerError(error)
   } finally {
@@ -156,56 +147,14 @@ async function load(): Promise<void> {
   }
 }
 
-/** 新增服务商；成功后重新拉取并清空输入，失败时保留输入只提示原因。 */
-async function submitProvider(): Promise<void> {
-  if (submitting.value) {
-    return
-  }
-  const name = providerName.value.trim()
-  const baseUrl = providerBaseUrl.value.trim()
-  if (name === '' || baseUrl === '') {
-    actionError.value = localError('请填写服务商名称与接口地址。')
-    return
-  }
-  if (!isSafeBaseUrl(baseUrl)) {
-    actionError.value = localError('服务商地址必须使用 HTTPS 或本地回环 HTTP（localhost、127.0.0.1、::1）。')
-    return
-  }
-
-  submitting.value = true
-  actionError.value = null
-  actionNotice.value = null
-  try {
-    const description = providerDescription.value.trim()
-    await createAiProvider({
-      name,
-      base_url: baseUrl,
-      // 空输入不提交 api_key：服务端的空值语义是"保持已有密文"，这里保持一致。
-      api_key: providerApiKey.value === '' ? null : providerApiKey.value,
-      description: description === '' ? null : description,
-    })
-    providerName.value = ''
-    providerBaseUrl.value = ''
-    providerApiKey.value = ''
-    providerDescription.value = ''
-    await load()
-  } catch (error: unknown) {
-    actionError.value = parseServerError(error)
-  } finally {
-    submitting.value = false
-  }
-}
-
-/** 在某个服务商下新增模型；只提交名称与远端标识，绝不把凭据复制到这里。 */
+/** 在某个服务商下追加模型；只提交名称，凭据始终复用所属服务商。 */
 async function submitModel(provider: AiProvider): Promise<void> {
   if (submitting.value) {
     return
   }
-  const form = modelForms.value[provider.id]
-  const name = form.name.trim()
-  const remoteModelId = form.remoteModelId.trim()
-  if (name === '' || remoteModelId === '') {
-    actionError.value = localError('请填写模型名称与远端模型标识。')
+  const name = (newModelNames.value[provider.id] ?? '').trim()
+  if (name === '') {
+    actionError.value = localError('请填写模型名称。')
     return
   }
 
@@ -213,9 +162,8 @@ async function submitModel(provider: AiProvider): Promise<void> {
   actionError.value = null
   actionNotice.value = null
   try {
-    await createAiModel(provider.id, { name, remote_model_id: remoteModelId })
-    form.name = ''
-    form.remoteModelId = ''
+    await createAiModel(provider.id, { name })
+    newModelNames.value[provider.id] = ''
     await load()
   } catch (error: unknown) {
     actionError.value = parseServerError(error)
@@ -374,12 +322,11 @@ async function saveProviderEditor(): Promise<void> {
   }
 }
 
-/** 打开模型编辑器。 */
+/** 打开模型编辑器；名称取真正生效的模型名称，保证与列表展示一致。 */
 function openModelEditor(model: AiModel): void {
   editorError.value = null
   modelEditorTarget.value = { id: model.id, version: model.version }
-  editorModelName.value = model.name
-  editorModelRemoteId.value = model.remote_model_id
+  editorModelName.value = model.remote_model_id
   editorModelEnabled.value = model.is_enabled
 }
 
@@ -396,9 +343,8 @@ async function saveModelEditor(): Promise<void> {
     return
   }
   const name = editorModelName.value.trim()
-  const remoteModelId = editorModelRemoteId.value.trim()
-  if (name === '' || remoteModelId === '') {
-    editorError.value = localError('请填写模型名称与远端模型标识。')
+  if (name === '') {
+    editorError.value = localError('请填写模型名称。')
     return
   }
 
@@ -408,7 +354,6 @@ async function saveModelEditor(): Promise<void> {
     await updateAiModel(target.id, {
       version: target.version,
       name,
-      remote_model_id: remoteModelId,
       is_enabled: editorModelEnabled.value,
     })
     closeModelEditor()
@@ -429,7 +374,12 @@ async function saveModelEditor(): Promise<void> {
         <h1>AI 模型配置</h1>
         <p class="page-subtitle">维护 OpenAI 兼容服务商与模型，并选择唯一默认启用模型。</p>
       </div>
-      <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
+      <a-space>
+        <a-button type="primary" size="small" data-testid="create-provider-link" @click="openCreatePage">
+          新增服务商
+        </a-button>
+        <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
+      </a-space>
     </header>
 
     <a-alert
@@ -463,45 +413,6 @@ async function saveModelEditor(): Promise<void> {
       @close="actionNotice = null"
     />
 
-    <a-card size="small" title="新增服务商" class="section-gap">
-      <a-form layout="vertical" @submit.prevent="submitProvider">
-        <div class="ai-config-grid">
-          <a-form-item label="显示名称" required>
-            <a-input
-              v-model:value="providerName"
-              :maxlength="100"
-              placeholder="例如：本地兼容服务"
-              data-testid="provider-name"
-            />
-          </a-form-item>
-          <a-form-item label="接口基地址" required>
-            <a-input
-              v-model:value="providerBaseUrl"
-              :maxlength="2048"
-              placeholder="https://api.example.com/v1"
-              data-testid="provider-base-url"
-            />
-          </a-form-item>
-          <a-form-item label="API Key">
-            <a-input
-              v-model:value="providerApiKey"
-              type="password"
-              :maxlength="4096"
-              autocomplete="off"
-              placeholder="仅在创建或替换时提交，留空表示不设置"
-              data-testid="provider-api-key"
-            />
-          </a-form-item>
-          <a-form-item label="说明">
-            <a-input v-model:value="providerDescription" :maxlength="500" data-testid="provider-description" />
-          </a-form-item>
-        </div>
-        <a-button type="primary" :loading="submitting" data-testid="create-provider" @click="submitProvider">
-          保存服务商
-        </a-button>
-      </a-form>
-    </a-card>
-
     <a-alert
       v-if="loadError"
       type="error"
@@ -520,130 +431,145 @@ async function saveModelEditor(): Promise<void> {
       description="尚未配置 AI 服务商"
     />
 
-    <template v-else>
-      <a-card v-for="provider in providers" :key="provider.id" size="small" :title="provider.name" class="section-gap">
-        <template #extra>
+    <a-table
+      v-else
+      :data-source="providers"
+      :columns="providerColumns"
+      row-key="id"
+      size="small"
+      :pagination="false"
+      :scroll="{ x: 'max-content' }"
+      data-testid="providers"
+    >
+      <template #bodyCell="{ column, record }">
+        <template v-if="column.key === 'name'">
+          <span>{{ (record as AiProvider).name }}</span>
+          <a-tag v-if="!(record as AiProvider).is_enabled" color="default" class="row-tag">已停用</a-tag>
+        </template>
+        <template v-else-if="column.key === 'base_url'">
+          <span class="provider-url">{{ (record as AiProvider).base_url }}</span>
+        </template>
+        <template v-else-if="column.key === 'credential'">
+          <span>{{ (record as AiProvider).api_key_configured ? (record as AiProvider).api_key_mask : '未配置' }}</span>
+        </template>
+        <template v-else-if="column.key === 'models'">
+          <span>{{ (record as AiProvider).models.length }} 个</span>
+          <a-tag v-if="defaultModelOf(record as AiProvider)" color="blue" class="row-tag">
+            默认：{{ defaultModelOf(record as AiProvider)?.remote_model_id }}
+          </a-tag>
+        </template>
+        <template v-else-if="column.key === 'actions'">
           <a-space>
-            <a-tag v-if="!provider.is_enabled" color="default">已停用</a-tag>
-            <a-button size="small" :data-testid="`edit-${provider.id}`" @click="openProviderEditor(provider)">
+            <a-button size="small" :data-testid="`edit-${(record as AiProvider).id}`" @click="openProviderEditor(record as AiProvider)">
               编辑
             </a-button>
             <a-popconfirm
               title="删除后将永久移除该服务商的 API Key；此操作不可恢复。"
               ok-text="确认删除"
               cancel-text="取消"
-              @confirm="removeProvider(provider)"
+              @confirm="removeProvider(record as AiProvider)"
             >
               <a-button
                 danger
                 size="small"
-                :disabled="provider.has_default_model"
-                :data-testid="`delete-${provider.id}`"
+                :disabled="(record as AiProvider).has_default_model"
+                :data-testid="`delete-${(record as AiProvider).id}`"
               >
                 删除服务商
               </a-button>
             </a-popconfirm>
           </a-space>
         </template>
+      </template>
 
-        <p class="provider-meta">
-          接口地址：{{ provider.base_url }} · 凭据：{{
-            provider.api_key_configured ? provider.api_key_mask : '未配置'
-          }}
-        </p>
-
-        <a-table
-          :data-source="provider.models"
-          :columns="columns"
-          row-key="id"
-          size="small"
-          :pagination="false"
-          :scroll="{ x: 'max-content' }"
-          :data-testid="`models-${provider.id}`"
-        >
-          <template #bodyCell="{ column, record }">
-            <template v-if="column.key === 'status'">
-              <a-tag v-if="(record as AiModel).is_default" color="blue">默认启用</a-tag>
-              <a-tag v-else-if="!(record as AiModel).is_enabled" color="default">已停用</a-tag>
-              <span v-else>启用</span>
-            </template>
-            <template v-else-if="column.key === 'actions'">
-              <a-space>
-                <a-button
-                  type="link"
-                  size="small"
-                  :disabled="(record as AiModel).is_default"
-                  :data-testid="`set-default-${(record as AiModel).id}`"
-                  @click="makeDefault(record as AiModel)"
-                >
-                  设为默认
-                </a-button>
-                <a-button
-                  type="link"
-                  size="small"
-                  :loading="testingModelId === (record as AiModel).id"
-                  :data-testid="`test-${(record as AiModel).id}`"
-                  @click="checkModel(record as AiModel)"
-                >
-                  测试连接
-                </a-button>
-                <a-button
-                  type="link"
-                  size="small"
-                  :data-testid="`edit-${(record as AiModel).id}`"
-                  @click="openModelEditor(record as AiModel)"
-                >
-                  编辑
-                </a-button>
-                <a-popconfirm
-                  title="删除后不可恢复；默认模型需先切换为其他模型。"
-                  ok-text="确认删除"
-                  cancel-text="取消"
-                  @confirm="removeModel(record as AiModel)"
-                >
+      <template #expandedRowRender="{ record }">
+        <div class="provider-models" :data-testid="`models-${(record as AiProvider).id}`">
+          <a-table
+            :data-source="(record as AiProvider).models"
+            :columns="modelColumns"
+            row-key="id"
+            size="small"
+            :pagination="false"
+            :scroll="{ x: 'max-content' }"
+          >
+            <template #bodyCell="{ column, record: model }">
+              <template v-if="column.key === 'status'">
+                <a-tag v-if="(model as AiModel).is_default" color="blue">默认启用</a-tag>
+                <a-tag v-else-if="!(model as AiModel).is_enabled" color="default">已停用</a-tag>
+                <span v-else>启用</span>
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space>
                   <a-button
                     type="link"
                     size="small"
-                    danger
-                    :disabled="(record as AiModel).is_default"
-                    :data-testid="`delete-model-${(record as AiModel).id}`"
+                    :disabled="(model as AiModel).is_default"
+                    :data-testid="`set-default-${(model as AiModel).id}`"
+                    @click="makeDefault(model as AiModel)"
                   >
-                    删除
+                    设为默认
                   </a-button>
-                </a-popconfirm>
-              </a-space>
+                  <a-button
+                    type="link"
+                    size="small"
+                    :loading="testingModelId === (model as AiModel).id"
+                    :data-testid="`test-${(model as AiModel).id}`"
+                    @click="checkModel(model as AiModel)"
+                  >
+                    测试连接
+                  </a-button>
+                  <a-button
+                    type="link"
+                    size="small"
+                    :data-testid="`edit-${(model as AiModel).id}`"
+                    @click="openModelEditor(model as AiModel)"
+                  >
+                    编辑
+                  </a-button>
+                  <a-popconfirm
+                    title="删除后不可恢复；默认模型需先切换为其他模型。"
+                    ok-text="确认删除"
+                    cancel-text="取消"
+                    @confirm="removeModel(model as AiModel)"
+                  >
+                    <a-button
+                      type="link"
+                      size="small"
+                      danger
+                      :disabled="(model as AiModel).is_default"
+                      :data-testid="`delete-model-${(model as AiModel).id}`"
+                    >
+                      删除
+                    </a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
             </template>
-          </template>
-        </a-table>
+          </a-table>
 
-        <a-form layout="inline" class="model-form" @submit.prevent="submitModel(provider)">
-          <a-form-item label="模型名称">
-            <a-input
-              v-model:value="modelForms[provider.id].name"
-              :maxlength="100"
-              :data-testid="`model-name-${provider.id}`"
-            />
-          </a-form-item>
-          <a-form-item label="远端模型标识">
-            <a-input
-              v-model:value="modelForms[provider.id].remoteModelId"
-              :maxlength="200"
-              :data-testid="`model-remote-id-${provider.id}`"
-            />
-          </a-form-item>
-          <a-form-item>
-            <a-button
-              type="primary"
-              :loading="submitting"
-              :data-testid="`create-model-${provider.id}`"
-              @click="submitModel(provider)"
-            >
-              新增模型
-            </a-button>
-          </a-form-item>
-        </a-form>
-      </a-card>
-    </template>
+          <a-form layout="inline" class="model-form" @submit.prevent="submitModel(record as AiProvider)">
+            <a-form-item label="模型名称">
+              <a-input
+                v-model:value="newModelNames[(record as AiProvider).id]"
+                :maxlength="100"
+                placeholder="如 deepseek-chat"
+                :data-testid="`model-name-${(record as AiProvider).id}`"
+              />
+            </a-form-item>
+            <a-form-item>
+              <a-button
+                type="primary"
+                :loading="submitting"
+                :data-testid="`create-model-${(record as AiProvider).id}`"
+                @click="submitModel(record as AiProvider)"
+              >
+                追加模型
+              </a-button>
+            </a-form-item>
+          </a-form>
+        </div>
+      </template>
+    </a-table>
 
     <!--
       编辑弹窗的可见性由 `v-if` 控制，并关闭到 body 的传送门（`:get-container="false"`）：
@@ -724,10 +650,12 @@ async function saveModelEditor(): Promise<void> {
       />
       <a-form layout="vertical">
         <a-form-item label="模型名称" required>
-          <a-input v-model:value="editorModelName" :maxlength="100" data-testid="editor-model-name" />
-        </a-form-item>
-        <a-form-item label="远端模型标识" required>
-          <a-input v-model:value="editorModelRemoteId" :maxlength="200" data-testid="editor-model-remote-id" />
+          <a-input
+            v-model:value="editorModelName"
+            :maxlength="100"
+            placeholder="如 deepseek-chat"
+            data-testid="editor-model-name"
+          />
         </a-form-item>
         <a-form-item label="启用">
           <a-switch v-model:checked="editorModelEnabled" data-testid="editor-model-enabled" />
@@ -738,18 +666,16 @@ async function saveModelEditor(): Promise<void> {
 </template>
 
 <style scoped>
-/* 窄窗口自动收成单列：模型表单与新增服务商表单都不产生页面级横向溢出。 */
-.ai-config-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 0 20px;
+.provider-url {
+  overflow-wrap: anywhere;
 }
 
-.provider-meta {
-  margin: 0 0 12px;
-  color: var(--ja-color-muted);
-  font-size: 12px;
-  overflow-wrap: anywhere;
+.row-tag {
+  margin-left: 8px;
+}
+
+.provider-models {
+  padding: 4px 0 0 8px;
 }
 
 .model-form {
@@ -759,11 +685,5 @@ async function saveModelEditor(): Promise<void> {
 
 .editor-alert {
   margin-bottom: 16px;
-}
-
-@media (max-width: 800px) {
-  .ai-config-grid {
-    grid-template-columns: 1fr;
-  }
 }
 </style>

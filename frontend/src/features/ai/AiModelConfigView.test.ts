@@ -1,14 +1,13 @@
 /**
  * @vitest-environment jsdom
  *
- * AI 模型配置页的状态与写入测试。
+ * AI 服务商列表页的状态与写操作测试。
  *
- * 覆盖计划要求的全部界面状态：加载中、空态、加载失败（带错误编号）、正常展示、
- * 保存忙碌、表单校验、默认切换、连接测试失败、删除确认与窄窗口布局类。
+ * 覆盖加载、空、失败、正常、忙碌状态，以及展开行里的模型管理与服务商编辑。
  *
  * 断言重点放在两类容易出错的地方：
  * - 页面只显示掩码，绝不出现真实 Key 或密文；
- * - 默认状态完全以后端为准：任何写操作后都重新拉取，而不是本地猜测。
+ * - 默认状态与列表顺序完全以后端为准：任何写操作后都重新拉取，本地不排序、不推断。
  */
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
@@ -17,7 +16,6 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError } from '@/shared/api/client'
 import {
   createAiModel,
-  createAiProvider,
   deleteAiProvider,
   listAiProviders,
   setDefaultAiModel,
@@ -29,6 +27,10 @@ import {
 } from '@/shared/api/ai'
 
 import AiModelConfigView from './AiModelConfigView.vue'
+
+const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }))
+
+vi.mock('vue-router', () => ({ useRouter: () => ({ push: pushMock }) }))
 
 vi.mock('@/shared/api/ai', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/shared/api/ai')>()
@@ -46,7 +48,7 @@ vi.mock('@/shared/api/ai', async (importOriginal) => {
   }
 })
 
-/** 一个模型配置。 */
+/** 一个模型配置；`name` 与 `remote_model_id` 同值，与后端写入约定一致。 */
 function modelFixture(overrides: Partial<AiModel> = {}): AiModel {
   return {
     id: 'model-1',
@@ -54,7 +56,7 @@ function modelFixture(overrides: Partial<AiModel> = {}): AiModel {
     updated_at: '2026-01-01T00:00:00Z',
     version: 1,
     provider_id: 'provider-1',
-    name: '本地模型',
+    name: 'qwen3',
     remote_model_id: 'qwen3',
     is_enabled: true,
     is_default: true,
@@ -86,6 +88,22 @@ function mountView(): VueWrapper {
 }
 
 /**
+ * 展开第 `index` 个服务商行。
+ *
+ * 直接点击 Ant Design 的展开按钮，而不是依赖内部状态：展开是用户真实操作，
+ * 用同一入口驱动测试，才能同时验证"展开后模型区域确实出现"。
+ */
+async function expandRow(wrapper: VueWrapper, index = 0): Promise<void> {
+  const icons = wrapper.findAll('.ant-table-row-expand-icon')
+  const icon = icons[index]
+  if (icon === undefined) {
+    throw new Error('没有找到展开按钮。')
+  }
+  await icon.trigger('click')
+  await flushPromises()
+}
+
+/**
  * 归一化按钮文案后按文案点击。
  *
  * Ant Design 会在两个汉字之间插入空格（渲染为 `保 存`），直接按原文案比较会失败，
@@ -106,8 +124,8 @@ async function clickButton(wrapper: VueWrapper, text: string): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  pushMock.mockReset()
   vi.mocked(listAiProviders).mockResolvedValue([providerFixture()])
-  vi.mocked(createAiProvider).mockResolvedValue(providerFixture())
   vi.mocked(deleteAiProvider).mockResolvedValue({ id: 'provider-1' })
   vi.mocked(createAiModel).mockResolvedValue(modelFixture())
   vi.mocked(setDefaultAiModel).mockResolvedValue(modelFixture())
@@ -118,7 +136,7 @@ beforeEach(() => {
 
 enableAutoUnmount(afterEach)
 
-describe('AiModelConfigView', () => {
+describe('AiModelConfigView 列表', () => {
   it('加载中显示进度指示', async () => {
     vi.mocked(listAiProviders).mockReturnValue(new Promise(() => {}))
 
@@ -156,85 +174,78 @@ describe('AiModelConfigView', () => {
     expect(alert.text()).toContain('req-ai')
   })
 
-  it('首个模型读取为默认模型，并显示掩码而非明文', async () => {
+  it('列表顺序完全按接口返回，不在前端重排', async () => {
+    vi.mocked(listAiProviders).mockResolvedValue([
+      providerFixture({
+        id: 'provider-2',
+        name: '后创建的服务',
+        models: [modelFixture({ id: 'model-2', provider_id: 'provider-2' })],
+      }),
+      providerFixture({ id: 'provider-1', name: '先创建的服务' }),
+    ])
+
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('默认启用')
+    const text = wrapper.text()
+    expect(text.indexOf('后创建的服务')).toBeLessThan(text.indexOf('先创建的服务'))
+  })
+
+  it('显示凭据掩码而非明文', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
     expect(wrapper.text()).toContain('••••alue')
     expect(wrapper.text()).not.toContain('secret-value')
   })
 
-  it('新增服务商提交明文凭据、重新拉取并清空输入', async () => {
+  it('点击「新增服务商」进入独立新增页', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('[data-testid="provider-name"]').setValue('云端服务')
-    await wrapper.find('[data-testid="provider-base-url"]').setValue('https://example.test/v1')
-    await wrapper.find('[data-testid="provider-api-key"]').setValue('secret-value')
-    await wrapper.find('[data-testid="create-provider"]').trigger('click')
-    await flushPromises()
+    await wrapper.find('[data-testid="create-provider-link"]').trigger('click')
 
-    expect(createAiProvider).toHaveBeenCalledWith({
-      name: '云端服务',
-      base_url: 'https://example.test/v1',
-      api_key: 'secret-value',
-      description: null,
-    })
-    expect(listAiProviders).toHaveBeenCalledTimes(2)
-    expect((wrapper.find('[data-testid="provider-name"]').element as HTMLInputElement).value).toBe('')
+    expect(pushMock).toHaveBeenCalledWith({ name: 'ai-provider-new' })
   })
 
-  it('不安全的基地址在前端就拒绝提交', async () => {
+  it('展开服务商后才显示其模型与追加表单', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('[data-testid="provider-name"]').setValue('不安全服务')
-    await wrapper.find('[data-testid="provider-base-url"]').setValue('http://example.com/v1')
-    await wrapper.find('[data-testid="create-provider"]').trigger('click')
-    await flushPromises()
+    expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(false)
 
-    expect(createAiProvider).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="form-error"]').text()).toContain('HTTPS')
+    await expandRow(wrapper)
+
+    expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('默认启用')
+    // 模型名称列展示真正发给服务商的标识。
+    expect(wrapper.text()).toContain('qwen3')
   })
 
-  it('保存期间重复点击只提交一次', async () => {
-    let resolveCreate: ((provider: AiProvider) => void) | undefined
-    vi.mocked(createAiProvider).mockReturnValue(
-      new Promise<AiProvider>((resolve) => {
-        resolveCreate = resolve
-      }),
-    )
-
+  it('展开行追加模型只提交名称并重新拉取', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await wrapper.find('[data-testid="provider-name"]').setValue('云端服务')
-    await wrapper.find('[data-testid="provider-base-url"]').setValue('https://example.test/v1')
+    await expandRow(wrapper)
 
-    await wrapper.find('[data-testid="create-provider"]').trigger('click')
-    await wrapper.find('[data-testid="create-provider"]').trigger('click')
-
-    expect(createAiProvider).toHaveBeenCalledTimes(1)
-    expect(wrapper.find('[data-testid="create-provider"]').classes()).toContain('ant-btn-loading')
-
-    resolveCreate?.(providerFixture())
-    await flushPromises()
-  })
-
-  it('新增模型只提交名称与远端标识', async () => {
-    const wrapper = mountView()
-    await flushPromises()
-
-    await wrapper.find('[data-testid="model-name-provider-1"]').setValue('轻量模型')
-    await wrapper.find('[data-testid="model-remote-id-provider-1"]').setValue('gpt-4.1-mini')
+    await wrapper.find('[data-testid="model-name-provider-1"]').setValue('gpt-4.1-mini')
     await wrapper.find('[data-testid="create-model-provider-1"]').trigger('click')
     await flushPromises()
 
-    expect(createAiModel).toHaveBeenCalledWith('provider-1', {
-      name: '轻量模型',
-      remote_model_id: 'gpt-4.1-mini',
-    })
+    expect(createAiModel).toHaveBeenCalledWith('provider-1', { name: 'gpt-4.1-mini' })
     expect(listAiProviders).toHaveBeenCalledTimes(2)
+    expect((wrapper.find('[data-testid="model-name-provider-1"]').element as HTMLInputElement).value).toBe('')
+  })
+
+  it('模型名称为空时不发请求', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await expandRow(wrapper)
+
+    await wrapper.find('[data-testid="create-model-provider-1"]').trigger('click')
+    await flushPromises()
+
+    expect(createAiModel).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="form-error"]').text()).toContain('模型名称')
   })
 
   it('切换默认模型后重新拉取，以后端状态为准', async () => {
@@ -243,6 +254,7 @@ describe('AiModelConfigView', () => {
     ])
     const wrapper = mountView()
     await flushPromises()
+    await expandRow(wrapper)
 
     await wrapper.find('[data-testid="set-default-model-1"]').trigger('click')
     await flushPromises()
@@ -254,6 +266,7 @@ describe('AiModelConfigView', () => {
   it('连接测试失败显示后端安全文案与错误编号', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await expandRow(wrapper)
     vi.mocked(testAiModel).mockRejectedValue(
       new ApiError({
         code: 'VALIDATION_ERROR',
@@ -283,13 +296,10 @@ describe('AiModelConfigView', () => {
     expect(listAiProviders).toHaveBeenCalledTimes(2)
   })
 
-  it('窄窗口使用可换行的栅格类，且宽表格自身横向滚动', async () => {
+  it('宽表格自身横向滚动，避免撑宽页面', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    // 表单栅格在窄窗口收成单列（见组件的 @media 规则），避免页面级横向溢出。
-    expect(wrapper.find('.ai-config-grid').exists()).toBe(true)
-    // 模型表格内容可能较宽，必须由表格自身横向滚动，而不是把整个页面撑宽。
     expect(wrapper.findComponent({ name: 'ATable' }).props('scroll')).toEqual({ x: 'max-content' })
   })
 })
@@ -362,21 +372,24 @@ describe('AiModelConfigView 编辑与启停', () => {
     expect(vi.mocked(updateAiProvider).mock.calls[0][1].is_enabled).toBe(false)
   })
 
-  it('编辑模型提交名称、远端标识与启停状态', async () => {
+  it('编辑模型只提交一个模型名称与启停状态', async () => {
     const wrapper = mountView()
     await flushPromises()
+    await expandRow(wrapper)
 
     await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
-    await wrapper.find('[data-testid="editor-model-name"]').setValue('新模型名')
-    await wrapper.find('[data-testid="editor-model-remote-id"]').setValue('qwen3-max')
+    await flushPromises()
+    // 编辑器以真正生效的模型名称预填，保证与列表一致。
+    expect((wrapper.find('[data-testid="editor-model-name"]').element as HTMLInputElement).value).toBe('qwen3')
+
+    await wrapper.find('[data-testid="editor-model-name"]').setValue('qwen3-max')
     await wrapper.find('[data-testid="editor-model-enabled"]').trigger('click')
     await clickButton(wrapper, '保存')
     await flushPromises()
 
     expect(updateAiModel).toHaveBeenCalledWith('model-1', {
       version: 1,
-      name: '新模型名',
-      remote_model_id: 'qwen3-max',
+      name: 'qwen3-max',
       is_enabled: false,
     })
     expect(listAiProviders).toHaveBeenCalledTimes(2)
@@ -393,6 +406,7 @@ describe('AiModelConfigView 编辑与启停', () => {
     )
     const wrapper = mountView()
     await flushPromises()
+    await expandRow(wrapper)
 
     await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
     await wrapper.find('[data-testid="editor-model-enabled"]').trigger('click')

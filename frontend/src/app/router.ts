@@ -62,6 +62,8 @@ export const router = createRouter({
     { path: '/dashboard', name: 'dashboard', component: () => import('@/features/dashboard/DashboardView.vue') },
     { path: '/matching', name: 'matching', component: () => import('@/features/matching/MatchingView.vue') },
     { path: '/ai-models', name: 'ai-models', component: () => import('@/features/ai/AiModelConfigView.vue') },
+    // 新增独立成页而不是列表里的弹窗：一个服务商要同时填多个模型，弹窗里滚动体验很差。
+    { path: '/ai-models/new', name: 'ai-provider-new', component: () => import('@/features/ai/AiProviderCreateView.vue') },
     { path: '/resumes', name: 'resumes', component: ResumeListView },
     // `props: true` 把路径参数作为 props 传入：页面组件因此不依赖 `useRoute()`，
     // 测试也只需要传 props，不必构造一个路由环境。

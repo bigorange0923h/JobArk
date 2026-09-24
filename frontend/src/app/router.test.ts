@@ -12,3 +12,8 @@ it('AI 模型配置有实际路由与侧栏入口', () => {
   expect(router.resolve('/ai-models').name).toBe('ai-models')
   expect(navItems.some(item => item.name === 'ai-models' && item.icon === 'ai')).toBe(true)
 })
+
+it('新增服务商是独立页面，不进入侧栏导航', () => {
+  expect(router.resolve('/ai-models/new').name).toBe('ai-provider-new')
+  expect(navItems.some(item => item.name === 'ai-provider-new')).toBe(false)
+})

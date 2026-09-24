@@ -6,6 +6,10 @@
  * - 读取响应只含掩码与"是否已配置"，永不包含明文或密文；
  * - 默认模型至多一个，因此任何写操作后都必须重新读取，而不是本地推断；
  * - 删除必须显式确认，本模块统一携带 `confirmed: true`，避免"点了删除就没了"。
+ *
+ * 界面上的模型只有一个「模型名称」，而后端分别保存显示名称与发送给服务商的模型名称，
+ * 因此写请求统一由本模块的 `toModelPayload` 补成同值：这是该约定的唯一落点，
+ * 散到各调用点后总会有某个入口漏填，表现为"某个模型调不通但看不出原因"。
  */
 
 import { requestV1 } from './client'
@@ -40,6 +44,8 @@ export interface AiProviderCreateInput {
   base_url: string
   api_key?: string | null
   description?: string | null
+  /** 随服务商一并创建的模型；省略表示先只建服务商，之后再追加。 */
+  models?: AiModelCreateInput[]
 }
 
 /** 局部更新服务商；`version` 必须原样回传，提交空 `api_key` 表示保留已有密文。 */
@@ -52,10 +58,9 @@ export interface AiProviderUpdateInput {
   is_enabled?: boolean
 }
 
-/** 创建模型的请求体；不携带 API Key。 */
+/** 创建模型的请求体；不携带 API Key，模型名称即服务商文档里的模型 ID。 */
 export interface AiModelCreateInput {
   name: string
-  remote_model_id: string
   is_enabled?: boolean
 }
 
@@ -63,7 +68,6 @@ export interface AiModelCreateInput {
 export interface AiModelUpdateInput {
   version: number
   name?: string
-  remote_model_id?: string
   is_enabled?: boolean
 }
 
@@ -82,9 +86,11 @@ export function listAiProviders(): Promise<AiProvider[]> {
   return requestV1<AiProvider[]>('/ai/providers')
 }
 
-/** 新增服务商；提交的 API Key 以密文入库。 */
+/** 新增服务商，可同时提交其模型；服务端在同一事务内落库，失败不会只建服务商。 */
 export function createAiProvider(payload: AiProviderCreateInput): Promise<AiProvider> {
-  return requestV1<AiProvider>('/ai/providers', { init: jsonInit('POST', payload) })
+  const { models, ...rest } = payload
+  const body = models === undefined ? rest : { ...rest, models: models.map(toModelPayload) }
+  return requestV1<AiProvider>('/ai/providers', { init: jsonInit('POST', body) })
 }
 
 /** 局部更新服务商；省略或留空的 `api_key` 不会清空已有凭据。 */
@@ -99,12 +105,15 @@ export function deleteAiProvider(providerId: string): Promise<AiDeleted> {
 
 /** 在服务商下新增模型；首个启用模型会成为唯一默认模型。 */
 export function createAiModel(providerId: string, payload: AiModelCreateInput): Promise<AiModel> {
-  return requestV1<AiModel>(`/ai/providers/${providerId}/models`, { init: jsonInit('POST', payload) })
+  return requestV1<AiModel>(`/ai/providers/${providerId}/models`, { init: jsonInit('POST', toModelPayload(payload)) })
 }
 
 /** 局部更新模型；停用默认模型会被后端拒绝（409）。 */
 export function updateAiModel(modelId: string, payload: AiModelUpdateInput): Promise<AiModel> {
-  return requestV1<AiModel>(`/ai/models/${modelId}`, { init: jsonInit('PATCH', payload) })
+  const { name, ...rest } = payload
+  // 未改名时不提交名称字段：只有用户真的改了名称，才需要同步模型 ID。
+  const body = name === undefined ? rest : { ...rest, name, remote_model_id: name }
+  return requestV1<AiModel>(`/ai/models/${modelId}`, { init: jsonInit('PATCH', body) })
 }
 
 /** 把模型设为唯一默认模型。 */
@@ -120,6 +129,21 @@ export function testAiModel(modelId: string): Promise<AiConnectionTest> {
 /** 删除模型；默认模型需先切换，否则后端返回 409。 */
 export function deleteAiModel(modelId: string): Promise<AiDeleted> {
   return requestV1<AiDeleted>(`/ai/models/${modelId}`, { init: jsonInit('DELETE', { confirmed: true }) })
+}
+
+/**
+ * 把界面上的「模型名称」展开成后端请求体。
+ *
+ * 后端分别保存显示名称（`name`）与发送给服务商的模型名称（`remote_model_id`），
+ * 界面只让用户填一个值，因此在写请求里把两者写成同值。`is_enabled` 未显式给出时不提交，
+ * 让后端的默认值（启用）生效，而不是在前端复制一份默认规则。
+ */
+function toModelPayload(input: AiModelCreateInput): Record<string, unknown> {
+  const payload: Record<string, unknown> = { name: input.name, remote_model_id: input.name }
+  if (input.is_enabled !== undefined) {
+    payload.is_enabled = input.is_enabled
+  }
+  return payload
 }
 
 /** 构造 JSON 请求体；统一在此设置 Content-Type，避免每处调用重复。 */
