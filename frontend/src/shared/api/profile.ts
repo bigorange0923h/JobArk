@@ -9,7 +9,7 @@
  * 事实不可删除"都由后端裁决，前端只负责把后端返回的错误码与字段级原因呈现出来。
  */
 
-import { requestV1 } from './client'
+import { API_V1_PREFIX, ApiError, requestV1, unwrapResponse } from './client'
 import type { EditableResource } from './types'
 
 // --------------------------------------------------------------------------------------------
@@ -355,6 +355,88 @@ export function previewProfileImport(filename: string, contentBase64: string, co
     timeoutMs: 90_000,
     init: jsonInit('POST', { filename, content_base64: contentBase64, confirm_external: confirmExternal }),
   })
+}
+
+/** 后端确认过的导入阶段；长时间等待模型时不会假装已有百分比。 */
+export type ProfileImportStage =
+  | 'received' | 'document_parsed' | 'model_resolved' | 'ai_request_started'
+  | 'ai_response_parsed' | 'candidate_validated'
+
+const importStages: ReadonlySet<string> = new Set<ProfileImportStage>([
+  'received', 'document_parsed', 'model_resolved', 'ai_request_started', 'ai_response_parsed', 'candidate_validated',
+])
+
+/** 同一次请求中读取 SSE 阶段和最终统一响应；断流不能当作成功。 */
+export async function previewProfileImportStream(
+  filename: string,
+  contentBase64: string,
+  confirmExternal: boolean,
+  onProgress: (stage: ProfileImportStage) => void,
+): Promise<ProfileImportPreview> {
+  let response: Response
+  try {
+    response = await fetch(`${API_V1_PREFIX}/profile/import-preview-stream`, {
+      ...jsonInit('POST', { filename, content_base64: contentBase64, confirm_external: confirmExternal }),
+      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+      signal: AbortSignal.timeout(90_000),
+    })
+  } catch (cause: unknown) {
+    if (cause instanceof DOMException && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
+      throw new ApiError({ code: 'TIMEOUT', message: '生成导入候选超时，请稍后重试。' })
+    }
+    throw new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' })
+  }
+  if (!response.ok) return unwrapResponse<ProfileImportPreview>(response)
+  const requestId = response.headers.get('X-Request-ID')
+  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
+    throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '服务未返回导入进度流。', requestId })
+  }
+
+  const reader = response.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ''
+  try {
+    while (true) {
+      const { done, value } = await reader.read()
+      buffer += decoder.decode(value, { stream: !done })
+      buffer = buffer.replace(/\r\n/g, '\n')
+      let boundary = buffer.indexOf('\n\n')
+      while (boundary !== -1) {
+        const block = buffer.slice(0, boundary)
+        buffer = buffer.slice(boundary + 2)
+        const event = block.match(/^event: (.+)$/m)?.[1]
+        const data = block.match(/^data: (.+)$/m)?.[1]
+        if (event && data) {
+          let parsed: unknown
+          try { parsed = JSON.parse(data) } catch { throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '导入进度流格式无效。', requestId }) }
+          if (event === 'progress' && isRecord(parsed) && typeof parsed['stage'] === 'string' && importStages.has(parsed['stage'])) {
+            onProgress(parsed['stage'] as ProfileImportStage)
+          } else if (event === 'result' || event === 'error') {
+            const status = event === 'error' && isRecord(parsed) && typeof parsed['http_status'] === 'number'
+              ? parsed['http_status'] : 200
+            return unwrapResponse<ProfileImportPreview>(new Response(JSON.stringify(parsed), {
+              status, headers: { 'X-Request-ID': requestId ?? '' },
+            }))
+          }
+        }
+        boundary = buffer.indexOf('\n\n')
+      }
+      if (done) break
+    }
+  } catch (cause: unknown) {
+    if (cause instanceof ApiError) throw cause
+    if (cause instanceof DOMException && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
+      throw new ApiError({ code: 'TIMEOUT', message: '生成导入候选超时，请稍后重试。', requestId })
+    }
+    throw new ApiError({ code: 'NETWORK_ERROR', message: '导入进度连接中断，请重试。', requestId })
+  } finally {
+    await reader.cancel().catch(() => undefined)
+  }
+  throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '导入进度已中断，未收到最终结果。', requestId })
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null
 }
 
 /** 用户逐项核对后重传原文件并确认写入，后端会校验哈希与摘录。 */

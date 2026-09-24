@@ -6,7 +6,9 @@ import asyncio
 import base64
 import binascii
 import hashlib
+import logging
 import re
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from datetime import date
 from html.parser import HTMLParser
@@ -30,6 +32,7 @@ from .service import normalize_skill_name
 MAX_FILE_BYTES = 3 * 1024 * 1024
 MAX_PDF_PAGES = 10
 MAX_TEXT_CHARS = 40_000
+logger = logging.getLogger(__name__)
 
 
 class ResumeUpload(BaseModel):
@@ -203,43 +206,81 @@ def parse_document(upload: ResumeUpload) -> ParsedDocument:
 
 def _check_candidate(candidate: ImportCandidate, text: str) -> None:
     """拒绝无法定位到原文的条目；摘录不等于已核验事实。"""
-    groups: list[tuple[str, list[str | None]]] = [(candidate.name_quote, [candidate.full_name])]
-    groups.extend((item.source_quote, [item.name]) for item in candidate.skills)
+    groups: list[tuple[str, int, str, list[str | None]]] = [("name", 0, candidate.name_quote, [candidate.full_name])]
+    groups.extend(("skill", index, item.source_quote, [item.name]) for index, item in enumerate(candidate.skills))
     groups.extend(
         (
+            "experience",
+            index,
             item.source_quote,
             [item.company, item.title, item.location, item.responsibilities, item.achievements],
         )
-        for item in candidate.experiences
+        for index, item in enumerate(candidate.experiences)
     )
-    groups.extend((item.source_quote, [item.school, item.major, item.degree]) for item in candidate.educations)
-    for quote, values in groups:
+    groups.extend(
+        ("education", index, item.source_quote, [item.school, item.major, item.degree])
+        for index, item in enumerate(candidate.educations)
+    )
+    for group, index, quote, values in groups:
         normalized_quote = _normalize(quote)
-        if normalized_quote not in text or any(_normalize(value) not in normalized_quote for value in values if value):
+        quote_missing = normalized_quote not in text
+        if quote_missing or any(_normalize(value) not in normalized_quote for value in values if value):
+            logger.warning(
+                "候选摘录无法定位",
+                extra={
+                    "event": "profile_import_candidate_invalid",
+                    "reason": "quote_not_in_document" if quote_missing else "value_not_in_quote",
+                    "candidate_group": group,
+                    "candidate_index": index,
+                },
+            )
             raise ValidationFailedError("候选内容无法逐字定位到简历原文，未写入个人档案。")
-    if any(
-        _normalize(value) not in text
-        for value in (candidate.headline, candidate.email, candidate.phone, candidate.city)
-        if value
-    ):
-        raise ValidationFailedError("候选基本信息无法逐字定位到简历原文，未写入个人档案。")
-    for item in [*candidate.experiences, *candidate.educations]:
-        for item_date in (item.start_date, item.end_date):
-            if item_date and str(item_date.year) not in item.source_quote:
-                raise ValidationFailedError("候选日期未出现在对应原文摘录中，未写入个人档案。")
+    for field in ("headline", "email", "phone", "city"):
+        value = getattr(candidate, field)
+        if value and _normalize(value) not in text:
+            logger.warning(
+                "候选基本信息无法定位",
+                extra={
+                    "event": "profile_import_candidate_invalid",
+                    "reason": "basic_field_not_in_document",
+                    "candidate_field": field,
+                },
+            )
+            raise ValidationFailedError("候选基本信息无法逐字定位到简历原文，未写入个人档案。")
+    for group, items in (("experience", candidate.experiences), ("education", candidate.educations)):
+        for index, item in enumerate(items):
+            for item_date in (item.start_date, item.end_date):
+                if item_date and str(item_date.year) not in item.source_quote:
+                    logger.warning(
+                        "候选日期缺少来源",
+                        extra={
+                            "event": "profile_import_candidate_invalid",
+                            "reason": "date_year_not_in_quote",
+                            "candidate_group": group,
+                            "candidate_index": index,
+                        },
+                    )
+                    raise ValidationFailedError("候选日期未出现在对应原文摘录中，未写入个人档案。")
     if any(item.end_date is not None and item.end_date < item.start_date for item in candidate.experiences):
         raise ValidationFailedError("工作经历的结束日期早于开始日期，未写入个人档案。")
     if any(item.start_date and item.end_date and item.end_date < item.start_date for item in candidate.educations):
         raise ValidationFailedError("教育经历的结束日期早于开始日期，未写入个人档案。")
 
 
-async def preview(session: AsyncSession, upload: ResumeUpload, *, confirm_external: bool) -> ImportPreviewRead:
+async def preview(
+    session: AsyncSession,
+    upload: ResumeUpload,
+    *,
+    confirm_external: bool,
+    on_progress: Callable[[str], Awaitable[None]] | None = None,
+) -> ImportPreviewRead:
     """本地抽取后经明确同意调用默认模型，返回未落库候选。
 
     参数:
         session: 当前会话；仅用于解析默认模型，读取后立即结束事务再发起请求。
         upload: 上传的简历文件。
         confirm_external: 用户是否确认将提取文字发送到外部模型。
+        on_progress: 可选阶段回调；只传固定阶段码，不传原文或候选内容。
 
     返回:
         ImportPreviewRead: 带原文摘录、等待人工核对的候选。
@@ -250,29 +291,88 @@ async def preview(session: AsyncSession, upload: ResumeUpload, *, confirm_extern
     """
     if not confirm_external:
         raise ValidationFailedError("请先确认将简历文字发送到已配置的 AI 网关。")
-    document = await asyncio.to_thread(parse_document, upload)
-    config = await ai_service.resolve_default_model(session, get_settings())
+    logger.info("导入预览开始", extra={"event": "profile_import_preview", "stage": "started"})
+    try:
+        document = await asyncio.to_thread(parse_document, upload)
+    except ValidationFailedError:
+        logger.warning("导入文档解析失败", extra={"event": "profile_import_preview", "stage": "document_parse_failed"})
+        raise
+    logger.info(
+        "导入文档解析完成",
+        extra={"event": "profile_import_preview", "stage": "document_parsed", "text_chars": len(document.text)},
+    )
+    if on_progress is not None:
+        await on_progress("document_parsed")
+    try:
+        config = await ai_service.resolve_default_model(session, get_settings())
+    except ConflictError:
+        logger.warning(
+            "默认模型解析失败", extra={"event": "profile_import_preview", "stage": "model_resolution_failed"}
+        )
+        raise
+    logger.info("默认模型已解析", extra={"event": "profile_import_preview", "stage": "model_resolved"})
+    if on_progress is not None:
+        await on_progress("model_resolved")
     # 解析默认模型开启新的读事务；等待网络前必须结束它（见 ADR 0002）。
     await session.rollback()
-    result = await gateway.generate(
-        config,
-        "extract_profile_from_resume",
-        {
-            "resume_text": document.text,
-            "rules": (
-                "只提取原文明确出现的信息。每项提供原文中连续出现的 source_quote；"
-                "缺失字段留空，禁止推断经历、学历、技能和日期。"
-                "工作经历没有明确开始年份时不要输出；仅有年份或年月时，日期中的缺失月份/日以 1 补位。"
-                "职责和成果仅在摘录能逐字覆盖时填写，否则留空。"
-            ),
-        },
-        ImportCandidate.model_json_schema(),
-    )
+    logger.info("开始生成导入候选", extra={"event": "profile_import_preview", "stage": "ai_request_started"})
+    if on_progress is not None:
+        await on_progress("ai_request_started")
+    try:
+        result = await gateway.generate(
+            config,
+            "extract_profile_from_resume",
+            {
+                "resume_text": document.text,
+                "rules": (
+                    "只提取原文明确出现的信息。每项提供原文中连续出现的 source_quote；"
+                    "缺失字段留空，禁止推断经历、学历、技能和日期。"
+                    "工作经历没有明确开始年份时不要输出；仅有年份或年月时，日期中的缺失月份/日以 1 补位。"
+                    "职责和成果仅在摘录能逐字覆盖时填写，否则留空。"
+                ),
+            },
+            ImportCandidate.model_json_schema(),
+        )
+    except ValidationFailedError:
+        logger.warning("候选生成失败", extra={"event": "profile_import_preview", "stage": "ai_request_failed"})
+        raise
+    logger.info("候选生成完成", extra={"event": "profile_import_preview", "stage": "ai_response_parsed"})
+    if on_progress is not None:
+        await on_progress("ai_response_parsed")
     try:
         candidate = ImportCandidate.model_validate(result)
     except ValidationError as error:
+        logger.warning(
+            "候选结构校验失败",
+            extra={
+                "event": "profile_import_preview",
+                "stage": "candidate_schema_failed",
+                "validation_errors": [
+                    {"field": ".".join(str(part) for part in item["loc"]), "type": item["type"]}
+                    for item in error.errors()
+                ],
+            },
+        )
         raise ValidationFailedError("AI 返回的档案候选格式无效，未写入个人档案。") from error
-    _check_candidate(candidate, document.text)
+    try:
+        _check_candidate(candidate, document.text)
+    except ValidationFailedError:
+        logger.warning(
+            "候选原文校验失败", extra={"event": "profile_import_preview", "stage": "candidate_evidence_failed"}
+        )
+        raise
+    logger.info(
+        "导入预览完成",
+        extra={
+            "event": "profile_import_preview",
+            "stage": "completed",
+            "skill_count": len(candidate.skills),
+            "experience_count": len(candidate.experiences),
+            "education_count": len(candidate.educations),
+        },
+    )
+    if on_progress is not None:
+        await on_progress("candidate_validated")
     return ImportPreviewRead(filename=document.filename, source_hash=document.source_hash, candidate=candidate)
 
 

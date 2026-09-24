@@ -47,6 +47,7 @@ FastAPI application
 后端 HTTP 层遵循 ADR 0001 固化的契约，细节与错误码表以该 ADR 为准：
 
 - 成功响应为 `{success: true, data, meta}`，失败响应为 `{success: false, error, meta}`；分页等附加信息放入 `meta`。
+- Profile 导入预览保留一次性 JSON 接口；界面使用同一处理流程的 `text/event-stream` 接口接收固定阶段码，最终 `result`/`error` 事件仍携带统一响应包与 `request_id`。流开始后的错误以终止事件表达，断流按失败处理；不引入后台任务状态库。
 - 路由显式返回 `ApiResponse[T]`，失败由 `app/core/exception_handlers.py` 集中构造，业务代码只抛 `AppError` 子类。
 - `request_id` 由请求上下文中间件建立并贯穿响应头、响应体与服务端日志；入站 `X-Request-ID` 经白名单校验后沿用。
 - 日志为单行 JSON，字段集合固定；`uvicorn.access` 被关闭，访问日志统一由中间件产出，以保证每条都带 `request_id`。

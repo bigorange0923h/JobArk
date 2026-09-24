@@ -3,12 +3,12 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { confirmProfileImport, previewProfileImport, type ProfileImportPreview } from '@/shared/api/profile'
+import { confirmProfileImport, previewProfileImportStream, type ProfileImportPreview } from '@/shared/api/profile'
 
 import ProfileImportPanel from './ProfileImportPanel.vue'
 
 vi.mock('@/shared/api/profile', () => ({
-  previewProfileImport: vi.fn(),
+  previewProfileImportStream: vi.fn(),
   confirmProfileImport: vi.fn(),
 }))
 
@@ -24,7 +24,7 @@ const candidate: ProfileImportPreview = {
 
 beforeEach(() => {
   vi.clearAllMocks()
-  vi.mocked(previewProfileImport).mockResolvedValue(candidate)
+  vi.mocked(previewProfileImportStream).mockResolvedValue(candidate)
   vi.mocked(confirmProfileImport).mockResolvedValue({
     profile_id: 'id', created_profile: true, skills_added: 1, experiences_added: 0, educations_added: 0,
   })
@@ -45,7 +45,7 @@ it('未经外部发送同意不能预览，未经核对不能确认写入', asyn
   expect(wrapper.text()).toContain('sample.html')
 
   expect(wrapper.find('[data-testid="preview-import"]').attributes('disabled')).toBeDefined()
-  expect(previewProfileImport).not.toHaveBeenCalled()
+  expect(previewProfileImportStream).not.toHaveBeenCalled()
 
   await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
   expect(wrapper.find('[data-testid="preview-import"]').attributes('disabled')).toBeUndefined()
@@ -53,7 +53,7 @@ it('未经外部发送同意不能预览，未经核对不能确认写入', asyn
   await new Promise(resolve => setTimeout(resolve, 30))
   await flushPromises()
   expect(wrapper.find('[data-testid="profile-import-error"]').exists()).toBe(false)
-  expect(previewProfileImport).toHaveBeenCalledOnce()
+  expect(previewProfileImportStream).toHaveBeenCalledOnce()
   expect(wrapper.text()).toContain('姓名原文：张三')
   expect(wrapper.find('[data-testid="confirm-import"]').attributes('disabled')).toBeDefined()
   expect(confirmProfileImport).not.toHaveBeenCalled()
@@ -63,4 +63,29 @@ it('未经外部发送同意不能预览，未经核对不能确认写入', asyn
   await flushPromises()
   expect(confirmProfileImport).toHaveBeenCalledOnce()
   expect(onChanged).toHaveBeenCalledTimes(1)
+})
+
+it('生成期间展示后端报告的阶段并保持按钮忙碌', async () => {
+  let finish: ((value: ProfileImportPreview) => void) | undefined
+  vi.mocked(previewProfileImportStream).mockImplementation(async (_filename, _content, _consent, onProgress) => {
+    onProgress('ai_request_started')
+    return new Promise<ProfileImportPreview>(resolve => { finish = resolve })
+  })
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    configurable: true,
+    value: [new File(['<html>张三</html>'], 'sample.html', { type: 'text/html' })],
+  })
+  await input.trigger('change')
+  await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
+  await wrapper.find('[data-testid="preview-import"]').trigger('click')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  await flushPromises()
+  expect(wrapper.find('[data-testid="profile-import-progress"]').text()).toContain('模型正在生成候选')
+  expect(wrapper.find('[data-testid="preview-import"]').attributes('disabled')).toBeDefined()
+  finish?.(candidate)
+  await flushPromises()
+  expect(wrapper.find('[data-testid="profile-import-progress"]').exists()).toBe(false)
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
 })

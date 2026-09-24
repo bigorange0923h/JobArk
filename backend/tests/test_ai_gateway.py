@@ -10,7 +10,10 @@
 
 import asyncio
 import json
+import logging
 import urllib.error
+from email.message import Message
+from io import BytesIO
 from typing import Any
 
 import pytest
@@ -59,6 +62,7 @@ class _FakeResponse:
     def __init__(self, body: bytes) -> None:
         """保存待返回的响应体。"""
         self._body = body
+        self.status = 200
 
     def read(self, size: int) -> bytes:
         """返回响应体；忽略大小参数，由调用方自行判断超限。"""
@@ -177,6 +181,32 @@ def test_gateway_maps_non_2xx_to_safe_error(monkeypatch: pytest.MonkeyPatch, sta
         asyncio.run(gateway.generate(_config(), "task", {}, {}))
 
     assert "boom" not in str(error.value)
+
+
+def test_gateway_logs_http_status_without_upstream_body(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """真实 HTTP 错误只记录状态码，不把上游正文或密钥写进日志。"""
+    captured: dict[str, Any] = {}
+    upstream = urllib.error.HTTPError(
+        "https://example.test/v1/chat/completions",
+        401,
+        "private-upstream-token",
+        Message(),
+        BytesIO(b"private-resume-content"),
+    )
+    _install_opener(monkeypatch, captured, upstream)
+
+    with caplog.at_level(logging.WARNING, logger="app.ai.llm.gateway"), pytest.raises(ValidationFailedError):
+        asyncio.run(gateway.generate(_config(), "task", {}, {}))
+    upstream.close()
+
+    records = [record for record in caplog.records if getattr(record, "event", None) == "ai_upstream_error"]
+    assert len(records) == 1
+    assert vars(records[0])["http_status"] == 401
+    assert "private-upstream-token" not in caplog.text
+    assert "private-resume-content" not in caplog.text
+    assert "secret" not in caplog.text
 
 
 def test_gateway_rejects_redirect(monkeypatch: pytest.MonkeyPatch) -> None:

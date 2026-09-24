@@ -7,6 +7,7 @@
 
 import asyncio
 import json
+import logging
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -20,6 +21,7 @@ from app.core.errors import ValidationFailedError
 _MAX_RESPONSE_BYTES = 1_000_000
 # 只有本地回环允许明文 HTTP；其余地址必须 HTTPS，避免凭据与资料在明文连接上传输。
 _LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -102,14 +104,24 @@ def _post_chat(config: ResolvedAiModel, body: dict[str, Any]) -> dict[str, Any]:
             response
         ):
             raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            http_status = response.status
+        logger.info("AI 上游请求完成", extra={"event": "ai_upstream_response", "http_status": http_status})
         if len(raw) > _MAX_RESPONSE_BYTES:
             raise ValueError("oversize")
         parsed: Any = json.loads(raw)
         if not isinstance(parsed, dict):
             raise ValueError("invalid envelope")
         return cast(dict[str, Any], parsed)
+    except urllib.error.HTTPError as error:
+        # 不读取或记录上游错误正文：它可能回显请求内容或凭据。
+        logger.warning("AI 上游返回错误状态", extra={"event": "ai_upstream_error", "http_status": error.code})
+        raise ValidationFailedError("AI 请求失败或结果无效，原始资料已保留，请稍后手动重试。") from error
     except (urllib.error.URLError, TimeoutError, ValueError, OSError) as error:
         # 不把上游原文或凭据带进异常：响应体可能包含敏感信息，异常文案会进入 API 响应。
+        logger.warning(
+            "AI 上游请求或响应无效",
+            extra={"event": "ai_upstream_error", "failure_type": type(error).__name__},
+        )
         raise ValidationFailedError("AI 请求失败或结果无效，原始资料已保留，请稍后手动重试。") from error
 
 
@@ -219,11 +231,17 @@ async def generate(
         "response_format": {"type": "json_object"},
     }
     response = await asyncio.to_thread(_post_chat, config, body)
-    content = _extract_message_content(response)
+    try:
+        content = _extract_message_content(response)
+    except ValidationFailedError:
+        logger.warning("AI 响应缺少文本内容", extra={"event": "ai_response_invalid", "reason": "missing_content"})
+        raise
     try:
         parsed: Any = json.loads(content)
     except (TypeError, ValueError) as error:
+        logger.warning("AI 响应不是有效 JSON", extra={"event": "ai_response_invalid", "reason": "invalid_json"})
         raise ValidationFailedError("AI 返回的内容不是有效 JSON，原始资料已保留，请稍后手动重试。") from error
     if not isinstance(parsed, dict):
+        logger.warning("AI 响应不是 JSON 对象", extra={"event": "ai_response_invalid", "reason": "non_object_json"})
         raise ValidationFailedError("AI 返回的 JSON 不是对象，原始资料已保留，请稍后手动重试。")
     return cast(dict[str, Any], parsed)

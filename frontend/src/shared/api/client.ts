@@ -61,7 +61,7 @@ export class ApiError extends Error {
 /** 发起根路径请求（用于 `/health` 这类不带版本前缀的运维接口）。 */
 export async function request<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const response = await send(path, options)
-  return unwrap<T>(response)
+  return unwrapResponse<T>(response)
 }
 
 /** 发起业务接口请求，自动拼接 `/api/v1` 前缀。 */
@@ -94,7 +94,8 @@ function toTransportError(error: unknown, timeoutMs: number): ApiError {
   return new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' })
 }
 
-async function unwrap<T>(response: Response): Promise<T> {
+/** 解包已有 Response，供流式接口的最终事件复用同一套错误契约。 */
+export async function unwrapResponse<T>(response: Response): Promise<T> {
   const headerRequestId = response.headers.get('X-Request-ID')
   const raw = await response.text()
 

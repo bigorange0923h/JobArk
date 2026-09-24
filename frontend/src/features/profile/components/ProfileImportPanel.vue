@@ -2,7 +2,7 @@
 /** 文档导入只保留临时候选；确认前不把 AI 结果写入档案。 */
 import { computed, ref } from 'vue'
 
-import { confirmProfileImport, previewProfileImport, type ProfileImportPreview } from '@/shared/api/profile'
+import { confirmProfileImport, previewProfileImportStream, type ProfileImportPreview, type ProfileImportStage } from '@/shared/api/profile'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { createLocalError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
@@ -16,6 +16,7 @@ const preview = ref<ProfileImportPreview | null>(null)
 const consent = ref(false)
 const reviewed = ref(false)
 const busyPreview = ref(false)
+const progressStage = ref<ProfileImportStage | 'reading_file'>('reading_file')
 const busyConfirm = ref(false)
 /** 本地文件校验与服务端失败共用一个提示位置；无法定位字段的失败走全局通知。 */
 const error = ref<ParsedServerError | null>(null)
@@ -24,6 +25,15 @@ const selectedSkills = ref<number[]>([])
 const selectedExperiences = ref<number[]>([])
 const selectedEducations = ref<number[]>([])
 const busy = computed(() => busyPreview.value || busyConfirm.value)
+const progressText = computed(() => ({
+  reading_file: '正在读取文件…',
+  received: '请求已送达，正在解析文档…',
+  document_parsed: '文档解析完成，正在读取模型配置…',
+  model_resolved: '模型配置已读取，准备生成候选…',
+  ai_request_started: '模型正在生成候选，通常需要几十秒…',
+  ai_response_parsed: '模型已返回，正在校验候选结构和原文摘录…',
+  candidate_validated: '候选已校验，正在展示预览…',
+})[progressStage.value])
 
 /** 失败提示的补充说明；本地校验没有错误编号，因此只在有值时展示。 */
 const errorDescription = computed(() => {
@@ -80,12 +90,15 @@ function encodeFile(selected: File): Promise<string> {
 async function generate(): Promise<void> {
   if (!file.value || !consent.value || busy.value) return
   busyPreview.value = true
+  progressStage.value = 'reading_file'
   error.value = null
   result.value = ''
   preview.value = null
   try {
     contentBase64.value = await encodeFile(file.value)
-    const next = await previewProfileImport(file.value.name, contentBase64.value, consent.value)
+    const next = await previewProfileImportStream(file.value.name, contentBase64.value, consent.value, (stage) => {
+      progressStage.value = stage
+    })
     preview.value = next
     selectedSkills.value = next.candidate.skills.map((_, index) => index)
     selectedExperiences.value = next.candidate.experiences.map((_, index) => index)
@@ -152,6 +165,10 @@ async function apply(): Promise<void> {
     <div class="import-actions">
       <a-button type="primary" :loading="busyPreview" :disabled="!file || !consent || busy" data-testid="preview-import" @click="generate">生成待核对候选</a-button>
     </div>
+    <div v-if="busyPreview" class="import-progress" role="status" aria-live="polite" data-testid="profile-import-progress">
+      <a-spin size="small" />
+      <span>{{ progressText }}</span>
+    </div>
     <a-alert v-if="error" type="error" show-icon :message="error.message" :description="errorDescription" class="import-notice" data-testid="profile-import-error" />
     <a-alert v-if="result" type="success" show-icon :message="result" class="import-notice" data-testid="profile-import-success" />
 
@@ -209,6 +226,7 @@ async function apply(): Promise<void> {
 .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .file-name { color: var(--ja-color-muted); font-size: 13px; overflow-wrap: anywhere; }
 .import-actions, .import-notice { margin-top: 16px; }
+.import-progress { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--ja-color-muted); }
 .candidate { margin-top: 20px; }
 .basics-preview { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; }
 .basics-preview div { min-width: 0; padding: 10px 12px; background: var(--ja-color-canvas); border-radius: var(--ja-radius); }

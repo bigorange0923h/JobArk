@@ -1,6 +1,8 @@
 """简历导入的本地解析、AI 候选约束与确认落库测试。"""
 
 import base64
+import json
+import logging
 from io import BytesIO
 from typing import Any
 
@@ -137,7 +139,9 @@ def test_import_without_default_model_fails_without_writing(db_client: TestClien
     assert db_client.get(API).status_code == 404
 
 
-def test_preview_checks_model_quotes(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_preview_checks_model_quotes(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
     """模型捏造的经历即使 JSON 形状正确也不能进入预览。"""
     _configure_default_model(db_client)
 
@@ -152,9 +156,37 @@ def test_preview_checks_model_quotes(db_client: TestClient, monkeypatch: pytest.
         return candidate
 
     monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
-    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+    with caplog.at_level(logging.INFO, logger="app.modules.profile.import_service"):
+        response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
     assert response.status_code == 422
     assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    stages = [getattr(record, "stage", None) for record in caplog.records]
+    assert "document_parsed" in stages
+    assert "model_resolved" in stages
+    assert "ai_response_parsed" in stages
+    assert "candidate_evidence_failed" in stages
+    invalid = [
+        record for record in caplog.records if getattr(record, "event", None) == "profile_import_candidate_invalid"
+    ]
+    assert len(invalid) == 1
+    assert vars(invalid[0])["candidate_group"] == "experience"
+    assert vars(invalid[0])["candidate_index"] == 0
+    assert "不存在的公司" not in caplog.text
+    assert "张三" not in caplog.text
+
+
+def test_stream_preview_reports_error_without_consent(client: TestClient) -> None:
+    """流开始后仍用统一错误包和请求编号报告业务失败。"""
+    response = client.post(f"{API}/import-preview-stream", json={**_upload(), "confirm_external": False})
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: progress" in response.text
+    assert "event: error" in response.text
+    error_block = response.text.split("event: error\ndata: ", 1)[1].split("\n\n", 1)[0]
+    error = json.loads(error_block)
+    assert error["error"]["code"] == "VALIDATION_ERROR"
+    assert error["http_status"] == 422
+    assert error["meta"]["request_id"] == response.headers["X-Request-ID"]
 
 
 def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -195,6 +227,29 @@ def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.M
     repeated = db_client.post(f"{API}/import-confirm", json=payload)
     assert repeated.status_code == 422
     assert len(db_client.get(API).json()["data"]["evidences"]) == 1
+
+
+def test_stream_preview_reports_real_stages_and_result(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """SSE 阶段按处理顺序到达，最终结果仍是原来的候选契约。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回有来源的固定候选，不访问真实模型。"""
+        return _candidate()
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview-stream", json={**_upload(), "confirm_external": True})
+    assert response.status_code == 200
+    assert response.text.index('"stage": "document_parsed"') < response.text.index('"stage": "ai_request_started"')
+    assert response.text.index('"stage": "ai_response_parsed"') < response.text.index('"stage": "candidate_validated"')
+    result_block = response.text.split("event: result\ndata: ", 1)[1].split("\n\n", 1)[0]
+    result = json.loads(result_block)
+    assert result["success"] is True
+    assert result["data"]["candidate"]["full_name"] == "张三"
+    assert result["meta"]["request_id"] == response.headers["X-Request-ID"]
+    assert db_client.get(API).status_code == 404
 
 
 def test_confirm_rejects_changed_file(db_client: TestClient) -> None:
