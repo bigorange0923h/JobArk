@@ -69,9 +69,10 @@ async def list_providers(session: SessionDep) -> ApiResponse[list[ProviderRead]]
     "/providers",
     summary="新增 AI 服务商",
     description=(
-        "保存 OpenAI 兼容服务商。接口地址仅允许 HTTPS 或本地回环 HTTP，"
-        "且不能包含用户名、密码、查询参数或片段；不安全地址返回 422。"
-        "提交的 API Key 以可逆密文入库，读取时只返回掩码。名称重复返回 409。"
+        "保存 OpenAI 兼容服务商，可通过 `models` 同时提交其模型（最多 20 个）。"
+        "服务商与模型在同一个事务内落库，任一模型冲突则整体回滚，不产生只有服务商的半成品。"
+        "接口地址仅允许 HTTPS 或本地回环 HTTP，且不能包含用户名、密码、查询参数或片段；不安全地址返回 422。"
+        "提交的 API Key 以可逆密文入库，读取时只返回掩码。名称重复或请求内模型名称重复返回 409。"
     ),
     response_model=ApiResponse[ProviderRead],
     status_code=status.HTTP_201_CREATED,
@@ -161,7 +162,7 @@ async def delete_provider(session: SessionDep, provider_id: UUID, payload: Delet
     summary="新增 AI 模型",
     description=(
         "在服务商下新增模型；模型不携带 API Key，凭据始终复用所属服务商。"
-        "首个启用模型自动成为唯一默认模型；同一服务商下远端模型标识重复返回 409。"
+        "首个启用模型自动成为唯一默认模型；同一服务商下模型名称重复返回 409。"
     ),
     response_model=ApiResponse[ModelRead],
     status_code=status.HTTP_201_CREATED,

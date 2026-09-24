@@ -31,8 +31,8 @@ class ModelRead(EditableRead):
     """模型读取 DTO；不含任何凭据字段。"""
 
     provider_id: UUID = Field(description="所属服务商主键。")
-    name: str = Field(description="模型显示名称。")
-    remote_model_id: str = Field(description="发送给 OpenAI 兼容接口的模型标识。")
+    name: str = Field(description="模型显示名称；界面只暴露这一个名称字段。")
+    remote_model_id: str = Field(description="发送给兼容接口的模型名称；与显示名称同值。")
     is_enabled: bool = Field(description="是否参与默认模型候选。")
     is_default: bool = Field(description="是否为当前唯一默认模型。")
 
@@ -68,6 +68,25 @@ class DeleteConfirm(_StrictRequest):
     confirmed: bool = Field(description="用户已确认删除；未确认为 422。")
 
 
+class ModelCreate(_StrictRequest):
+    """创建模型；模型不携带 API Key，凭据始终来自所属服务商。"""
+
+    name: str = Field(min_length=1, max_length=100, description="模型显示名称；与 remote_model_id 同值。")
+    remote_model_id: str = Field(min_length=1, max_length=200, description="发送给兼容接口的模型名称；与 name 同值。")
+    is_enabled: bool = Field(default=True, description="是否启用。")
+
+
+class ModelUpdate(_StrictRequest):
+    """局部更新模型；未提交的字段保持原值。"""
+
+    version: int = Field(ge=1, description="乐观锁版本号，必须原样回传。")
+    name: str | None = Field(default=None, min_length=1, max_length=100, description="新的模型名称。")
+    remote_model_id: str | None = Field(
+        default=None, min_length=1, max_length=200, description="新的模型名称；与 name 同值，同一服务商内唯一。"
+    )
+    is_enabled: bool | None = Field(default=None, description="是否启用；默认模型不能被直接停用。")
+
+
 class ProviderCreate(_StrictRequest):
     """创建服务商。"""
 
@@ -79,6 +98,14 @@ class ProviderCreate(_StrictRequest):
         description="API Key 明文；只在创建或替换时提交，留空表示暂不配置凭据。",
     )
     description: str | None = Field(default=None, max_length=500, description="可选说明。")
+    models: list[ModelCreate] = Field(
+        default_factory=list[ModelCreate],
+        max_length=20,
+        description=(
+            "随服务商一并创建的模型，最多 20 个；服务商与模型在同一个事务内落库，"
+            "任一模型冲突则整体回滚，不产生只有服务商的半成品。"
+        ),
+    )
 
 
 class ProviderUpdate(_StrictRequest):
@@ -94,22 +121,3 @@ class ProviderUpdate(_StrictRequest):
     )
     description: str | None = Field(default=None, max_length=500, description="新的说明；显式传 null 表示清空。")
     is_enabled: bool | None = Field(default=None, description="是否启用；停用前必须没有默认模型。")
-
-
-class ModelCreate(_StrictRequest):
-    """创建模型；模型不携带 API Key，凭据始终来自所属服务商。"""
-
-    name: str = Field(min_length=1, max_length=100, description="模型显示名称。")
-    remote_model_id: str = Field(min_length=1, max_length=200, description="发送给兼容接口的模型标识。")
-    is_enabled: bool = Field(default=True, description="是否启用。")
-
-
-class ModelUpdate(_StrictRequest):
-    """局部更新模型；未提交的字段保持原值。"""
-
-    version: int = Field(ge=1, description="乐观锁版本号，必须原样回传。")
-    name: str | None = Field(default=None, min_length=1, max_length=100, description="新的显示名称。")
-    remote_model_id: str | None = Field(
-        default=None, min_length=1, max_length=200, description="新的远端模型标识；同一服务商内唯一。"
-    )
-    is_enabled: bool | None = Field(default=None, description="是否启用；默认模型不能被直接停用。")

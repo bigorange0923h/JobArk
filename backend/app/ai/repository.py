@@ -29,15 +29,19 @@ _CONFLICT_SQLSTATES = frozenset({"23505", "40P01", "40001"})
 
 
 async def list_providers(session: AsyncSession) -> Sequence[AiProvider]:
-    """按创建时间列出全部服务商。
+    """按创建时间倒序列出全部服务商。
 
     参数:
         session: 当前会话。
 
     返回:
-        Sequence[AiProvider]: 服务商列表，最早的在前。
+        Sequence[AiProvider]: 服务商列表，最新创建的在前。
+
+    注意:
+        倒序是界面约定而不是数据约定：用户刚配置完的服务商应当出现在列表顶部，
+        否则每新增一个都要翻到最底部才能确认结果。排序由后端给出，前端不再二次排序。
     """
-    return (await session.scalars(select(AiProvider).order_by(AiProvider.created_at))).all()
+    return (await session.scalars(select(AiProvider).order_by(AiProvider.created_at.desc()))).all()
 
 
 async def list_models(session: AsyncSession) -> Sequence[AiModel]:

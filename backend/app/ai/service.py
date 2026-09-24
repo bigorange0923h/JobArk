@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Sequence
 from typing import Any
 
 from sqlalchemy.exc import DBAPIError
@@ -40,7 +41,7 @@ from app.core.responses import ErrorDetail
 from app.core.versioning import apply_versioned_update
 
 _PROVIDER_NAME_TAKEN = "服务商名称已存在，请更换后重试。"
-_REMOTE_ID_TAKEN = "该服务商下已存在相同的远端模型标识。"
+_REMOTE_ID_TAKEN = "该服务商下已存在同名的模型。"
 
 
 def _cipher() -> CredentialCipher:
@@ -103,6 +104,27 @@ async def _provider_read_one(session: AsyncSession, provider: AiProvider) -> Pro
     return _provider_read(provider, list(models))
 
 
+def _first_duplicate_remote_id(models: Sequence[ModelCreate]) -> str | None:
+    """找出本次提交内部重复出现的模型名称。
+
+    参数:
+        models: 随服务商一并提交的模型列表。
+
+    返回:
+        str | None: 重复的模型名称；没有重复时返回 None。
+
+    注意:
+        只比对请求内部，不查数据库：与库中已有模型的重复由唯一约束兜底并映射为 409。
+        两条路径都必须存在——前者给出字段级提示，后者拦住并发写入。
+    """
+    seen: set[str] = set()
+    for item in models:
+        if item.remote_model_id in seen:
+            return item.remote_model_id
+        seen.add(item.remote_model_id)
+    return None
+
+
 async def list_providers(session: AsyncSession) -> list[ProviderRead]:
     """列出全部服务商及其模型，供工作台读取。
 
@@ -121,28 +143,62 @@ async def list_providers(session: AsyncSession) -> list[ProviderRead]:
 
 
 async def create_provider(session: AsyncSession, payload: ProviderCreate) -> ProviderRead:
-    """创建服务商。
+    """创建服务商，并可同时创建其模型。
 
     参数:
         session: 当前会话。
-        payload: 服务商配置与可选 API Key。
+        payload: 服务商配置、可选 API Key，以及随服务商一并创建的模型列表。
 
     返回:
-        ProviderRead: 新建服务商；其模型列表为空。
+        ProviderRead: 新建服务商及其模型；未提交模型时列表为空。
 
     异常:
-        ConflictError: 名称重复，或非 LOCAL 环境缺少凭据加密根密钥。
+        ConflictError: 名称重复、请求内模型名称重复，或非 LOCAL 环境缺少凭据加密根密钥。
         ValidationFailedError: 接口地址不安全。
+
+    注意:
+        服务商与全部模型在同一个事务内写入：任一步失败整体回滚，不会留下
+        "服务商已建、模型未建"的半成品——那种状态只能靠用户手工补录修复。
+        默认标记规则与单独创建模型保持一致：全局尚无默认模型时，第一个启用模型成为默认。
     """
     base_url = gateway.validate_base_url(payload.base_url)
     if await repo.provider_name_exists(session, payload.name):
         raise ConflictError(_PROVIDER_NAME_TAKEN, details=[ErrorDetail(field="name", reason="名称已被占用。")])
+    duplicated = _first_duplicate_remote_id(payload.models)
+    if duplicated is not None:
+        raise ConflictError(
+            _REMOTE_ID_TAKEN,
+            details=[ErrorDetail(field="remote_model_id", reason=f"模型名称「{duplicated}」在本次提交中重复。")],
+        )
+
     provider = AiProvider(name=payload.name, base_url=base_url, description=payload.description, is_enabled=True)
     _apply_api_key(provider, payload.api_key)
     await repo.add(session, provider)
+
+    # 默认模型必须在同一事务内确定：先读取全局状态，再按提交顺序取第一个启用模型。
+    has_default = await repo.get_default_model(session) is not None
+    models: list[AiModel] = []
+    for item in payload.models:
+        is_default = (not has_default) and item.is_enabled and provider.is_enabled
+        has_default = has_default or is_default
+        models.append(
+            AiModel(
+                provider_id=provider.id,
+                name=item.name,
+                remote_model_id=item.remote_model_id,
+                is_enabled=item.is_enabled,
+                is_default=is_default,
+            )
+        )
+    for model in models:
+        await repo.add(session, model)
+
     await session.commit()
     await session.refresh(provider)
-    return _provider_read(provider, [])
+    for model in models:
+        # 逐个刷新取得 created_at/version 等服务端默认值，避免读取 DTO 缺字段。
+        await session.refresh(model)
+    return _provider_read(provider, models)
 
 
 async def update_provider(session: AsyncSession, provider_id: uuid.UUID, payload: ProviderUpdate) -> ProviderRead:

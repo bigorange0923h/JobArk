@@ -315,3 +315,74 @@ def test_model_and_provider_not_found(db_client: TestClient) -> None:
 
     stale_version = db_client.patch(f"{API}/providers/{provider['id']}", json={"version": 999, "name": "过期更新"})
     assert stale_version.status_code == 409
+
+
+def test_providers_are_listed_newest_first(db_client: TestClient) -> None:
+    """服务商列表按创建时间倒序：最新创建的在最前，便于刚配置完就能看到。"""
+    first = _create_provider(db_client, name="先创建的服务", base_url="https://first.test/v1")
+    second = _create_provider(db_client, name="后创建的服务", base_url="https://second.test/v1")
+
+    listed = db_client.get(f"{API}/providers").json()["data"]
+    assert [item["id"] for item in listed] == [second["id"], first["id"]]
+
+
+def _create_provider_with_models(client: TestClient) -> dict[str, Any]:
+    """一次提交两个模型的服务商创建请求，供批量创建相关用例复用。
+
+    参数:
+        client: 指向测试库的客户端。
+
+    返回:
+        dict[str, Any]: 含两个模型的服务商读取 DTO。
+    """
+    return _create_provider(
+        client,
+        name="批量配置服务",
+        base_url="https://batch.test/v1",
+        models=[
+            {"name": "qwen3", "remote_model_id": "qwen3", "is_enabled": True},
+            {"name": "gpt-4.1-mini", "remote_model_id": "gpt-4.1-mini", "is_enabled": True},
+        ],
+    )
+
+
+def test_create_provider_with_models_in_one_request(db_client: TestClient) -> None:
+    """一次创建可同时提交多个模型，且全局只产生一个默认模型。"""
+    provider = _create_provider_with_models(db_client)
+
+    assert [model["remote_model_id"] for model in provider["models"]] == ["qwen3", "gpt-4.1-mini"]
+    assert all(model["name"] == model["remote_model_id"] for model in provider["models"])
+
+    models = _all_models(db_client)
+    assert sum(1 for model in models if model["is_default"]) == 1
+    assert next(model for model in models if model["remote_model_id"] == "qwen3")["is_default"] is True
+
+
+def test_create_provider_with_duplicate_models_rolls_back_everything(db_client: TestClient) -> None:
+    """请求内的模型名称重复返回 409，且整体回滚，不留下半成品。"""
+    response = db_client.post(
+        f"{API}/providers",
+        json={
+            "name": "重复模型服务",
+            "base_url": "https://duplicate.test/v1",
+            "models": [
+                {"name": "qwen3", "remote_model_id": "qwen3"},
+                {"name": "qwen3", "remote_model_id": "qwen3"},
+            ],
+        },
+    )
+    assert response.status_code == 409, response.text
+    assert response.json()["error"]["details"][0]["field"] == "remote_model_id"
+    # 事务整体回滚：服务商也不能被留下。
+    assert db_client.get(f"{API}/providers").json()["data"] == []
+
+
+def test_create_provider_rejects_too_many_models(db_client: TestClient) -> None:
+    """模型数量超过上限返回 422，而不是写入一半。"""
+    models = [{"name": f"model-{index}", "remote_model_id": f"model-{index}"} for index in range(21)]
+    response = db_client.post(
+        f"{API}/providers",
+        json={"name": "超量服务", "base_url": "https://many.test/v1", "models": models},
+    )
+    assert response.status_code == 422, response.text
+    assert db_client.get(f"{API}/providers").json()["data"] == []
