@@ -28,6 +28,7 @@ import {
   type AiProvider,
   type AiProviderUpdateInput,
 } from '@/shared/api/ai'
+import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { isSafeBaseUrl } from '@/shared/forms/baseUrl'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
@@ -63,6 +64,8 @@ const actionNotice = ref<string | null>(null)
 
 /** 各服务商展开行里"追加模型"的输入；按服务商主键保存，避免刷新时清空用户输入。 */
 const newModelNames = ref<Record<string, string>>({})
+/** 当前展开"追加模型"表单的服务商主键；同时只有一个表单可见，初始为收起状态。 */
+const addingModelFor = ref<string | null>(null)
 
 // 服务商编辑器：`editorApiKey` 恒以空串开始，绝不回填已保存凭据。
 const providerEditorTarget = ref<ProviderEditorTarget | null>(null)
@@ -111,6 +114,11 @@ function describeError(error: ParsedServerError | null): string | undefined {
 const loadErrorDescription = computed(() => describeError(loadError.value))
 const actionErrorDescription = computed(() => describeError(actionError.value))
 const editorErrorDescription = computed(() => describeError(editorError.value))
+/** 编辑器始终从最新列表读取服务商，单项模型操作刷新后不会继续操作过期快照。 */
+const editingProvider = computed(() => {
+  if (providerEditorTarget.value === null) return null
+  return providers.value.find(provider => provider.id === providerEditorTarget.value?.id) ?? null
+})
 
 /** 构造前端本地校验错误；字段级原因留空，整体提示即可定位。 */
 function localError(message: string): ParsedServerError {
@@ -147,6 +155,21 @@ async function load(): Promise<void> {
   }
 }
 
+/** 打开当前编辑服务商下的"追加模型"表单；先清掉页面级错误，避免旧提示挡在新输入前面。 */
+function openAddModelForm(provider: AiProvider): void {
+  actionError.value = null
+  addingModelFor.value = provider.id
+}
+
+/** 关闭"追加模型"表单并丢弃未保存输入；下次再打开时输入框为空。 */
+function closeAddModelForm(): void {
+  const provider = editingProvider.value
+  addingModelFor.value = null
+  if (provider !== null) {
+    newModelNames.value[provider.id] = ''
+  }
+}
+
 /** 在某个服务商下追加模型；只提交名称，凭据始终复用所属服务商。 */
 async function submitModel(provider: AiProvider): Promise<void> {
   if (submitting.value) {
@@ -163,10 +186,11 @@ async function submitModel(provider: AiProvider): Promise<void> {
   actionNotice.value = null
   try {
     await createAiModel(provider.id, { name })
-    newModelNames.value[provider.id] = ''
+    // 提交成功后再收起表单并清空输入：UI 进入"未在追加模型"的可继续状态。
+    closeAddModelForm()
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '追加模型')
   } finally {
     submitting.value = false
   }
@@ -184,7 +208,7 @@ async function makeDefault(model: AiModel): Promise<void> {
     await setDefaultAiModel(model.id)
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '设置默认模型')
   } finally {
     submitting.value = false
   }
@@ -202,7 +226,7 @@ async function checkModel(model: AiModel): Promise<void> {
     await testAiModel(model.id)
     actionNotice.value = '连接测试通过。'
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '测试模型连接')
   } finally {
     testingModelId.value = null
   }
@@ -220,7 +244,7 @@ async function removeProvider(provider: AiProvider): Promise<void> {
     await deleteAiProvider(provider.id)
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '删除服务商')
   } finally {
     submitting.value = false
   }
@@ -238,7 +262,7 @@ async function removeModel(model: AiModel): Promise<void> {
     await deleteAiModel(model.id)
     await load()
   } catch (error: unknown) {
-    actionError.value = parseServerError(error)
+    actionError.value = resolveActionFailure(error, '删除模型')
   } finally {
     submitting.value = false
   }
@@ -255,6 +279,8 @@ onMounted(() => {
 /** 打开服务商编辑器；凭据输入恒为空，已保存内容只以掩码提示展示。 */
 function openProviderEditor(provider: AiProvider): void {
   editorError.value = null
+  // 切换服务商时重置表单展开状态，避免看到上一个服务商的陈旧输入与错误提示。
+  addingModelFor.value = null
   providerEditorTarget.value = {
     id: provider.id,
     version: provider.version,
@@ -272,6 +298,7 @@ function openProviderEditor(provider: AiProvider): void {
 function closeProviderEditor(): void {
   providerEditorTarget.value = null
   editorError.value = null
+  addingModelFor.value = null
 }
 
 /**
@@ -461,7 +488,7 @@ async function saveModelEditor(): Promise<void> {
         <template v-else-if="column.key === 'actions'">
           <a-space>
             <a-button size="small" :data-testid="`edit-${(record as AiProvider).id}`" @click="openProviderEditor(record as AiProvider)">
-              编辑
+              配置
             </a-button>
             <a-popconfirm
               title="删除后将永久移除该服务商的 API Key；此操作不可恢复。"
@@ -482,93 +509,6 @@ async function saveModelEditor(): Promise<void> {
         </template>
       </template>
 
-      <template #expandedRowRender="{ record }">
-        <div class="provider-models" :data-testid="`models-${(record as AiProvider).id}`">
-          <a-table
-            :data-source="(record as AiProvider).models"
-            :columns="modelColumns"
-            row-key="id"
-            size="small"
-            :pagination="false"
-            :scroll="{ x: 'max-content' }"
-          >
-            <template #bodyCell="{ column, record: model }">
-              <template v-if="column.key === 'status'">
-                <a-tag v-if="(model as AiModel).is_default" color="blue">默认启用</a-tag>
-                <a-tag v-else-if="!(model as AiModel).is_enabled" color="default">已停用</a-tag>
-                <span v-else>启用</span>
-              </template>
-              <template v-else-if="column.key === 'actions'">
-                <a-space>
-                  <a-button
-                    type="link"
-                    size="small"
-                    :disabled="(model as AiModel).is_default"
-                    :data-testid="`set-default-${(model as AiModel).id}`"
-                    @click="makeDefault(model as AiModel)"
-                  >
-                    设为默认
-                  </a-button>
-                  <a-button
-                    type="link"
-                    size="small"
-                    :loading="testingModelId === (model as AiModel).id"
-                    :data-testid="`test-${(model as AiModel).id}`"
-                    @click="checkModel(model as AiModel)"
-                  >
-                    测试连接
-                  </a-button>
-                  <a-button
-                    type="link"
-                    size="small"
-                    :data-testid="`edit-${(model as AiModel).id}`"
-                    @click="openModelEditor(model as AiModel)"
-                  >
-                    编辑
-                  </a-button>
-                  <a-popconfirm
-                    title="删除后不可恢复；默认模型需先切换为其他模型。"
-                    ok-text="确认删除"
-                    cancel-text="取消"
-                    @confirm="removeModel(model as AiModel)"
-                  >
-                    <a-button
-                      type="link"
-                      size="small"
-                      danger
-                      :disabled="(model as AiModel).is_default"
-                      :data-testid="`delete-model-${(model as AiModel).id}`"
-                    >
-                      删除
-                    </a-button>
-                  </a-popconfirm>
-                </a-space>
-              </template>
-            </template>
-          </a-table>
-
-          <a-form layout="inline" class="model-form" @submit.prevent="submitModel(record as AiProvider)">
-            <a-form-item label="模型名称">
-              <a-input
-                v-model:value="newModelNames[(record as AiProvider).id]"
-                :maxlength="100"
-                placeholder="如 deepseek-chat"
-                :data-testid="`model-name-${(record as AiProvider).id}`"
-              />
-            </a-form-item>
-            <a-form-item>
-              <a-button
-                type="primary"
-                :loading="submitting"
-                :data-testid="`create-model-${(record as AiProvider).id}`"
-                @click="submitModel(record as AiProvider)"
-              >
-                追加模型
-              </a-button>
-            </a-form-item>
-          </a-form>
-        </div>
-      </template>
     </a-table>
 
     <!--
@@ -577,10 +517,11 @@ async function saveModelEditor(): Promise<void> {
       代价是每次打开都是新实例，因此表单状态必须在 open* 中显式初始化。
     -->
     <a-modal
-      v-if="providerEditorTarget"
+      v-if="providerEditorTarget && modelEditorTarget === null"
       :open="true"
       data-testid="provider-editor"
-      title="编辑服务商"
+      title="配置服务商"
+      :width="860"
       :confirm-loading="savingEditor"
       :get-container="false"
       ok-text="保存"
@@ -625,6 +566,83 @@ async function saveModelEditor(): Promise<void> {
           <a-switch v-model:checked="editorEnabled" data-testid="editor-provider-enabled" />
         </a-form-item>
       </a-form>
+      <template v-if="editingProvider">
+        <a-divider>模型配置</a-divider>
+        <p class="model-hint">模型操作会立即单项保存并刷新配置；这避免多个模型同时修改时出现部分保存的误导。</p>
+        <div class="provider-models" :data-testid="`models-${editingProvider.id}`">
+          <a-table :data-source="editingProvider.models" :columns="modelColumns" row-key="id" size="small" :pagination="false" :scroll="{ x: 'max-content' }">
+            <template #bodyCell="{ column, record: model }">
+              <template v-if="column.key === 'status'">
+                <a-tag v-if="(model as AiModel).is_default" color="blue">默认启用</a-tag>
+                <a-tag v-else-if="!(model as AiModel).is_enabled" color="default">已停用</a-tag>
+                <span v-else>启用</span>
+              </template>
+              <template v-else-if="column.key === 'actions'">
+                <a-space>
+                  <a-button type="link" size="small" :disabled="(model as AiModel).is_default" :data-testid="`set-default-${(model as AiModel).id}`" @click="makeDefault(model as AiModel)">设为默认</a-button>
+                  <a-button type="link" size="small" :loading="testingModelId === (model as AiModel).id" :data-testid="`test-${(model as AiModel).id}`" @click="checkModel(model as AiModel)">测试连接</a-button>
+                  <a-button type="link" size="small" :data-testid="`edit-${(model as AiModel).id}`" @click="openModelEditor(model as AiModel)">编辑</a-button>
+                  <a-popconfirm title="删除后不可恢复；默认模型需先切换为其他模型。" ok-text="确认删除" cancel-text="取消" @confirm="removeModel(model as AiModel)">
+                    <a-button type="link" size="small" danger :disabled="(model as AiModel).is_default" :data-testid="`delete-model-${(model as AiModel).id}`">删除</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+          <!--
+            默认只显示"添加模型"按钮，避免无意义的输入框一直占用列表底部。
+            点击后展开输入框与"确定 / 取消"按钮：确定才提交，取消仅关闭并清空。
+          -->
+          <div class="model-add-area" :data-testid="`model-add-${editingProvider.id}`">
+            <a-button
+              v-if="addingModelFor !== editingProvider.id"
+              type="primary"
+              size="small"
+              :data-testid="`open-add-model-${editingProvider.id}`"
+              @click="openAddModelForm(editingProvider)"
+            >
+              添加模型
+            </a-button>
+            <a-form
+              v-else
+              layout="inline"
+              class="model-form"
+              @submit.prevent="submitModel(editingProvider)"
+            >
+              <a-form-item label="模型名称">
+                <a-input
+                  v-model:value="newModelNames[editingProvider.id]"
+                  :maxlength="100"
+                  placeholder="如 deepseek-chat"
+                  :data-testid="`model-name-${editingProvider.id}`"
+                />
+              </a-form-item>
+              <a-form-item>
+                <a-space>
+                  <a-button
+                    type="primary"
+                    size="small"
+                    :loading="submitting"
+                    :disabled="submitting"
+                    :data-testid="`confirm-add-model-${editingProvider.id}`"
+                    @click="submitModel(editingProvider)"
+                  >
+                    确定
+                  </a-button>
+                  <a-button
+                    size="small"
+                    :disabled="submitting"
+                    :data-testid="`cancel-add-model-${editingProvider.id}`"
+                    @click="closeAddModelForm"
+                  >
+                    取消
+                  </a-button>
+                </a-space>
+              </a-form-item>
+            </a-form>
+          </div>
+        </div>
+      </template>
     </a-modal>
 
     <a-modal
@@ -674,9 +692,9 @@ async function saveModelEditor(): Promise<void> {
   margin-left: 8px;
 }
 
-.provider-models {
-  padding: 4px 0 0 8px;
-}
+.provider-models { padding-top: 4px; }
+
+.model-hint { margin: 0 0 12px; color: var(--ja-color-muted); font-size: 12px; }
 
 .model-form {
   margin-top: 12px;

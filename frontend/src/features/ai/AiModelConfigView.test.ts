@@ -11,6 +11,7 @@
  */
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { notification } from 'ant-design-vue'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
@@ -29,6 +30,8 @@ import {
 import AiModelConfigView from './AiModelConfigView.vue'
 
 const { pushMock } = vi.hoisted(() => ({ pushMock: vi.fn() }))
+/** 仅观察统一通知入口，确保组件不会把网络失败再渲染成页面内错误块。 */
+const noticeSpy = vi.spyOn(notification, 'error')
 
 vi.mock('vue-router', () => ({ useRouter: () => ({ push: pushMock }) }))
 
@@ -88,18 +91,16 @@ function mountView(): VueWrapper {
 }
 
 /**
- * 展开第 `index` 个服务商行。
+ * 打开服务商配置界面。
  *
- * 直接点击 Ant Design 的展开按钮，而不是依赖内部状态：展开是用户真实操作，
- * 用同一入口驱动测试，才能同时验证"展开后模型区域确实出现"。
+ * 模型管理已从列表展开行移入服务商配置界面；测试经由真实入口验证该边界。
  */
-async function expandRow(wrapper: VueWrapper, index = 0): Promise<void> {
-  const icons = wrapper.findAll('.ant-table-row-expand-icon')
-  const icon = icons[index]
-  if (icon === undefined) {
-    throw new Error('没有找到展开按钮。')
+async function openProviderConfig(wrapper: VueWrapper, providerId = 'provider-1'): Promise<void> {
+  const trigger = wrapper.find(`[data-testid="edit-${providerId}"]`)
+  if (!trigger.exists()) {
+    throw new Error('没有找到服务商配置入口。')
   }
-  await icon.trigger('click')
+  await trigger.trigger('click')
   await flushPromises()
 }
 
@@ -124,6 +125,7 @@ async function clickButton(wrapper: VueWrapper, text: string): Promise<void> {
 
 beforeEach(() => {
   vi.clearAllMocks()
+  noticeSpy.mockImplementation(() => undefined)
   pushMock.mockReset()
   vi.mocked(listAiProviders).mockResolvedValue([providerFixture()])
   vi.mocked(deleteAiProvider).mockResolvedValue({ id: 'provider-1' })
@@ -208,13 +210,13 @@ describe('AiModelConfigView 列表', () => {
     expect(pushMock).toHaveBeenCalledWith({ name: 'ai-provider-new' })
   })
 
-  it('展开服务商后才显示其模型与追加表单', async () => {
+  it('服务商列表只显示摘要，进入配置界面后才显示模型与追加表单', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(false)
 
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
 
     expect(wrapper.find('[data-testid="models-provider-1"]').exists()).toBe(true)
     expect(wrapper.text()).toContain('默认启用')
@@ -222,30 +224,66 @@ describe('AiModelConfigView 列表', () => {
     expect(wrapper.text()).toContain('qwen3')
   })
 
-  it('展开行追加模型只提交名称并重新拉取', async () => {
+  it('点击"添加模型"才展开输入框与确定按钮，提交后收起且重新拉取', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
+
+    // 默认只显示添加按钮：输入框、确定、取消都不在 DOM 中，避免噪声。
+    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(false)
+
+    // 点击添加后才展开输入与操作按钮。
+    await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="cancel-add-model-provider-1"]').exists()).toBe(true)
 
     await wrapper.find('[data-testid="model-name-provider-1"]').setValue('gpt-4.1-mini')
-    await wrapper.find('[data-testid="create-model-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="confirm-add-model-provider-1"]').trigger('click')
     await flushPromises()
 
     expect(createAiModel).toHaveBeenCalledWith('provider-1', { name: 'gpt-4.1-mini' })
     expect(listAiProviders).toHaveBeenCalledTimes(2)
-    expect((wrapper.find('[data-testid="model-name-provider-1"]').element as HTMLInputElement).value).toBe('')
+    // 提交成功后表单收起：再次看到"添加模型"按钮，输入与操作按钮都被卸载。
+    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(false)
   })
 
-  it('模型名称为空时不发请求', async () => {
+  it('展开后模型名称为空时点击确定不发请求，且表单保持打开便于用户继续填写', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
 
-    await wrapper.find('[data-testid="create-model-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="confirm-add-model-provider-1"]').trigger('click')
     await flushPromises()
 
     expect(createAiModel).not.toHaveBeenCalled()
     expect(wrapper.find('[data-testid="form-error"]').text()).toContain('模型名称')
+    expect(wrapper.find('[data-testid="confirm-add-model-provider-1"]').exists()).toBe(true)
+  })
+
+  it('点击取消关闭追加表单，不提交请求且清空未保存的输入', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await openProviderConfig(wrapper)
+
+    await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
+    await wrapper.find('[data-testid="model-name-provider-1"]').setValue('draft-model')
+    await wrapper.find('[data-testid="cancel-add-model-provider-1"]').trigger('click')
+    await flushPromises()
+
+    expect(createAiModel).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="open-add-model-provider-1"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="model-name-provider-1"]').exists()).toBe(false)
+
+    // 再次打开后输入框为空：取消会丢弃草稿，避免下次误用旧值。
+    await wrapper.find('[data-testid="open-add-model-provider-1"]').trigger('click')
+    expect((wrapper.find('[data-testid="model-name-provider-1"]').element as HTMLInputElement).value).toBe('')
   })
 
   it('切换默认模型后重新拉取，以后端状态为准', async () => {
@@ -254,7 +292,7 @@ describe('AiModelConfigView 列表', () => {
     ])
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
 
     await wrapper.find('[data-testid="set-default-model-1"]').trigger('click')
     await flushPromises()
@@ -266,7 +304,7 @@ describe('AiModelConfigView 列表', () => {
   it('连接测试失败显示后端安全文案与错误编号', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
     vi.mocked(testAiModel).mockRejectedValue(
       new ApiError({
         code: 'VALIDATION_ERROR',
@@ -282,6 +320,22 @@ describe('AiModelConfigView 列表', () => {
     const alert = wrapper.find('[data-testid="form-error"]')
     expect(alert.text()).toContain('AI 请求失败或结果无效')
     expect(alert.text()).toContain('req-test')
+  })
+
+  it('连接测试的网络失败只弹一次全局通知，不插入页面内错误块', async () => {
+    vi.mocked(testAiModel).mockRejectedValue(
+      new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' }),
+    )
+    const wrapper = mountView()
+    await flushPromises()
+    await openProviderConfig(wrapper)
+
+    await wrapper.find('[data-testid="test-model-1"]').trigger('click')
+    await flushPromises()
+
+    expect(noticeSpy).toHaveBeenCalledTimes(1)
+    expect(noticeSpy.mock.calls[0][0]).toMatchObject({ message: '测试模型连接失败' })
+    expect(wrapper.find('[data-testid="form-error"]').exists()).toBe(false)
   })
 
   it('删除服务商必须确认后才调用接口并重新拉取', async () => {
@@ -375,7 +429,7 @@ describe('AiModelConfigView 编辑与启停', () => {
   it('编辑模型只提交一个模型名称与启停状态', async () => {
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
 
     await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
     await flushPromises()
@@ -406,7 +460,7 @@ describe('AiModelConfigView 编辑与启停', () => {
     )
     const wrapper = mountView()
     await flushPromises()
-    await expandRow(wrapper)
+    await openProviderConfig(wrapper)
 
     await wrapper.find('[data-testid="edit-model-1"]').trigger('click')
     await wrapper.find('[data-testid="editor-model-enabled"]').trigger('click')
