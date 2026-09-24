@@ -248,6 +248,15 @@ def test_connection_test_requires_compatible_response(monkeypatch: pytest.Monkey
         asyncio.run(gateway.check_connection(_config()))
 
 
+def test_connection_test_rejects_choices_without_message_content(monkeypatch: pytest.MonkeyPatch) -> None:
+    """连通性检查必须验证实际生成所需的 message.content，不能给出虚假的成功反馈。"""
+    captured: dict[str, Any] = {}
+    _install_opener(monkeypatch, captured, json.dumps({"choices": [{}]}).encode())
+
+    with pytest.raises(ValidationFailedError):
+        asyncio.run(gateway.check_connection(_config()))
+
+
 @pytest.mark.parametrize("index", [True, "0", 0.0])
 def test_selection_requires_real_integer_indices(index: object) -> None:
     """布尔、字符串和浮点数不能被隐式强转成条目索引。"""

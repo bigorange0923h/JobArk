@@ -114,11 +114,19 @@ def _post_chat(config: ResolvedAiModel, body: dict[str, Any]) -> dict[str, Any]:
 
 
 def _has_chat_choices(response: dict[str, Any]) -> bool:
-    """判断响应是否含非空的 OpenAI 兼容 `choices` 列表。"""
+    """判断响应是否含可供连接测试确认的 OpenAI 兼容首条消息。
+
+    连接测试不要求模型输出非空内容（`max_tokens=1` 时空字符串仍可能合法），但必须
+    验证实际生成依赖的 `choices[0].message.content` 结构，避免把不兼容响应误报为成功。
+    """
     choices = response.get("choices")
-    if not isinstance(choices, list):
+    if not isinstance(choices, list) or not choices:
         return False
-    return bool(cast("list[object]", choices))
+    first = cast("list[object]", choices)[0]
+    if not isinstance(first, dict):
+        return False
+    message = cast("dict[str, object]", first).get("message")
+    return isinstance(message, dict) and isinstance(cast("dict[str, object]", message).get("content"), str)
 
 
 async def check_connection(config: ResolvedAiModel) -> None:

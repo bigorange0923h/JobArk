@@ -161,7 +161,7 @@ async def update_provider(session: AsyncSession, provider_id: uuid.UUID, payload
         ConflictError: 名称重复、版本过期，或在存在默认模型时停用服务商。
         ValidationFailedError: 接口地址不安全或必填字段被提交为 null。
     """
-    provider = await repo.get_provider(session, provider_id)
+    provider = await repo.get_provider_for_update(session, provider_id)
     if provider is None:
         raise ResourceNotFoundError("AI 服务商不存在。")
 
@@ -228,7 +228,7 @@ async def delete_provider(session: AsyncSession, provider_id: uuid.UUID, payload
     """
     if not payload.confirmed:
         raise ValidationFailedError("请确认删除服务商；删除后其 API Key 不可恢复。")
-    provider = await repo.get_provider(session, provider_id)
+    provider = await repo.get_provider_for_update(session, provider_id)
     if provider is None:
         raise ResourceNotFoundError("AI 服务商不存在。")
     if await repo.has_default_model(session, provider.id):
@@ -256,7 +256,7 @@ async def create_model(session: AsyncSession, provider_id: uuid.UUID, payload: M
         首个启用模型自动成为默认；仍有并发写入产生两个默认模型的可能，
         因此数据库部分唯一索引是最终保证，冲突会被 `repo.add` 映射为 409。
     """
-    provider = await repo.get_provider(session, provider_id)
+    provider = await repo.get_provider_for_update(session, provider_id)
     if provider is None:
         raise ResourceNotFoundError("AI 服务商不存在。")
     if await repo.model_remote_id_exists(session, provider_id, payload.remote_model_id):
@@ -352,17 +352,21 @@ async def set_default_model(session: AsyncSession, model_id: uuid.UUID) -> Model
         数据库唯一冲突与死锁统一映射为 409，不把数据库错误直接暴露为 500。
     """
     try:
+        provider_id = await repo.get_model_provider_id(session, model_id)
+        if provider_id is None:
+            raise ResourceNotFoundError("AI 模型不存在。")
+        provider = await repo.get_provider_for_update(session, provider_id)
+        if provider is None:
+            raise ResourceNotFoundError("AI 服务商不存在。")
+        if not provider.is_enabled:
+            raise ConflictError("所属服务商已停用，不能设为默认模型。")
+
         candidates = await repo.lock_default_candidates(session, model_id)
         model = next((row for row in candidates if row.id == model_id), None)
         if model is None:
             raise ResourceNotFoundError("AI 模型不存在。")
         if not model.is_enabled:
             raise ConflictError("已停用的模型不能被设为默认，请先启用该模型。")
-        provider = await repo.get_provider(session, model.provider_id)
-        if provider is None:
-            raise ResourceNotFoundError("AI 服务商不存在。")
-        if not provider.is_enabled:
-            raise ConflictError("所属服务商已停用，不能设为默认模型。")
 
         current = next((row for row in candidates if row.is_default and row.id != model.id), None)
         if current is not None:

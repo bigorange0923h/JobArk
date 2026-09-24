@@ -80,6 +80,24 @@ async def get_provider(session: AsyncSession, provider_id: uuid.UUID) -> AiProvi
     return await session.get(AiProvider, provider_id)
 
 
+async def get_provider_for_update(session: AsyncSession, provider_id: uuid.UUID) -> AiProvider | None:
+    """锁定服务商行后读取，串行化会改变其默认模型可用性的写入。
+
+    参数:
+        session: 当前事务会话。
+        provider_id: 服务商主键。
+
+    返回:
+        AiProvider | None: 被锁定的服务商；不存在时为 None。
+
+    注意:
+        创建首模型、设置默认、停用与删除服务商都必须先取得此锁，再检查或改变
+        默认状态。否则跨表写入可能把默认模型留在已停用服务商下。
+    """
+    statement = select(AiProvider).where(AiProvider.id == provider_id).with_for_update()
+    return await session.scalar(statement)
+
+
 async def get_model(session: AsyncSession, model_id: uuid.UUID) -> AiModel | None:
     """按主键读取模型。
 
@@ -91,6 +109,24 @@ async def get_model(session: AsyncSession, model_id: uuid.UUID) -> AiModel | Non
         AiModel | None: 模型实例；不存在时为 None。
     """
     return await session.get(AiModel, model_id)
+
+
+async def get_model_provider_id(session: AsyncSession, model_id: uuid.UUID) -> uuid.UUID | None:
+    """只读取模型所属服务商主键，不把模型对象放入当前会话的身份映射。
+
+    参数:
+        session: 当前事务会话。
+        model_id: 模型主键。
+
+    返回:
+        uuid.UUID | None: 所属服务商主键；模型不存在时为 None。
+
+    注意:
+        设默认随后要用 `SELECT ... FOR UPDATE` 读取目标与当前默认模型。若预先加载 ORM
+        模型，SQLAlchemy 可能复用事务开始时的旧属性，导致行锁查询看见数据库新行却保留旧
+        `is_default` 值；这里刻意只读取标量，保证候选行的状态来自加锁查询。
+    """
+    return await session.scalar(select(AiModel.provider_id).where(AiModel.id == model_id))
 
 
 async def get_default_model(session: AsyncSession) -> AiModel | None:

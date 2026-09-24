@@ -12,6 +12,7 @@
 
 import asyncio
 import uuid
+from contextlib import suppress
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,6 +24,7 @@ from sqlalchemy.pool import NullPool
 from app.ai import repository as repo
 from app.ai import service
 from app.ai.models import AiModel, AiProvider
+from app.ai.schemas.config import ModelCreate, ProviderUpdate
 from app.core.errors import ConflictError
 
 
@@ -225,5 +227,73 @@ async def test_non_conflict_database_error_is_not_masked(
         async with factory() as session:
             with pytest.raises(OperationalError):
                 await service.set_default_model(session, ids[1])
+    finally:
+        await engine.dispose()
+
+
+async def test_concurrent_disable_and_first_model_creation_never_leaves_disabled_default_provider(
+    db_client: TestClient, test_database_url: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """停用服务商与创建首个模型竞争时，最终默认模型的服务商仍必须启用。
+
+    先让停用请求读到“尚无默认模型”但尚未提交，再并发创建首个启用模型。修复前两次
+    写入都会成功，留下已停用服务商上的默认模型；正确实现应由服务商行锁串行化两条路径。
+    """
+    engine = create_async_engine(test_database_url, poolclass=NullPool)
+    try:
+        factory = async_sessionmaker(engine, expire_on_commit=False)
+        provider_id, _ = await _seed(factory, [], default_index=None)
+        checked_empty_default = asyncio.Event()
+        allow_disable_to_continue = asyncio.Event()
+        model_inserted = asyncio.Event()
+        original_has_default = repo.has_default_model
+        original_add = repo.add
+
+        async def pause_after_empty_default(session: AsyncSession, target_provider_id: uuid.UUID) -> bool:
+            """在停用路径确认无默认模型后暂停，构造旧实现的写入窗口。"""
+            result = await original_has_default(session, target_provider_id)
+            if target_provider_id == provider_id and not result:
+                checked_empty_default.set()
+                await allow_disable_to_continue.wait()
+            return result
+
+        monkeypatch.setattr(service.repo, "has_default_model", pause_after_empty_default)
+
+        async def record_model_insert(session: AsyncSession, entity: AiModel) -> AiModel:
+            """记录首模型已写入事务，用于确定旧实现的跨表写入已经发生。"""
+            await original_add(session, entity)
+            model_inserted.set()
+            return entity
+
+        monkeypatch.setattr(service.repo, "add", record_model_insert)
+
+        async def disable_provider() -> None:
+            """尝试停用尚无默认模型的服务商。"""
+            async with factory() as session:
+                provider = await repo.get_provider(session, provider_id)
+                assert provider is not None
+                payload = ProviderUpdate(version=provider.version, is_enabled=False)
+                await service.update_provider(session, provider_id, payload)
+
+        async def create_first_model() -> None:
+            """并发创建首个启用模型。"""
+            async with factory() as session:
+                await service.create_model(session, provider_id, ModelCreate(name="first", remote_model_id="first"))
+
+        disable_task = asyncio.create_task(disable_provider())
+        await checked_empty_default.wait()
+        create_task = asyncio.create_task(create_first_model())
+        # 修复前创建不会锁服务商，因此必定在此窗口插入默认模型；修复后它会等待
+        # 停用事务释放服务商锁，超时后继续释放即可验证不会留下非法状态。
+        with suppress(TimeoutError):
+            await asyncio.wait_for(model_inserted.wait(), timeout=0.5)
+        allow_disable_to_continue.set()
+        await asyncio.gather(disable_task, create_task)
+
+        async with factory() as session:
+            provider = await repo.get_provider(session, provider_id)
+            models = await repo.list_models_for_provider(session, provider_id)
+        assert provider is not None
+        assert not any(model.is_default for model in models) or provider.is_enabled
     finally:
         await engine.dispose()
