@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
     # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
     database_echo: bool = False
+    # 已废弃：旧环境变量网关地址与令牌。仅为不破坏既有 `.env` 而保留字段，
+    # 任何代码都不再读取它们，也永远不得优先于数据库中的默认模型配置（见 ADR 0004）。
     ai_gateway_url: str = ""
     ai_gateway_token: SecretStr = SecretStr("")
     # 服务商 API Key 的可逆加密根密钥；只允许 LOCAL 环境缺省使用开发默认值。

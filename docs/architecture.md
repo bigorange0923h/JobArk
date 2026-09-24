@@ -4,7 +4,7 @@
 
 后端是位于 `backend/` 的独立 Python 工程（`backend/pyproject.toml`、`backend/uv.lock`、唯一入口 `backend/app/main.py`，`requires-python >= 3.14`）。`app/core/` 负责配置、结构化日志、请求标识、统一响应与异常处理，数据访问使用异步 SQLAlchemy 与 Alembic。前端是位于 `frontend/` 的独立 npm 工程（Vite + Vue 3 + TypeScript + Vue Router + Ant Design Vue 按需导入 + API Client）。业务按 Profile、Resume、Job、Matching、Application 和 Dashboard 分域，形成个人求职的人工记录闭环。
 
-分析能力遵循[ADR 0003](adr/0003-求职闭环与分析边界.md)：JD 原文与独立解析产物分离；默认本地逐行提取与字面证据匹配，不输出未经校准的分数。可选 AI 网关用于带逐字引用的 JD 解析、简历已有条目的筛选和重排，必须确认外部发送。用户可在工作台配置多个 OpenAI 兼容服务商与模型并选择唯一默认模型；凭据以数据库密文保存，根密钥不入库，边界见 [ADR 0004](adr/0004-ai-model-configuration.md) 与 [AI 网关](ai-gateway.md)。
+分析能力遵循[ADR 0003](adr/0003-求职闭环与分析边界.md)：JD 原文与独立解析产物分离；默认本地逐行提取与字面证据匹配，不输出未经校准的分数。可选 AI 网关用于带逐字引用的 JD 解析、简历已有条目的筛选和重排，必须确认外部发送；所有 AI 调用一律使用工作台内唯一默认启用模型，未配置时安全失败并提示前往配置页。用户可配置多个 OpenAI 兼容服务商与模型并选择唯一默认模型；凭据以数据库密文保存，根密钥不入库，边界见 [ADR 0004](adr/0004-ai-model-configuration.md) 与 [AI 网关](ai-gateway.md)。
 
 **本设计的目标：**将项目演进为单仓库的个人求职工作台。V1 覆盖 Profile、Resume、手动录入职位与 JD 分析、可解释匹配、Application 流程和 Dashboard。
 
@@ -32,7 +32,7 @@ Vue 3 Web
 FastAPI application
     ├── profile / resume / job / matching / application / dashboard
     ├── local evidence matching
-    └── optional OpenAI-compatible AI gateway (JD parser, resume selector)
+    └── optional OpenAI-compatible AI gateway (unique default model; JD parser, resume selector)
              │
              ├── PostgreSQL: business facts and encrypted model configuration
              └── configured AI endpoint: explicit consent
@@ -143,7 +143,7 @@ JobArk/
 │   │   │   ├── matching/
 │   │   │   ├── application/
 │   │   │   └── dashboard/
-│   │   ├── ai/                   # 受控 LLM 能力和输出契约
+│   │   ├── ai/                   # 模型配置（服务商/模型/凭据）与受控 LLM 调用网关
 │   │   └── automation/           # Phase 5+ 的端口和适配器
 │   ├── .env.example              # 后端应用配置示例（JOBARK_ 前缀）
 │   ├── alembic.ini               # 迁移配置：不含凭据，且必须保持 ASCII-only

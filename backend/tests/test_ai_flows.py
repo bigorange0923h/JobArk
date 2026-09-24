@@ -67,7 +67,10 @@ def test_ai_flow_without_default_model_fails_safely(db_client: TestClient) -> No
 
     assert response.status_code == 409
     assert response.json()["error"]["code"] == "CONFLICT"
-    assert "AI 模型配置" in response.json()["error"]["message"]
+    message = response.json()["error"]["message"]
+    assert "AI 模型配置" in message
+    # 旧实现提示"配置 AI 网关/环境变量"；迁移后必须指向页面内的模型配置。
+    assert "环境变量" not in message
 
 
 def test_optimizer_rejects_invented_indices(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
