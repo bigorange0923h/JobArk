@@ -24,6 +24,14 @@ _LOCAL_HOSTNAMES = frozenset({"localhost", "127.0.0.1", "::1"})
 logger = logging.getLogger(__name__)
 
 
+class TransientAiGatewayError(ValidationFailedError):
+    """可安全重试一次的上游短暂失败。
+
+    仅用于未写业务事实的调用方。超时、协议/JSON 错误和 4xx 配置错误不属于本类，因为重发
+    可能重复消耗模型资源却不能提高成功率；调用方也不得把它用于投递等外部写操作。
+    """
+
+
 @dataclass(frozen=True)
 class ResolvedAiModel:
     """已解析的模型请求配置。
@@ -115,8 +123,17 @@ def _post_chat(config: ResolvedAiModel, body: dict[str, Any]) -> dict[str, Any]:
     except urllib.error.HTTPError as error:
         # 不读取或记录上游错误正文：它可能回显请求内容或凭据。
         logger.warning("AI 上游返回错误状态", extra={"event": "ai_upstream_error", "http_status": error.code})
+        if error.code == 429 or 500 <= error.code <= 599:
+            raise TransientAiGatewayError("AI 服务暂时不可用，已自动重试一次仍失败，请稍后手动重试。") from error
         raise ValidationFailedError("AI 请求失败或结果无效，原始资料已保留，请稍后手动重试。") from error
-    except (urllib.error.URLError, TimeoutError, ValueError, OSError) as error:
+    except urllib.error.URLError as error:
+        # DNS/连接建立失败通常没有请求被上游处理；仅交给预览等无写副作用场景做一次有限重试。
+        logger.warning(
+            "AI 上游连接失败",
+            extra={"event": "ai_upstream_error", "failure_type": type(error).__name__, "retryable": True},
+        )
+        raise TransientAiGatewayError("AI 服务连接暂时失败，已自动重试一次仍失败，请稍后手动重试。") from error
+    except (TimeoutError, ValueError, OSError) as error:
         # 不把上游原文或凭据带进异常：响应体可能包含敏感信息，异常文案会进入 API 响应。
         logger.warning(
             "AI 上游请求或响应无效",

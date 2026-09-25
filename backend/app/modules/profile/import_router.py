@@ -37,7 +37,9 @@ class ImportPreviewRequest(ResumeUpload):
     summary="预览 AI 简历导入候选",
     description=(
         "接收不超过 3 MB 的 PDF/HTML，仅本地提取文字；需 confirm_external 才发送文字到已配置 AI 网关。"
-        "返回带原文摘录的候选，不写入数据库。格式/摘录无效返回 422，网关未配置返回 409。"
+        "返回带原文摘录的候选（基本信息、技能、工作经历、项目经历、教育经历），不写入数据库。"
+        "根协议错误返回 422；集合条目分别做严格结构与原文校验，失败项不会进入候选，并通过 completeness/rejected_items 返回。"
+        "仅对短暂连接、429 与 5xx 失败自动重试一次；格式、超时和证据失败不重试。网关未配置返回 409。"
     ),
     response_model=ApiResponse[ImportPreviewRead],
 )
@@ -130,8 +132,10 @@ async def preview_import_stream(database: DatabaseDep, payload: ImportPreviewReq
     summary="确认导入个人档案",
     description=(
         "重传原文件并核对哈希与摘录；仅 confirmed=true 且选中项有效时写入。"
-        "无档案时创建，有档案时只补充未重复的技能、工作和教育经历，不覆盖根信息；"
-        "候选与来源证据标记未验证。无确认/文件无效返回 422，文件变化返回 409。"
+        "候选可由用户在预览界面修正：字段值仍在原文摘录内的条目挂简历证据，"
+        "被改到摘录之外的条目改挂『本人陈述』证据，两类都标记未验证。"
+        "无档案时创建，有档案时只补充未重复的技能、工作经历、项目经历和教育经历，不覆盖根信息。"
+        "无确认/文件无效/摘录无法定位到原文返回 422，文件变化返回 409。"
     ),
     response_model=ApiResponse[ImportApplyRead],
     status_code=status.HTTP_201_CREATED,

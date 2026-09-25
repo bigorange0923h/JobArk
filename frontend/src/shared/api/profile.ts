@@ -165,6 +165,18 @@ export interface SourcedExperience {
   achievements: string | null
   source_quote: string
 }
+export interface SourcedProject {
+  name: string
+  role: string | null
+  description: string | null
+  responsibilities: string | null
+  achievements: string | null
+  tech_stack: string[]
+  url: string | null
+  start_date: string | null
+  end_date: string | null
+  source_quote: string
+}
 export interface SourcedEducation {
   school: string
   major: string | null
@@ -182,18 +194,46 @@ export interface ProfileImportCandidate {
   city: string | null
   skills: SourcedSkill[]
   experiences: SourcedExperience[]
+  projects: SourcedProject[]
   educations: SourcedEducation[]
+}
+/** 预览覆盖情况；PARTIAL 表示模型有条目或字段未进入待确认候选。 */
+export interface ProfileImportCompleteness {
+  status: 'COMPLETE' | 'PARTIAL'
+  valid_item_count: number
+  rejected_item_count: number
+  unmapped_field_count: number
+}
+/** 单个模型条目因结构或证据不可信而未进入候选。 */
+export interface ProfileImportRejectedItem {
+  group: string
+  index: number
+  code: 'SCHEMA_INVALID' | 'EVIDENCE_INVALID'
+  fields: string[]
+  message: string
+}
+/** 模型输出存在当前事实库未支持的字段；字段不会被静默作为事实导入。 */
+export interface ProfileImportWarning {
+  group: string
+  index: number
+  code: 'UNMAPPED_MODEL_FIELD'
+  fields: string[]
+  message: string
 }
 export interface ProfileImportPreview {
   filename: string
   source_hash: string
   candidate: ProfileImportCandidate
+  completeness: ProfileImportCompleteness
+  rejected_items: ProfileImportRejectedItem[]
+  warnings: ProfileImportWarning[]
 }
 export interface ProfileImportResult {
   profile_id: string
   created_profile: boolean
   skills_added: number
   experiences_added: number
+  projects_added: number
   educations_added: number
 }
 
@@ -360,10 +400,10 @@ export function previewProfileImport(filename: string, contentBase64: string, co
 /** 后端确认过的导入阶段；长时间等待模型时不会假装已有百分比。 */
 export type ProfileImportStage =
   | 'received' | 'document_parsed' | 'model_resolved' | 'ai_request_started'
-  | 'ai_response_parsed' | 'candidate_validated'
+  | 'ai_request_retrying' | 'ai_response_parsed' | 'candidate_validated'
 
 const importStages: ReadonlySet<string> = new Set<ProfileImportStage>([
-  'received', 'document_parsed', 'model_resolved', 'ai_request_started', 'ai_response_parsed', 'candidate_validated',
+  'received', 'document_parsed', 'model_resolved', 'ai_request_started', 'ai_request_retrying', 'ai_response_parsed', 'candidate_validated',
 ])
 
 /** 同一次请求中读取 SSE 阶段和最终统一响应；断流不能当作成功。 */
@@ -439,13 +479,20 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null
 }
 
-/** 用户逐项核对后重传原文件并确认写入，后端会校验哈希与摘录。 */
+/**
+ * 用户逐项核对后重传原文件并确认写入，后端会校验哈希与摘录。
+ *
+ * 候选由调用方传入而不是复用预览结果：用户可以在预览界面修正内容，
+ * 写入的必须是修正后的值；`sourceHash` 仍是预览时那份文件的哈希，用于发现换文件。
+ */
 export function confirmProfileImport(input: {
   filename: string
   contentBase64: string
-  preview: ProfileImportPreview
+  sourceHash: string
+  candidate: ProfileImportCandidate
   skillIndices: number[]
   experienceIndices: number[]
+  projectIndices: number[]
   educationIndices: number[]
 }): Promise<ProfileImportResult> {
   return requestV1<ProfileImportResult>('/profile/import-confirm', {
@@ -453,10 +500,11 @@ export function confirmProfileImport(input: {
     init: jsonInit('POST', {
       filename: input.filename,
       content_base64: input.contentBase64,
-      source_hash: input.preview.source_hash,
-      candidate: input.preview.candidate,
+      source_hash: input.sourceHash,
+      candidate: input.candidate,
       skill_indices: input.skillIndices,
       experience_indices: input.experienceIndices,
+      project_indices: input.projectIndices,
       education_indices: input.educationIndices,
       confirmed: true,
     }),

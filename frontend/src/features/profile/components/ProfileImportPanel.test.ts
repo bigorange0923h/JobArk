@@ -18,15 +18,18 @@ const candidate: ProfileImportPreview = {
   candidate: {
     full_name: '张三', name_quote: '张三', headline: null, email: null, phone: null, city: null,
     skills: [{ name: 'Python', source_quote: '熟悉 Python' }],
-    experiences: [], educations: [],
+    experiences: [], projects: [], educations: [],
   },
+  completeness: { status: 'COMPLETE', valid_item_count: 1, rejected_item_count: 0, unmapped_field_count: 0 },
+  rejected_items: [],
+  warnings: [],
 }
 
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(previewProfileImportStream).mockResolvedValue(candidate)
   vi.mocked(confirmProfileImport).mockResolvedValue({
-    profile_id: 'id', created_profile: true, skills_added: 1, experiences_added: 0, educations_added: 0,
+    profile_id: 'id', created_profile: true, skills_added: 1, experiences_added: 0, projects_added: 0, educations_added: 0,
   })
 })
 
@@ -63,6 +66,81 @@ it('未经外部发送同意不能预览，未经核对不能确认写入', asyn
   await flushPromises()
   expect(confirmProfileImport).toHaveBeenCalledOnce()
   expect(onChanged).toHaveBeenCalledTimes(1)
+})
+
+it('部分候选会明确展示遗漏条目和未映射字段', async () => {
+  vi.mocked(previewProfileImportStream).mockResolvedValue({
+    ...candidate,
+    completeness: { status: 'PARTIAL', valid_item_count: 1, rejected_item_count: 1, unmapped_field_count: 1 },
+    rejected_items: [{
+      group: 'experiences', index: 0, code: 'EVIDENCE_INVALID', fields: [],
+      message: '该条目的字段或摘录无法逐字定位到简历原文，未进入待确认列表。',
+    }],
+    warnings: [{
+      group: 'projects', index: 0, code: 'UNMAPPED_MODEL_FIELD', fields: ['deliverables'],
+      message: '模型返回了当前档案结构未支持的字段；这些字段未作为候选事实导入。',
+    }],
+  })
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    configurable: true,
+    value: [new File(['<html>张三 熟悉 Python</html>'], 'sample.html', { type: 'text/html' })],
+  })
+  await input.trigger('change')
+  await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
+  await wrapper.find('[data-testid="preview-import"]').trigger('click')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  await flushPromises()
+
+  const warning = wrapper.find('[data-testid="profile-import-partial-warning"]')
+  expect(warning.exists()).toBe(true)
+  expect(warning.text()).toContain('本次仅生成部分可验证候选')
+  expect(warning.text()).toContain('experiences 第 1 条')
+  expect(warning.text()).toContain('deliverables 未映射')
+})
+
+it('预览中的候选可以修正，确认时提交修正后的内容与项目选择', async () => {
+  vi.mocked(previewProfileImportStream).mockResolvedValue({
+    ...candidate,
+    candidate: {
+      ...candidate.candidate,
+      projects: [
+        {
+          name: '订单系统重构', role: null, description: null, responsibilities: null, achievements: null,
+          tech_stack: [], url: null, start_date: null, end_date: null, source_quote: '订单系统重构',
+        },
+      ],
+    },
+  })
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    configurable: true,
+    value: [new File(['<html>张三 熟悉 Python 订单系统重构</html>'], 'sample.html', { type: 'text/html' })],
+  })
+  await input.trigger('change')
+  await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
+  await wrapper.find('[data-testid="preview-import"]').trigger('click')
+  await new Promise(resolve => setTimeout(resolve, 30))
+  await flushPromises()
+
+  // 项目经历区块按候选渲染，且技能与项目名都可以在预览里改。
+  // 选择器限定为文本输入（`input.ant-input`）：条目容器内还有复选框的 input，取第一个会命错元素。
+  expect(wrapper.text()).toContain('项目经历（1）')
+  await wrapper.find('[data-testid="candidate-item-skills-0"] input.ant-input').setValue('Python 3')
+  await wrapper.find('[data-testid="candidate-item-projects-0"] input.ant-input').setValue('订单系统重构（自研）')
+  await wrapper.find('[data-testid="profile-import-reviewed"]').setValue(true)
+  await wrapper.find('[data-testid="confirm-import"]').trigger('click')
+  await flushPromises()
+
+  expect(confirmProfileImport).toHaveBeenCalledOnce()
+  const payload = vi.mocked(confirmProfileImport).mock.calls[0][0]
+  expect(payload.candidate.skills[0].name).toBe('Python 3')
+  expect(payload.candidate.projects[0].name).toBe('订单系统重构（自研）')
+  expect(payload.projectIndices).toEqual([0])
+  // 摘录保持只读：它是来源凭证，不能被编辑成别的内容。
+  expect(payload.candidate.projects[0].source_quote).toBe('订单系统重构')
 })
 
 it('生成期间展示后端报告的阶段并保持按钮忙碌', async () => {

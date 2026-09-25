@@ -11,6 +11,7 @@ from fastapi.testclient import TestClient
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
+from app.ai.llm.gateway import TransientAiGatewayError
 from app.core.errors import ValidationFailedError
 from app.modules.profile.import_service import ResumeUpload, parse_document
 
@@ -20,6 +21,7 @@ HTML = (
     "<html><head><title>不应出现</title></head><body>"
     "<h1>张三</h1><p>北京 Python</p>"
     "<p>甲公司 后端工程师 2020 年至 2022 年</p>"
+    "<p>订单系统重构 负责人 技术栈 Spring Boot 主导订单链路拆分 性能提升 30% 2021 年至 2022 年</p>"
     "<p>乙大学 计算机科学 学士 2016 年至 2020 年</p>"
     "<script>伪造经历</script></body></html>"
 )
@@ -44,6 +46,21 @@ def _candidate() -> dict[str, Any]:
                 "start_date": "2020-01-01",
                 "end_date": "2022-01-01",
                 "source_quote": "甲公司 后端工程师 2020 年至 2022 年",
+            }
+        ],
+        "projects": [
+            {
+                "name": "订单系统重构",
+                "role": "负责人",
+                "responsibilities": "主导订单链路拆分",
+                "achievements": "性能提升 30%",
+                "tech_stack": ["Spring Boot"],
+                "start_date": "2021-01-01",
+                "end_date": "2022-01-01",
+                "source_quote": (
+                    "订单系统重构 负责人 技术栈 Spring Boot 主导订单链路拆分 性能提升 30% "
+                    "2021 年至 2022 年"
+                ),
             }
         ],
         "educations": [
@@ -142,7 +159,7 @@ def test_import_without_default_model_fails_without_writing(db_client: TestClien
 def test_preview_checks_model_quotes(
     db_client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
 ) -> None:
-    """模型捏造的经历即使 JSON 形状正确也不能进入预览。"""
+    """模型捏造的经历只会被排除，不阻塞同一份简历里的其他可验证候选。"""
     _configure_default_model(db_client)
 
     async def fake_generate(
@@ -158,13 +175,29 @@ def test_preview_checks_model_quotes(
     monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
     with caplog.at_level(logging.INFO, logger="app.modules.profile.import_service"):
         response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
-    assert response.status_code == 422
-    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["completeness"] == {
+        "status": "PARTIAL",
+        "valid_item_count": 3,
+        "rejected_item_count": 1,
+        "unmapped_field_count": 0,
+    }
+    assert preview["candidate"]["experiences"] == []
+    assert len(preview["candidate"]["skills"]) == 1
+    assert preview["rejected_items"] == [
+        {
+            "group": "experiences",
+            "index": 0,
+            "code": "EVIDENCE_INVALID",
+            "fields": [],
+            "message": "该条目的字段或摘录无法逐字定位到简历原文，未进入待确认列表。",
+        }
+    ]
     stages = [getattr(record, "stage", None) for record in caplog.records]
     assert "document_parsed" in stages
     assert "model_resolved" in stages
     assert "ai_response_parsed" in stages
-    assert "candidate_evidence_failed" in stages
     invalid = [
         record for record in caplog.records if getattr(record, "event", None) == "profile_import_candidate_invalid"
     ]
@@ -173,6 +206,86 @@ def test_preview_checks_model_quotes(
     assert vars(invalid[0])["candidate_index"] == 0
     assert "不存在的公司" not in caplog.text
     assert "张三" not in caplog.text
+
+
+def test_preview_keeps_supported_fields_and_reports_unknown_item_fields(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """项目职责/成果是明确契约字段；其他未知字段可见但不会阻塞项目候选。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = _candidate()
+        candidate["projects"][0]["deliverables"] = "原型与上线文档"
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["candidate"]["projects"][0]["responsibilities"] == "主导订单链路拆分"
+    assert preview["candidate"]["projects"][0]["achievements"] == "性能提升 30%"
+    assert preview["completeness"]["status"] == "PARTIAL"
+    assert preview["completeness"]["rejected_item_count"] == 0
+    assert preview["warnings"] == [
+        {
+            "group": "projects",
+            "index": 0,
+            "code": "UNMAPPED_MODEL_FIELD",
+            "fields": ["deliverables"],
+            "message": "模型返回了当前档案结构未支持的字段；这些字段未作为候选事实导入。",
+        }
+    ]
+
+
+def test_preview_rejects_only_schema_invalid_item(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """单项字段类型错误不再导致同批有效条目丢失。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = _candidate()
+        candidate["experiences"][0]["start_date"] = "不是日期"
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["candidate"]["experiences"] == []
+    assert preview["rejected_items"][0]["code"] == "SCHEMA_INVALID"
+    assert preview["rejected_items"][0]["fields"] == ["start_date"]
+
+
+def test_preview_retries_one_transient_gateway_failure(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """预览不写事实时，明确短暂失败只额外发送一次。"""
+    _configure_default_model(db_client)
+    attempts = 0
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise TransientAiGatewayError("temporary")
+        return _candidate()
+
+    async def no_sleep(seconds: float) -> None:
+        """避免重试策略测试产生真实等待。"""
+        assert seconds == 1.0
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    monkeypatch.setattr("app.modules.profile.import_service.asyncio.sleep", no_sleep)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    assert attempts == 2
 
 
 def test_stream_preview_reports_error_without_consent(client: TestClient) -> None:
@@ -190,7 +303,7 @@ def test_stream_preview_reports_error_without_consent(client: TestClient) -> Non
 
 
 def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
-    """预览不写库；人工确认后创建档案及来源明确的三类事实。"""
+    """预览不写库；人工确认后创建档案及来源明确的四类事实。"""
     _configure_default_model(db_client)
 
     async def fake_generate(
@@ -209,6 +322,7 @@ def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.M
         **preview.json()["data"],
         "skill_indices": [0],
         "experience_indices": [0],
+        "project_indices": [0],
         "education_indices": [0],
         "confirmed": True,
     }
@@ -218,9 +332,15 @@ def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.M
     saved = db_client.post(f"{API}/import-confirm", json=payload)
     assert saved.status_code == 201, saved.text
     assert saved.json()["data"]["created_profile"] is True
+    assert saved.json()["data"]["projects_added"] == 1
     profile = db_client.get(API).json()["data"]
     assert profile["full_name"] == "张三"
     assert len(profile["skills"]) == len(profile["experiences"]) == len(profile["educations"]) == 1
+    assert len(profile["projects"]) == 1
+    assert profile["projects"][0]["name"] == "订单系统重构"
+    assert profile["projects"][0]["tech_stack"] == ["Spring Boot"]
+    # 项目的职责与成果合并进项目说明：Profile 的项目事实只有 description 一列。
+    assert profile["projects"][0]["description"] == "主导订单链路拆分\n性能提升 30%"
     assert profile["skills"][0]["claim_status"] == "UNVERIFIED"
     assert profile["evidences"][0]["verification_status"] == "UNVERIFIED"
     assert profile["evidences"][0]["source_hash"] == preview.json()["data"]["source_hash"]
@@ -282,6 +402,8 @@ def test_import_preserves_existing_profile_and_checks_indices(db_client: TestCli
     }
     invalid = db_client.post(f"{API}/import-confirm", json={**payload, "skill_indices": [2]})
     assert invalid.status_code == 422
+    out_of_range_project = db_client.post(f"{API}/import-confirm", json={**payload, "project_indices": [1]})
+    assert out_of_range_project.status_code == 422
     assert db_client.get(API).json()["data"]["evidences"] == []
     saved = db_client.post(f"{API}/import-confirm", json=payload)
     assert saved.status_code == 201, saved.text
@@ -290,3 +412,173 @@ def test_import_preserves_existing_profile_and_checks_indices(db_client: TestCli
     assert profile["full_name"] == "原有姓名"
     assert profile["city"] == "上海"
     assert len(profile["experiences"]) == len(profile["educations"]) == 1
+
+
+def test_preview_accepts_project_duty_and_achievement_fields(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型按工作经历的习惯给项目带上职责/成果时不得整体失败。
+
+    这是回归用例：项目候选一度只声明了 `description`，`extra="forbid"` 会让
+    `projects.0.responsibilities` 触发 extra_forbidden，把整次导入变成 422。
+    """
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回带职责与成果的项目候选。"""
+        return _candidate()
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    project = response.json()["data"]["candidate"]["projects"][0]
+    assert project["responsibilities"] == "主导订单链路拆分"
+    assert project["achievements"] == "性能提升 30%"
+
+
+def test_preview_rejects_fabricated_project(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """项目经历同样受严格校验约束：模型编造的项目不得进入预览。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回项目名称被替换成原文中不存在的候选。"""
+        candidate = _candidate()
+        candidate["projects"][0]["name"] = "不存在的项目"
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    with caplog.at_level(logging.WARNING, logger="app.modules.profile.import_service"):
+        response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["candidate"]["projects"] == []
+    assert preview["completeness"]["status"] == "PARTIAL"
+    assert preview["rejected_items"][0]["group"] == "projects"
+    assert preview["rejected_items"][0]["code"] == "EVIDENCE_INVALID"
+    invalid = [
+        record for record in caplog.records if getattr(record, "event", None) == "profile_import_candidate_invalid"
+    ]
+    assert len(invalid) == 1
+    assert vars(invalid[0])["candidate_group"] == "project"
+    assert vars(invalid[0])["candidate_index"] == 0
+    assert "不存在的项目" not in caplog.text
+
+
+def test_confirm_accepts_edited_candidate_with_manual_evidence(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户修正过的条目可以写入，但改挂"本人陈述"证据，未修订条目仍挂简历证据。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """模拟默认模型返回可验证的候选。"""
+        return _candidate()
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    upload = _upload()
+    preview = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+    assert preview.status_code == 200, preview.text
+    candidate = preview.json()["data"]["candidate"]
+    # 用户在预览界面把项目名改成原文摘录之外的说法：允许写入，但来源不再是简历原文。
+    candidate["projects"][0]["name"] = "订单系统重构（本人补充命名）"
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **upload,
+            "source_hash": preview.json()["data"]["source_hash"],
+            "candidate": candidate,
+            "skill_indices": [0],
+            "experience_indices": [0],
+            "project_indices": [0],
+            "education_indices": [0],
+            "confirmed": True,
+        },
+    )
+
+    assert saved.status_code == 201, saved.text
+    profile = db_client.get(API).json()["data"]
+    by_source = {evidence["source_type"]: evidence for evidence in profile["evidences"]}
+    assert set(by_source) == {"RESUME_DOCUMENT", "MANUAL_DECLARATION"}
+    manual = by_source["MANUAL_DECLARATION"]
+    resume = by_source["RESUME_DOCUMENT"]
+    assert manual["source_hash"] is None
+    assert "订单系统重构（本人补充命名）" in manual["content"]
+    # 未修订的技能仍挂简历证据，且简历证据里不含被修订后的项目名。
+    assert profile["skills"][0]["source_evidence_id"] == resume["id"]
+    assert profile["experiences"][0]["source_evidence_id"] == resume["id"]
+    assert profile["projects"][0]["source_evidence_id"] == manual["id"]
+    assert profile["projects"][0]["name"] == "订单系统重构（本人补充命名）"
+    assert "订单系统重构（本人补充命名）" not in resume["content"]
+
+
+def test_imported_item_can_be_edited_after_import(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """导入写入的事实可以在档案页继续编辑：这是"采集后允许编辑"的第二段要求。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """模拟默认模型返回可验证的候选。"""
+        return _candidate()
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    upload = _upload()
+    preview = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+    assert preview.status_code == 200, preview.text
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **upload,
+            **preview.json()["data"],
+            "skill_indices": [0],
+            "project_indices": [0],
+            "confirmed": True,
+        },
+    )
+    assert saved.status_code == 201, saved.text
+    project = db_client.get(API).json()["data"]["projects"][0]
+
+    updated = db_client.patch(
+        f"{API}/projects/{project['id']}",
+        json={"version": project["version"], "role": "技术负责人", "tech_stack": ["Spring Boot", "MySQL"]},
+    )
+
+    assert updated.status_code == 200, updated.text
+    payload = updated.json()["data"]
+    assert payload["role"] == "技术负责人"
+    assert payload["tech_stack"] == ["Spring Boot", "MySQL"]
+    # 编辑不会改变来源证据：事实仍然可以追溯到导入时的记录。
+    assert payload["source_evidence_id"] == project["source_evidence_id"]
+
+
+def test_confirm_still_rejects_rewritten_quote(db_client: TestClient) -> None:
+    """摘录本身仍必须真实存在于原文：放宽字段值不等于允许编造来源。"""
+    upload = _upload()
+    candidate = _candidate()
+    candidate["projects"][0]["source_quote"] = "原文里没有的摘录"
+    payload: dict[str, Any] = {
+        **upload,
+        "source_hash": parse_document(ResumeUpload(**upload)).source_hash,
+        "candidate": candidate,
+        "project_indices": [0],
+        "confirmed": True,
+    }
+
+    response = db_client.post(f"{API}/import-confirm", json=payload)
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert db_client.get(API).status_code == 404
