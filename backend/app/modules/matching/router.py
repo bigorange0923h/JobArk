@@ -1,4 +1,8 @@
-"""可解释的本地匹配：精确证据检索，缺证据归为未知，不输出招聘概率。"""
+"""可解释的本地匹配：档案事实的字面检索，命中只说明"档案里有这条事实"，不说明已核实。
+
+命中状态刻意点名事实而不是证据：用户自述的未验证技能同样可能命中岗位关键词，报告必须说清这一点，
+并且不能暗示能力、熟练度、年限或整项条件已经核实，也不输出招聘概率。
+"""
 
 import hashlib
 import json
@@ -49,9 +53,44 @@ class MatchRead(ORMModel):
     report_json: dict[str, Any] = Field(description="条件、事实引用、缺口和未知项，不包含总分。")
 
 
+def _evidence_titles(profile: dict[str, Any]) -> dict[str, str]:
+    """返回资料修订快照里的证据 id → 标题映射。
+
+    参数:
+        profile: 资料修订快照。
+
+    返回:
+        dict[str, str]: 证据主键到标题的映射；用于让报告能说明命中事实的来源。
+
+    注意:
+        只用于展示：报告不因为存在来源记录就改变命中判定。
+    """
+    return {
+        str(evidence.get("id")): str(evidence.get("title") or "")
+        for evidence in profile.get("evidences", [])
+    }
+
+
 def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | None) -> dict[str, Any]:
-    """只识别资料中已有技能名的字面证据；不把出现技能等同于满足整项要求。"""
+    """只识别资料中已有技能名的字面匹配；不把出现技能等同于满足整项要求。
+
+    参数:
+        jd: JD 原文。
+        profile: 资料修订快照（含事实与来源证据摘要）。
+        document: 可选的简历版本文档；提供时会额外要求该技能事实已被简历表达。
+
+    返回:
+        dict[str, Any]: 逐条条件的命中情况。`status` 取值语义：
+            `FACT_FOUND` 仅在档案中找到字面匹配的事实、且该事实未挂来源记录；
+            `EVIDENCE_ATTACHED` 命中且该事实另挂了来源证据记录（仍然只是字面匹配）；
+            `UNKNOWN` 未在档案中找到对应事实（不等同于不满足）。
+
+    注意:
+        命中判定与 `claim_status`、是否挂证据**无关**：用户自述的未验证技能同样会命中，报告如实
+        呈现其状态与来源，由读者判断可信度。分数恒为空，不输出招聘概率。
+    """
     analysis = parse_jd(jd)
+    titles = _evidence_titles(profile)
     rows: list[dict[str, Any]] = []
     skills: list[dict[str, Any]] = profile.get("skills", [])
     expressed: list[dict[str, Any]] = document.get("skills", []) if document else []
@@ -65,20 +104,30 @@ def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | No
                 continue
             if document is not None and not any(item.get("source_fact_id") == skill.get("id") for item in expressed):
                 continue
+            evidence_id = skill.get("source_evidence_id")
             evidence.append(
                 {
                     "fact_id": skill["id"],
-                    "evidence_id": skill.get("source_evidence_id"),
+                    "evidence_id": evidence_id,
+                    "evidence_title": titles.get(str(evidence_id), "") if evidence_id else "",
                     "name": name,
                     "claim_status": skill.get("claim_status", "UNVERIFIED"),
                 }
             )
+        has_source = any(item["evidence_id"] for item in evidence)
+        if not evidence:
+            status = "UNKNOWN"
+        elif has_source:
+            status = "EVIDENCE_ATTACHED"
+        else:
+            status = "FACT_FOUND"
         rows.append(
             {
                 **requirement.model_dump(),
-                "status": "EVIDENCE_FOUND" if evidence else "UNKNOWN",
+                "status": status,
                 "evidence": evidence,
-                "explanation": "找到技能字面引用，熟练度、年限及完整条件仍需确认。"
+                "explanation": "命中档案中的技能事实（字面匹配）：这是名称层面的对应，"
+                "不代表能力、熟练度、年限或整项条件已核实。"
                 if evidence
                 else "未找到可核验依据，不等同于不满足。",
             }
@@ -96,7 +145,12 @@ def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | No
 @router.post(
     "",
     summary="生成可解释匹配",
-    description="本地证据检索，不发送资料到外部；固定快照和修订，引用不存在返回 404，不一致返回 422。",
+    description=(
+        "本地字面检索，不发送资料到外部；固定快照与修订，引用不存在返回 404，不一致返回 422。"
+        "命中状态区分字面命中（`FACT_FOUND` 未挂来源记录、`EVIDENCE_ATTACHED` 另挂来源记录）与 `UNKNOWN`；"
+        "两种命中都只是名称层面的对应，不代表能力、熟练度、年限或整项条件已核实，也不输出招聘概率。"
+        "是否挂来源证据不影响命中判定。"
+    ),
     response_model=ApiResponse[MatchRead],
     status_code=201,
 )

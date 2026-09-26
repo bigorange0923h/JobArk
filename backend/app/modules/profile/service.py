@@ -15,6 +15,7 @@ from collections.abc import Sequence
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base
@@ -23,7 +24,7 @@ from app.core.responses import ErrorDetail
 from app.core.versioning import apply_versioned_update, collect_updates
 
 from . import repository as repo
-from .enums import ClaimStatus
+from .enums import ClaimStatus, EvidenceSourceType, VerificationStatus
 from .models import (
     PersonalProfile,
     ProfileEducation,
@@ -62,6 +63,26 @@ SNAPSHOT_KEY_BY_MODEL: dict[type[Base], str] = {
     ProfileProject: "projects",
     ProfileEducation: "educations",
     ProfileLanguage: "languages",
+}
+
+# 「本人编辑」证据的固定标题：同一档案只保留一条，避免每轮编辑都新增一行证据。
+MANUAL_EDIT_EVIDENCE_TITLE = "本人编辑：内容修订"
+
+# 各事实的"内容字段"：这些字段一变，事实内容就变了，来源必须重新归因（见 `_reattribute_edited_fact`）。
+CONTENT_FIELDS_BY_MODEL: dict[type[Base], tuple[str, ...]] = {
+    ProfileSkill: ("name", "category", "proficiency", "years_of_experience"),
+    ProfileExperience: (
+        "company",
+        "title",
+        "location",
+        "start_date",
+        "end_date",
+        "responsibilities",
+        "achievements",
+    ),
+    ProfileProject: ("name", "role", "description", "tech_stack", "url", "start_date", "end_date"),
+    ProfileEducation: ("school", "major", "degree", "start_date", "end_date"),
+    ProfileLanguage: ("language", "level", "note"),
 }
 
 
@@ -225,6 +246,76 @@ async def _ensure_evidence_usable(session: AsyncSession, evidence_id: uuid.UUID 
             "引用的证据不存在或已归档。",
             details=[ErrorDetail(field="source_evidence_id", reason="证据不存在或已归档，请先补录或改用其他证据。")],
         )
+
+
+async def _manual_edit_evidence(session: AsyncSession, profile_id: uuid.UUID) -> uuid.UUID:
+    """返回「本人编辑」证据的主键；不存在时创建。
+
+    参数:
+        session: 当前会话。
+        profile_id: 档案主键。
+
+    返回:
+        uuid.UUID: 可用于重新归因的证据主键。
+
+    注意:
+        同一档案只保留一条（标题固定），因此多轮编辑不会堆积大量证据行。它属于
+        `MANUAL_DECLARATION`（本人陈述），与简历文档证据有明确区别。
+    """
+    existing = await session.scalar(
+        select(ProfileEvidence).where(
+            ProfileEvidence.profile_id == profile_id,
+            ProfileEvidence.source_type == EvidenceSourceType.MANUAL_DECLARATION,
+            ProfileEvidence.title == MANUAL_EDIT_EVIDENCE_TITLE,
+            ProfileEvidence.archived_at.is_(None),
+        )
+    )
+    if existing is not None:
+        return existing.id
+    evidence = ProfileEvidence(
+        profile_id=profile_id,
+        source_type=EvidenceSourceType.MANUAL_DECLARATION,
+        title=MANUAL_EDIT_EVIDENCE_TITLE,
+        content="用户在档案页直接修改的内容（来源为本人陈述，不是简历原文）。",
+        verification_status=VerificationStatus.UNVERIFIED,
+    )
+    session.add(evidence)
+    await session.flush()
+    return evidence.id
+
+
+async def _reattribute_edited_fact(
+    session: AsyncSession,
+    fact: ProfileSkill | ProfileExperience | ProfileProject | ProfileEducation | ProfileLanguage,
+    updates: dict[str, Any],
+) -> None:
+    """事实内容被修改后，把它从简历文档证据改挂到「本人填写」证据。
+
+    参数:
+        session: 当前会话。
+        fact: 被更新的记录（用于读取当前来源与所属档案）。
+        updates: 本次实际更新的字段；需要重新归因时会被就地写入 `source_evidence_id`。
+
+    返回:
+        None
+
+    注意:
+        只有三件事同时成立才重新归因：内容字段确实变了、当前来源是简历文档证据、用户没有在本次
+        请求里显式指定来源。否则编辑后的内容会继续挂在旧简历摘录下，等于让旧摘录为新内容背书——
+        那正是"结论可追溯到证据"要禁止的事。历史证据记录不删除，只是不再被这条事实引用；
+        不存在"必须补交证明"的要求：归因由系统自动完成。
+    """
+    if "source_evidence_id" in updates:
+        return
+    if not any(field in updates for field in CONTENT_FIELDS_BY_MODEL[type(fact)]):
+        return
+    if fact.source_evidence_id is None:
+        # 本来就没有来源（本人填写或手工录入），没有需要修正的归因。
+        return
+    current = await session.get(ProfileEvidence, fact.source_evidence_id)
+    if current is None or current.source_type is not EvidenceSourceType.RESUME_DOCUMENT:
+        return
+    updates["source_evidence_id"] = await _manual_edit_evidence(session, fact.profile_id)
 
 
 async def _ensure_fact_not_referenced(session: AsyncSession, model: type[Base], fact_id: uuid.UUID) -> None:
@@ -593,6 +684,8 @@ async def update_skill(session: AsyncSession, skill_id: uuid.UUID, payload: Skil
         updates["name_normalized"] = normalized
     if "source_evidence_id" in updates:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
+    # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
+    await _reattribute_edited_fact(session, skill, updates)
 
     # 校验必须在"变更后"的状态上进行：只改 claim_status 或只清空证据都可能造成非法组合。
     resulting_status = cast(ClaimStatus, updates.get("claim_status", skill.claim_status))
@@ -693,6 +786,9 @@ async def update_experience(
             details=[ErrorDetail(field="end_date", reason="变更后 end_date 早于 start_date。")],
         )
 
+    # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
+    await _reattribute_edited_fact(session, experience, updates)
+
     await apply_versioned_update(session, experience, payload.version, updates)
     await session.commit()
     return experience
@@ -782,6 +878,9 @@ async def update_project(session: AsyncSession, project_id: uuid.UUID, payload: 
             "结束日期不得早于开始日期。",
             details=[ErrorDetail(field="end_date", reason="变更后 end_date 早于 start_date。")],
         )
+
+    # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
+    await _reattribute_edited_fact(session, project, updates)
 
     await apply_versioned_update(session, project, payload.version, updates)
     await session.commit()
@@ -875,6 +974,9 @@ async def update_education(
             details=[ErrorDetail(field="end_date", reason="变更后 end_date 早于 start_date。")],
         )
 
+    # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
+    await _reattribute_edited_fact(session, education, updates)
+
     await apply_versioned_update(session, education, payload.version, updates)
     await session.commit()
     return education
@@ -956,6 +1058,9 @@ async def update_language(
     updates = collect_updates(payload)
     if "source_evidence_id" in updates:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
+
+    # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
+    await _reattribute_edited_fact(session, language, updates)
 
     await apply_versioned_update(session, language, payload.version, updates)
     await session.commit()

@@ -187,4 +187,37 @@ describe('FactPanel', () => {
     expect(onChanged).toHaveBeenCalledTimes(1)
     expect(onConflict).not.toHaveBeenCalled()
   })
+
+  it('来源与状态收进可选折叠区，不填也能保存', async () => {
+    // 进阶字段由描述符声明：内容字段照常直接可填，来源/状态收进折叠区，避免日常编辑被反复要求选来源。
+    const advancedDescriptor: FactDescriptor<EditableResource, unknown> = {
+      ...descriptor,
+      fields: [
+        { name: 'name', label: '名称', kind: 'text', required: true, maxLength: 100 },
+        {
+          name: 'evidence',
+          label: '来源证据',
+          kind: 'evidence',
+          advanced: true,
+          options: [{ value: 'e1', label: '证书一' }],
+        },
+      ],
+    }
+    const wrapper: VueWrapper = mount(FactPanel, { props: { descriptor: advancedDescriptor, items: [] } })
+
+    await clickButton(wrapper, '新增')
+
+    const advanced = wrapper.find('[data-testid="fact-advanced-fields"]')
+    expect(advanced.exists()).toBe(true)
+    expect(advanced.text()).toContain('来源与状态（可选）')
+    expect(advanced.text()).toContain('不填也能保存')
+
+    await wrapper.find('input.ant-input').setValue('Python')
+    await clickButton(wrapper, '保存')
+    await flushPromises()
+
+    // 来源留空不构成阻塞：内容本身可以照常写入。
+    expect(create).toHaveBeenCalledOnce()
+    expect(create.mock.calls[0]?.[0]).toEqual({ name: 'Python', evidence: null })
+  })
 })

@@ -21,6 +21,7 @@ import type { EditableResource } from '@/shared/api/types'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import type { FactDescriptor, FieldDescriptor, FieldValues } from '../types'
+import FactFieldInput from './FactFieldInput.vue'
 
 const props = defineProps<{
   /** 该事实的字段、列与写操作。 */
@@ -69,42 +70,18 @@ const tableColumns = computed(() => [
 /** 弹窗内的错误提示只在弹窗打开时显示，避免与面板上的删除错误混在一起。 */
 const modalError = computed(() => (modalOpen.value ? panelError.value : null))
 
+/** 内容字段：日常编辑就填这些。 */
+const primaryFields = computed(() => props.descriptor.fields.filter((field) => field.advanced !== true))
+
+/** 来源与状态这类进阶字段：收进折叠区，始终可选，不影响字段本身的可绑定与提交。 */
+const advancedFields = computed(() => props.descriptor.fields.filter((field) => field.advanced === true))
+
 watch(modalOpen, (open) => {
   if (!open) {
     panelError.value = null
     fieldErrors.value = {}
   }
 })
-
-/**
- * 把界面值收窄成模板可绑定的类型。
- *
- * 表单值以 `unknown` 存储（字段是动态的），模板需要一个明确类型才能绑定到组件属性；
- * 在这里逐类收窄，而不是把整个表单降级成 `any` 从而失去类型检查。
- */
-function textOf(name: string): string {
-  const value = formValues.value[name]
-  return typeof value === 'string' ? value : ''
-}
-
-function numberOf(name: string): number | null {
-  const value = formValues.value[name]
-  return typeof value === 'number' ? value : null
-}
-
-function valueOf(name: string): string | null {
-  const value = formValues.value[name]
-  return typeof value === 'string' ? value : null
-}
-
-function tagsOf(name: string): string[] {
-  const value = formValues.value[name]
-  return Array.isArray(value) ? (value as string[]) : []
-}
-
-function selectOptions(field: FieldDescriptor): { value: string; label: string }[] {
-  return field.options ?? []
-}
 
 /** 写入一个字段值，并清除该字段上一次的服务端错误。 */
 function setValue(field: FieldDescriptor, value: unknown): void {
@@ -347,65 +324,68 @@ function cellText(columnKey: string, item: TItem): string {
       />
       <a-form layout="vertical" :model="formValues">
         <a-form-item
-          v-for="field in descriptor.fields"
+          v-for="field in primaryFields"
           :key="field.name"
           :label="field.label"
           :help="fieldErrors[field.name] ?? field.help"
           :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
         >
-          <a-input
-            v-if="field.kind === 'text'"
-            :value="textOf(field.name)"
-            :maxlength="field.maxLength"
-            :placeholder="field.placeholder"
-            allow-clear
-            @update:value="(value: unknown) => setValue(field, value)"
-          />
-          <a-textarea
-            v-else-if="field.kind === 'textarea'"
-            :value="textOf(field.name)"
-            :maxlength="field.maxLength"
-            :rows="3"
-            allow-clear
-            @update:value="(value: unknown) => setValue(field, value)"
-          />
-          <a-input-number
-            v-else-if="field.kind === 'number'"
-            :value="numberOf(field.name)"
-            class="full-width"
-            @update:value="(value: unknown) => setValue(field, value)"
-          />
-          <a-date-picker
-            v-else-if="field.kind === 'date'"
-            :value="valueOf(field.name)"
-            value-format="YYYY-MM-DD"
-            class="full-width"
-            allow-clear
-            @update:value="(value: unknown) => setValue(field, value)"
-          />
-          <a-select
-            v-else-if="field.kind === 'select' || field.kind === 'evidence'"
-            :value="valueOf(field.name)"
-            :options="selectOptions(field)"
-            allow-clear
-            show-search
-            option-filter-prop="label"
-            @update:value="(value: unknown) => setValue(field, value)"
-          />
-          <a-select
-            v-else-if="field.kind === 'tags'"
-            :value="tagsOf(field.name)"
-            mode="tags"
-            :token-separators="[',']"
-            @update:value="(value: unknown) => setValue(field, value)"
+          <FactFieldInput
+            :field="field"
+            :value="formValues[field.name]"
+            @update="(value: unknown) => setValue(field, value)"
           />
         </a-form-item>
+
+        <!--
+          来源与状态是可选信息：日常编辑只填上面的内容即可，来源由导入或本人填写的过程自动记录。
+          收进折叠区，需要排查错误或理解匹配依据时展开；`force-render` 让字段始终在 DOM 中，
+          折叠与否只影响可见性，不影响表单提交与自动化断言。
+        -->
+        <a-collapse
+          v-if="advancedFields.length > 0"
+          ghost
+          class="advanced-fields"
+          data-testid="fact-advanced-fields"
+        >
+          <a-collapse-panel key="source" header="来源与状态（可选）" :force-render="true">
+            <p class="advanced-hint">
+              不填也能保存、参与匹配与生成简历；来源只用于区分「简历原文」与「本人填写」，
+              不会把内容变成“已核实”。
+            </p>
+            <a-form-item
+              v-for="field in advancedFields"
+              :key="field.name"
+              :label="field.label"
+              :help="fieldErrors[field.name] ?? field.help"
+              :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
+            >
+              <FactFieldInput
+                :field="field"
+                :value="formValues[field.name]"
+                @update="(value: unknown) => setValue(field, value)"
+              />
+            </a-form-item>
+          </a-collapse-panel>
+        </a-collapse>
       </a-form>
     </a-modal>
   </a-card>
 </template>
 
 <style scoped>
+/* 来源与状态（可选）：不占日常编辑的注意力，但需要时就在表单末尾。 */
+.advanced-fields {
+  margin-top: 4px;
+}
+
+.advanced-hint {
+  margin: 0 0 12px;
+  color: var(--ja-color-muted);
+  font-size: 12px;
+  line-height: 1.6;
+}
+
 .fact-panel {
   margin-bottom: 1rem;
 }

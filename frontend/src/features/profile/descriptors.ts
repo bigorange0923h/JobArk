@@ -156,7 +156,7 @@ export function skillDescriptor(evidences: Evidence[]): FactDescriptor<Skill, Sk
   return {
     key: 'skills',
     title: '技能',
-    description: '同一档案内技能名不可重复；标记为"已验证"时必须同时关联证据，否则后端拒绝写入。',
+    description: '同一档案内技能名不可重复。技能不需要来源证明即可保存并用于匹配与简历；只有想标为"已验证"时才需要挂来源证据。',
     rowLabel: (item) => item.name,
     operations: skillsApi,
     fields: [
@@ -173,15 +173,17 @@ export function skillDescriptor(evidences: Evidence[]): FactDescriptor<Skill, Sk
         name: 'source_evidence_id',
         label: '来源证据',
         kind: 'evidence',
+        advanced: true,
         options: usableEvidenceOptions(evidences),
-        help: '选择后即可把"验证状态"标为已验证。',
+        help: '可选。挂上可核验的来源后，才能把"验证状态"标为已验证；不挂来源也能保存、参与匹配与生成简历。',
       },
       {
         name: 'claim_status',
         label: '验证状态',
         kind: 'select',
+        advanced: true,
         options: CLAIM_STATUS_OPTIONS,
-        help: '标为已验证前，请先在上方选择来源证据。',
+        help: '"已验证"需要先挂来源证据，代表经得起独立核实；无来源的技能请保持"未验证"，它同样可以用于匹配与简历。',
       },
     ],
     columns: [
@@ -215,7 +217,14 @@ export function experienceDescriptor(evidences: Evidence[]): FactDescriptor<Expe
         kind: 'textarea',
         help: '尽量写可量化的结果：简历生成与匹配都以这里的内容为依据。',
       },
-      { name: 'source_evidence_id', label: '来源证据', kind: 'evidence', options: usableEvidenceOptions(evidences) },
+      {
+        name: 'source_evidence_id',
+        label: '来源证据',
+        kind: 'evidence',
+        advanced: true,
+        options: usableEvidenceOptions(evidences),
+        help: '可选。用于说明这条内容来自哪里（简历、证明、本人填写）；留空不影响保存、匹配与简历生成。',
+      },
     ],
     columns: [
       { name: 'company', label: '公司' },
@@ -243,7 +252,14 @@ export function projectDescriptor(evidences: Evidence[]): FactDescriptor<Project
       { name: 'url', label: '项目链接', kind: 'text', maxLength: 2048, placeholder: 'https://…' },
       { name: 'start_date', label: '开始日期', kind: 'date' },
       { name: 'end_date', label: '结束日期', kind: 'date' },
-      { name: 'source_evidence_id', label: '来源证据', kind: 'evidence', options: usableEvidenceOptions(evidences) },
+      {
+        name: 'source_evidence_id',
+        label: '来源证据',
+        kind: 'evidence',
+        advanced: true,
+        options: usableEvidenceOptions(evidences),
+        help: '可选。用于说明这条内容来自哪里（简历、证明、本人填写）；留空不影响保存、匹配与简历生成。',
+      },
     ],
     columns: [
       { name: 'name', label: '项目' },
@@ -267,7 +283,14 @@ export function educationDescriptor(evidences: Evidence[]): FactDescriptor<Educa
       { name: 'degree', label: '学历/学位', kind: 'text', maxLength: 64, placeholder: '本科 / 硕士' },
       { name: 'start_date', label: '开始日期', kind: 'date' },
       { name: 'end_date', label: '结束日期', kind: 'date' },
-      { name: 'source_evidence_id', label: '来源证据', kind: 'evidence', options: usableEvidenceOptions(evidences) },
+      {
+        name: 'source_evidence_id',
+        label: '来源证据',
+        kind: 'evidence',
+        advanced: true,
+        options: usableEvidenceOptions(evidences),
+        help: '可选。用于说明这条内容来自哪里（简历、证明、本人填写）；留空不影响保存、匹配与简历生成。',
+      },
     ],
     columns: [
       { name: 'school', label: '学校' },
@@ -283,14 +306,21 @@ export function languageDescriptor(evidences: Evidence[]): FactDescriptor<Langua
   return {
     key: 'languages',
     title: '语言能力',
-    description: '语言水平属于本人陈述；需要作为已验证事实时，请先录入证书类证据再关联。',
+    description: '语言水平属于本人陈述，可直接记录并使用；如需说明依据，可另建证书类证据并在"来源与状态"中关联。',
     rowLabel: (item) => item.language,
     operations: languagesApi,
     fields: [
       { name: 'language', label: '语言', kind: 'text', required: true, maxLength: 64 },
       { name: 'level', label: '水平', kind: 'text', maxLength: 64, placeholder: 'CET-6 / 雅思 7.0' },
       { name: 'note', label: '说明', kind: 'textarea' },
-      { name: 'source_evidence_id', label: '来源证据', kind: 'evidence', options: usableEvidenceOptions(evidences) },
+      {
+        name: 'source_evidence_id',
+        label: '来源证据',
+        kind: 'evidence',
+        advanced: true,
+        options: usableEvidenceOptions(evidences),
+        help: '可选。用于说明这条内容来自哪里（简历、证明、本人填写）；留空不影响保存、匹配与简历生成。',
+      },
     ],
     columns: [
       { name: 'language', label: '语言' },

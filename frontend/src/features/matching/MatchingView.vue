@@ -6,7 +6,39 @@ import { listJobs, listSnapshots, type JobListItem, type JobSnapshot } from '@/s
 import { listResumes, listVersions, type ResumeVersion } from '@/shared/api/resume'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
-interface Report { id: string; created_at: string; match_kind: string; job_snapshot_id: string; profile_revision_id: string; resume_version_id: string | null; report_json: { requirements: { text: string; hard: boolean; status: string; explanation: string; evidence: { fact_id: string; name: string; claim_status: string }[] }[]; uncertainties: string[] } }
+interface Report { id: string; created_at: string; match_kind: string; job_snapshot_id: string; profile_revision_id: string; resume_version_id: string | null; report_json: { requirements: { text: string; hard: boolean; status: string; explanation: string; evidence: { fact_id: string; name: string; claim_status: string; evidence_title?: string }[] }[]; uncertainties: string[] } }
+
+/**
+ * 命中状态文案。
+ *
+ * 措辞刻意停在"档案里有这条事实"这一层：命中可能是本人填写、未验证的技能，不能读成能力、
+ * 熟练度、年限或整项条件已经核实。`EVIDENCE_FOUND` 是语义调整前写入历史报告的值，按同样意思展示。
+ */
+const MATCH_STATUS_LABELS: Record<string, string> = {
+  FACT_FOUND: '字面匹配：档案中本人填写的事实',
+  EVIDENCE_ATTACHED: '字面匹配：该事实另挂来源记录',
+  UNKNOWN: '未找到档案事实',
+  EVIDENCE_FOUND: '字面匹配',
+}
+
+const CLAIM_STATUS_LABELS: Record<string, string> = {
+  VERIFIED: '已验证',
+  UNVERIFIED: '未验证',
+  UNCERTAIN: '待确认',
+}
+
+function matchStatusLabel(status: string): string {
+  return MATCH_STATUS_LABELS[status] ?? status
+}
+
+function claimStatusLabel(status: string): string {
+  return CLAIM_STATUS_LABELS[status] ?? status
+}
+
+/** 命中事实的来源说明：有来源记录就显示标题，否则如实说明这是本人填写。 */
+function evidenceSourceLabel(item: { evidence_title?: string }): string {
+  return item.evidence_title ? `来源：${item.evidence_title}` : '本人填写，未挂来源记录'
+}
 const jobs = ref<JobListItem[]>([])
 const snapshots = ref<JobSnapshot[]>([])
 const versions = ref<(ResumeVersion & { label: string })[]>([])
@@ -22,8 +54,8 @@ const loadError = ref<ParsedServerError | null>(null)
 const actionError = ref<ParsedServerError | null>(null)
 const busy = ref(false)
 const requirementColumns = [
-  { title: 'JD 原文条件', key: 'text', width: '38%' },
-  { title: '证据', key: 'evidence', width: '30%' },
+  { title: 'JD 原文条件', key: 'text', width: '34%' },
+  { title: '档案事实（字面匹配）', key: 'evidence', width: '34%' },
   { title: '判断边界', dataIndex: 'explanation', key: 'explanation' },
 ]
 
@@ -96,7 +128,7 @@ onMounted(() => { void load() })
 <template>
   <section class="matching-view">
     <header class="page-header"><div><p class="page-eyebrow">MATCHING</p><h1>匹配分析</h1><p class="page-subtitle">逐条核对职位条件、证据与未知项。</p></div><a-button data-testid="reload" @click="load">刷新</a-button></header>
-    <a-alert type="info" show-icon message="匹配报告是辅助判断" description="当前使用本地字面证据检索；结果不代表满足全部条件或录用概率。" class="section-gap" />
+    <a-alert type="info" show-icon message="匹配报告是辅助判断" description="当前使用本地字面检索：命中的只说明档案里有这条技能事实（其中包含本人填写、未验证的内容），不代表能力、熟练度、年限或整项条件已核实，也不代表录用概率。" class="section-gap" data-testid="matching-boundary" />
     <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="loadErrorDescription" class="section-gap" data-testid="load-error" role="alert"><template #action><a-button size="small" data-testid="retry-load" @click="load">重新加载</a-button></template></a-alert>
     <a-alert v-if="actionError" type="error" show-icon closable :message="actionError.message" :description="actionErrorDescription" class="section-gap" data-testid="action-error" role="alert" @close="actionError = null" />
     <a-card title="生成报告" class="section-gap">
@@ -118,7 +150,20 @@ onMounted(() => { void load() })
           <a-table :columns="requirementColumns" :data-source="report.report_json.requirements" :pagination="false" size="small" :row-key="(_row: unknown, index: number) => index">
             <template #bodyCell="{ column, record }">
               <template v-if="column.key === 'text'"><a-tag v-if="record.hard" color="orange">硬性条件</a-tag>{{ record.text }}</template>
-              <template v-else-if="column.key === 'evidence'"><span v-if="!record.evidence.length" class="muted">未知</span><div v-for="e in record.evidence" v-else :key="e.fact_id">{{ e.name }}（{{ e.claim_status }}）</div></template>
+              <template v-else-if="column.key === 'evidence'">
+                <span v-if="!record.evidence.length" class="muted">未找到档案事实</span>
+                <!-- 命中事实的状态与来源逐条显示：读者据此判断可信度，而不是把它当作已核实。 -->
+                <div v-for="e in record.evidence" v-else :key="e.fact_id" class="matched-fact">
+                  <div>{{ e.name }} · {{ claimStatusLabel(e.claim_status) }}</div>
+                  <div class="muted">{{ evidenceSourceLabel(e) }}</div>
+                </div>
+              </template>
+              <template v-else-if="column.key === 'explanation'">
+                <a-tag :color="record.status === 'UNKNOWN' ? 'default' : 'blue'" data-testid="match-status">
+                  {{ matchStatusLabel(record.status) }}
+                </a-tag>
+                {{ record.explanation }}
+              </template>
             </template>
           </a-table>
           <a-alert v-if="report.report_json.uncertainties.length" type="warning" class="uncertainties"><template #message>仍需确认</template><template #description><ul><li v-for="note in report.report_json.uncertainties" :key="note">{{ note }}</li></ul></template></a-alert>
@@ -130,6 +175,8 @@ onMounted(() => { void load() })
 <style scoped>
 .form-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 20px; }
 .report-source, .muted { color: var(--ja-color-muted); font-size: 12px; }
+/* 一条命中事实占两行：事实与状态一行，来源说明一行（次要信息下沉，避免读成"已核实"）。 */
+.matched-fact { margin-bottom: 4px; }
 .uncertainties { margin-top: 16px; }
 .uncertainties ul { margin: 0; padding-left: 18px; }
 @media (max-width: 800px) { .form-grid { grid-template-columns: 1fr; } }
