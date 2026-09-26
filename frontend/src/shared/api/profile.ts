@@ -153,9 +153,24 @@ export interface Profile extends EditableResource {
   preference: Preference | null
 }
 
+/**
+ * 候选条目的来源。
+ *
+ * `RESUME` 表示内容来自简历原文（必须带摘录，预览阶段逐字校验）；
+ * `MANUAL` 表示本人填写（用户新增，或把内容改到摘录之外），不携带摘录。
+ * 两类都只是「用户认可可用」的档案事实，不代表已独立核实。
+ */
+export type ItemOrigin = 'RESUME' | 'MANUAL'
+
 /** AI 从上传简历提取的待确认条目；摘录用于人工比对，并非已核验事实。 */
-export interface SourcedSkill { name: string; source_quote: string }
+export interface SourcedSkill {
+  origin: ItemOrigin
+  source_quote: string | null
+  name: string
+}
 export interface SourcedExperience {
+  origin: ItemOrigin
+  source_quote: string | null
   company: string
   title: string
   start_date: string
@@ -163,9 +178,10 @@ export interface SourcedExperience {
   location: string | null
   responsibilities: string | null
   achievements: string | null
-  source_quote: string
 }
 export interface SourcedProject {
+  origin: ItemOrigin
+  source_quote: string | null
   name: string
   role: string | null
   description: string | null
@@ -175,23 +191,25 @@ export interface SourcedProject {
   url: string | null
   start_date: string | null
   end_date: string | null
-  source_quote: string
 }
 export interface SourcedEducation {
+  origin: ItemOrigin
+  source_quote: string | null
   school: string
   major: string | null
   degree: string | null
   start_date: string | null
   end_date: string | null
-  source_quote: string
 }
 export interface ProfileImportCandidate {
   full_name: string
   name_quote: string
   headline: string | null
+  summary: string | null
   email: string | null
   phone: string | null
   city: string | null
+  links: ProfileLink[]
   skills: SourcedSkill[]
   experiences: SourcedExperience[]
   projects: SourcedProject[]
@@ -228,6 +246,8 @@ export interface ProfileImportPreview {
   completeness: ProfileImportCompleteness
   rejected_items: ProfileImportRejectedItem[]
   warnings: ProfileImportWarning[]
+  /** 为 true 表示候选来自内置开发夹具（未调用大模型服务），不是真实抽取结果。 */
+  fixture: boolean
 }
 export interface ProfileImportResult {
   profile_id: string
@@ -236,6 +256,8 @@ export interface ProfileImportResult {
   experiences_added: number
   projects_added: number
   educations_added: number
+  /** 本次写入的条目中按「本人填写」记录来源的条数（用户新增或改到摘录之外）。 */
+  manual_item_count: number
 }
 
 // --------------------------------------------------------------------------------------------

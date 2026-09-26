@@ -29,6 +29,9 @@ import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import { BASIC_FIELDS, type BasicFieldName } from '../basicsFields'
+import { incompleteLinks, submittableLinks } from '../links'
+import ProfileBasicsSection from './ProfileBasicsSection.vue'
+import ProfileLinksField from './ProfileLinksField.vue'
 
 const props = defineProps<{
   /** 当前档案；为 null 表示尚未创建。 */
@@ -42,14 +45,10 @@ const emit = defineEmits<{
   conflict: [message: string]
 }>()
 
-interface LinkDraft {
-  label: string
-  url: string
-}
-
 /** 字段名 → 输入框文本；空字符串代表"未填写"，提交时统一转为 null。 */
 const values = ref<Record<string, string>>({})
-const links = ref<LinkDraft[]>([])
+/** 公开链接草稿；行内允许留空，提交前由共享规则过滤与校验。 */
+const links = ref<ProfileLink[]>([])
 const fieldErrors = ref<Record<string, string>>({})
 const linksError = ref<string | null>(null)
 const panelError = ref<ParsedServerError | null>(null)
@@ -102,26 +101,12 @@ function setValue(name: BasicFieldName, value: unknown): void {
   values.value[name] = typeof value === 'string' ? value : ''
 }
 
-function addLink(): void {
-  links.value = [...links.value, { label: '', url: '' }]
-}
-
-function removeLink(index: number): void {
-  links.value = links.value.filter((_, current) => current !== index)
-}
-
-/** 整行留空视为"用户只是点开了输入框"，不参与提交。 */
-function meaningfulLinks(): LinkDraft[] {
-  return links.value.filter((link) => link.label.trim() !== '' || link.url.trim() !== '')
-}
-
 async function submit(): Promise<void> {
   fieldErrors.value = {}
   linksError.value = null
   panelError.value = null
 
-  const incomplete = meaningfulLinks().filter((link) => link.label.trim() === '' || link.url.trim() === '')
-  if (incomplete.length > 0) {
+  if (incompleteLinks(links.value).length > 0) {
     linksError.value = '每条链接都需要同时填写名称与地址；留空的整行会被忽略。'
     return
   }
@@ -133,10 +118,7 @@ async function submit(): Promise<void> {
 
   saving.value = true
   try {
-    const payloadLinks: ProfileLink[] = meaningfulLinks().map((link) => ({
-      label: link.label.trim(),
-      url: link.url.trim(),
-    }))
+    const payloadLinks = submittableLinks(links.value)
     if (props.profile === null) {
       const payload: ProfileCreateInput = {
         full_name: text('full_name').trim(),
@@ -208,54 +190,22 @@ function emptyToNull(value: string): string | null {
       data-testid="error-basics"
     />
 
-    <a-form layout="vertical" class="profile-field-grid">
-      <a-form-item
-        v-for="field in BASIC_FIELDS"
-        :key="field.name"
-        :label="field.label"
-        :class="{ 'profile-field-grid__wide': field.wide }"
-        :required="field.required"
-        :help="fieldErrors[field.name] ?? field.help"
-        :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
-      >
-        <a-input
-          v-if="field.kind === 'text'"
-          :value="text(field.name)"
-          :maxlength="field.maxLength"
-          :placeholder="field.placeholder"
-          allow-clear
-          @update:value="(value: unknown) => setValue(field.name, value)"
-        />
-        <a-textarea
-          v-else
-          :value="text(field.name)"
-          :maxlength="field.maxLength"
-          :rows="3"
-          :placeholder="field.placeholder"
-          allow-clear
-          @update:value="(value: unknown) => setValue(field.name, value)"
-        />
-      </a-form-item>
-
-      <a-form-item
-        label="公开链接"
-        class="profile-field-grid__wide"
-        :help="linksError ?? '例如 GitHub、博客；留空的整行会被忽略。'"
-      >
-        <div v-for="(link, index) in links" :key="index" class="link-row">
-          <a-input v-model:value="link.label" :maxlength="50" placeholder="名称（如 GitHub）" />
-          <a-input v-model:value="link.url" :maxlength="2048" placeholder="https://…" />
-          <a-button type="link" danger @click="removeLink(index)">移除</a-button>
-        </div>
-        <a-button type="dashed" block @click="addLink">添加链接</a-button>
-      </a-form-item>
+    <!-- 基本信息字段与布局来自共享组件：与导入候选核对页是同一套定义、同一套网格。 -->
+    <ProfileBasicsSection
+      :fields="BASIC_FIELDS"
+      :record="values"
+      :errors="fieldErrors"
+      @update-field="setValue"
+    >
+      <!-- 公开链接与候选核对页是同一个组件：行结构、帮助文本与“整行留空”的处理只有一份。 -->
+      <ProfileLinksField :links="links" :error="linksError" @update-links="links = $event" />
 
       <a-form-item class="profile-field-grid__wide">
         <a-button type="primary" :loading="saving" data-testid="save-basics" @click="submit">
           {{ isCreate ? '创建档案' : '保存' }}
         </a-button>
       </a-form-item>
-    </a-form>
+    </ProfileBasicsSection>
   </a-card>
 </template>
 
@@ -271,11 +221,5 @@ function emptyToNull(value: string): string | null {
 
 .panel-alert {
   margin-bottom: 1rem;
-}
-
-.link-row {
-  display: flex;
-  gap: 0.5rem;
-  margin-bottom: 0.5rem;
 }
 </style>

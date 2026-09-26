@@ -5,9 +5,8 @@
  * 否则两边会各自演化出“创建时叫城市、核对时叫所在地”这类漂移。字段顺序也在这里固定：
  * 页面只按本数组渲染，不各自重排。
  *
- * 边界：这里只声明**标量文本字段**。公开链接是唯一的数组字段，由 `ProfileBasicsPanel.vue`
- * 单独渲染；导入候选（后端 `ImportCandidate`）也不包含个人简介与公开链接，因此候选页只取
- * 本文件给出的子集，而不是另写一份字段表。
+ * 边界：这里只声明**标量文本字段**。公开链接是唯一的数组字段，由共享组件
+ * `ProfileLinksField.vue` 单独渲染（两个页面同样共用）。
  */
 
 /** 基本信息字段的控件类型。 */
@@ -45,10 +44,11 @@ export const BASIC_FIELDS: readonly BasicField[] = [
 /**
  * 导入候选实际支持的字段名。
  *
- * 后端 `ImportCandidate` 只携带姓名、头衔、邮箱、手机与城市：简历导入不产出个人简介，
- * 公开链接也不在候选契约内。候选页缺少这些字段是契约事实，不是界面遗漏。
+ * 与创建档案页一致：后端 `ImportCandidate` 同样携带姓名、头衔、个人简介、邮箱、手机与城市
+ * （公开链接见 `links`，由 `ProfileLinksField.vue` 渲染）。两条路径共用一个表单，因此字段表
+ * 必须对齐——这里少一个字段，候选页就会比创建页少一栏。
  */
-export type ImportBasicFieldName = 'full_name' | 'headline' | 'email' | 'phone' | 'city'
+export type ImportBasicFieldName = 'full_name' | 'headline' | 'summary' | 'email' | 'phone' | 'city'
 
 /** 候选支持的基本信息字段；`name` 收窄后可直接索引 `ImportCandidate`。 */
 export interface ImportBasicField extends BasicField {
@@ -58,6 +58,7 @@ export interface ImportBasicField extends BasicField {
 const IMPORT_CANDIDATE_FIELD_NAMES: readonly ImportBasicFieldName[] = [
   'full_name',
   'headline',
+  'summary',
   'email',
   'phone',
   'city',
