@@ -127,7 +127,7 @@ created_at
 
 约束：`match_kind = PROFILE` 时 `resume_version_id` 必须为空；`match_kind = RESUME` 时必须存在。`input_fingerprint` 用于识别完全相同输入和同一引擎版本的重复计算，但不阻止用户主动重新分析。
 
-`report_json.requirements[].evidence` 保存每个条件关联的 Profile 事实或证据 ID、说明和主张验证状态。当前字面证据引擎把 `report_json.overall_score` 固定为空，不声称技能名称出现就满足整项要求。解析结果与版本嵌入报告，独立 AI 解析产物不自动作为匹配输入。
+`report_json.requirements[].evidence` 保存每个条件关联的 Profile 事实或证据 ID、事实状态（`claim_status`）与来源标题。逐条条件的 `status` 只表达"档案里有没有这条事实"：`FACT_FOUND` 命中且该事实未挂来源记录，`EVIDENCE_ATTACHED` 命中且另挂来源记录，`UNKNOWN` 未命中（不等同于不满足）；命中与事实是否挂证据、是否为 `VERIFIED` 无关，两种命中都不得读成能力或整项条件已核实。当前字面证据引擎把 `report_json.overall_score` 固定为空，不声称技能名称出现就满足整项要求。解析结果与版本嵌入报告，独立 AI 解析产物不自动作为匹配输入。
 
 ## 7. Application：投递尝试与事件状态机
 
