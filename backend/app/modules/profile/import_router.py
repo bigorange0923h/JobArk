@@ -29,17 +29,20 @@ logger = logging.getLogger(__name__)
 class ImportPreviewRequest(ResumeUpload):
     """明确同意外部发送后才开始解析与推理。"""
 
-    confirm_external: bool = Field(description="确认发送从文件提取的简历文字到已配置的 AI 网关。")
+    confirm_external: bool = Field(description="确认发送从文件提取的简历文字到已配置的大模型服务。")
 
 
 @router.post(
     "/import-preview",
     summary="预览 AI 简历导入候选",
     description=(
-        "接收不超过 3 MB 的 PDF/HTML，仅本地提取文字；需 confirm_external 才发送文字到已配置 AI 网关。"
+        "接收不超过 3 MB 的 PDF/HTML，仅本地提取文字；需 confirm_external 才发送文字到已配置的大模型服务。"
         "返回带原文摘录的候选（基本信息、技能、工作经历、项目经历、教育经历），不写入数据库。"
-        "根协议错误返回 422；集合条目分别做严格结构与原文校验，失败项不会进入候选，并通过 completeness/rejected_items 返回。"
-        "仅对短暂连接、429 与 5xx 失败自动重试一次；格式、超时和证据失败不重试。网关未配置返回 409。"
+        "根协议错误返回 422；集合条目分别做严格结构与原文校验，失败项不会进入候选，"
+        "并通过 completeness/rejected_items 返回。"
+        "项目名称与摘录有效时，其余缺少证据的字段会被清空并通过 warnings 提示，保留项目骨架；"
+        "模型以 title 等等价字段表示项目名称或把技术栈写成字符串时，先归一化再按同样规则校验，并在 warnings 中说明。"
+        "仅对短暂连接、429 与 5xx 失败自动重试一次；格式、超时和证据失败不重试。大模型服务未配置返回 409。"
     ),
     response_model=ApiResponse[ImportPreviewRead],
 )

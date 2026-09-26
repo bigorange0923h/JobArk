@@ -9,7 +9,7 @@ from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal
 
-from pydantic import Field, SecretStr, field_validator
+from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 LogLevel = Literal["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"]
@@ -49,20 +49,43 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
     # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
     database_echo: bool = False
-    # 已废弃：旧环境变量网关地址与令牌。仅为不破坏既有 `.env` 而保留字段，
-    # 任何代码都不再读取它们，也永远不得优先于数据库中的默认模型配置（见 ADR 0004）。
+    # 已废弃：旧环境变量保存的大模型服务地址与令牌。字段名沿用历史命名（gateway 为内部实现名，
+    # 非用户可见术语）；仅为不破坏既有 `.env` 而保留，任何代码都不再读取它们，
+    # 也永远不得优先于数据库中的默认模型配置（见 ADR 0004）。
     ai_gateway_url: str = ""
     ai_gateway_token: SecretStr = SecretStr("")
     # 服务商 API Key 的可逆加密根密钥；只允许 LOCAL 环境缺省使用开发默认值。
     # 根密钥必须留在数据库之外：数据库泄露时密文仍不可读，测试/生产缺失时安全失败。
     ai_credential_encryption_key: SecretStr = SecretStr("")
     ai_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    # 诊断开关：把大模型返回的 JSON 原文写入日志，用于本地排查候选为何缺失、被清空或被改写。
+    # 默认关闭，且禁止在 prod 开启（见下方 validator）：模型输出可能包含简历里的姓名、
+    # 联系方式与工作经历，常规日志与响应都不得承载这些内容。
+    ai_log_model_output: bool = False
     # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
     # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；
     # 只有前后端确实分离到不同源时才按环境显式启用，环境变量写法为逗号分隔，例如
     # JOBARK_CORS_ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
     # 用 NoDecode 关闭 pydantic-settings 对复杂字段的 JSON 解析，避免逗号分隔写法直接报错。
     cors_allowed_origins: Annotated[list[str], NoDecode] = []
+
+    @model_validator(mode="after")
+    def _forbid_model_output_logging_in_prod(self) -> Settings:
+        """禁止在生产环境把模型输出原文写入日志。
+
+        返回:
+            Settings: 校验通过的自身实例。
+
+        异常:
+            ValueError: `prod` 环境同时开启 `ai_log_model_output` 时抛出。
+
+        注意:
+            模型输出可能包含简历中的姓名、联系方式与经历，属于个人信息。让不安全配置在**启动时**
+            直接失败，比"记录下来了但没人注意"更安全，也避免生产日志被个人信息污染。
+        """
+        if self.ai_log_model_output and self.app_env is AppEnv.PROD:
+            raise ValueError("ai_log_model_output 仅允许在 local/test 环境用于诊断；生产环境禁止开启。")
+        return self
 
     @field_validator("cors_allowed_origins", mode="before")
     @classmethod

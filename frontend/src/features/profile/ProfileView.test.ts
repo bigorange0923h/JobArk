@@ -3,16 +3,28 @@
  *
  * 个人资料页的状态与错误处理测试。
  *
- * 覆盖四种页面状态中的三种（加载中由 `a-spin` 呈现，随其他用例一并验证），以及本页最容易出错
- * 的一条路径：乐观锁冲突。冲突的价值在于它是唯一必须"重新加载才能继续"的失败，测试要同时断言
- * 提示出现与聚合被重新拉取，只断言提示会漏掉"界面提示了但数据仍是旧的"。
+ * 覆盖四种页面状态中的三种（加载中由 `a-spin` 呈现，随其他用例一并验证），以及两条最容易出错
+ * 的路径：
+ * - 乐观锁冲突：唯一必须"重新加载才能继续"的失败，断言提示之外还必须重新拉取聚合，
+ *   只断言提示会漏掉"界面提示了但数据仍是旧的"。
+ * - 无档案时的创建路径：手动创建与从简历导入必须互斥展示；返回手动创建不落库且保留内存候选；
+ *   确认导入后刷新聚合并展示正式档案。
  */
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
-import { fetchProfile, listRevisions, saveProfileBasics, type Profile } from '@/shared/api/profile'
+import {
+  confirmProfileImport,
+  createProfile,
+  fetchProfile,
+  listRevisions,
+  previewProfileImportStream,
+  saveProfileBasics,
+  type Profile,
+  type ProfileImportPreview,
+} from '@/shared/api/profile'
 
 import ProfileView from './ProfileView.vue'
 
@@ -28,6 +40,8 @@ vi.mock('@/shared/api/profile', async (importOriginal) => {
     createRevision: vi.fn(),
     savePreference: vi.fn(),
     listRevisions: vi.fn(),
+    previewProfileImportStream: vi.fn(),
+    confirmProfileImport: vi.fn(),
   }
 })
 
@@ -55,8 +69,66 @@ function profileFixture(): Profile {
   }
 }
 
+/** 后端在"档案尚未创建"时返回 404；这不是错误，而是一等状态。 */
+function profileNotFound(): ApiError {
+  return new ApiError({ code: 'RESOURCE_NOT_FOUND', message: '个人档案尚未创建。', status: 404 })
+}
+
+/** 一份最小的导入预览，只含一条技能候选。 */
+function importPreviewFixture(): ProfileImportPreview {
+  return {
+    filename: 'sample.html',
+    source_hash: 'a'.repeat(64),
+    candidate: {
+      full_name: '张三',
+      name_quote: '张三',
+      headline: null,
+      email: null,
+      phone: null,
+      city: null,
+      skills: [{ name: 'Python', source_quote: '熟悉 Python' }],
+      experiences: [],
+      projects: [],
+      educations: [],
+    },
+    completeness: {
+      status: 'COMPLETE',
+      valid_item_count: 1,
+      rejected_item_count: 0,
+      unmapped_field_count: 0,
+      excluded_field_count: 0,
+    },
+    rejected_items: [],
+    warnings: [],
+  }
+}
+
 function mountView(): VueWrapper {
   return mount(ProfileView)
+}
+
+/**
+ * 走完"选择文件 → 同意外发 → 继续"三步生成候选。
+ *
+ * 尽量用真实点击而不是 `$emit`：这样验证的是页面与面板之间的实际接线（弹窗、互斥、事件），
+ * 而不是测试自己触发的事件。
+ */
+async function generateImportPreview(wrapper: VueWrapper): Promise<void> {
+  // 选择"从已有简历导入"会直接弹出文件选择弹窗；先等一次刷新确保弹窗已挂载。
+  await flushPromises()
+  expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(true)
+  const input = wrapper.find('input[type="file"]')
+  Object.defineProperty(input.element, 'files', {
+    configurable: true,
+    value: [new File(['<html>张三 熟悉 Python</html>'], 'sample.html', { type: 'text/html' })],
+  })
+  await input.trigger('change')
+  await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
+  await wrapper.find('[data-testid="preview-import"]').trigger('click')
+  // 等候选真的落到面板，而不是赌一个固定延时。
+  await vi.waitFor(() => {
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
+  })
 }
 
 beforeEach(() => {
@@ -64,25 +136,121 @@ beforeEach(() => {
   vi.mocked(fetchProfile).mockResolvedValue(profileFixture())
   vi.mocked(saveProfileBasics).mockResolvedValue(profileFixture())
   vi.mocked(listRevisions).mockResolvedValue([])
+  vi.mocked(previewProfileImportStream).mockResolvedValue(importPreviewFixture())
+  vi.mocked(confirmProfileImport).mockResolvedValue({
+    profile_id: 'profile-1',
+    created_profile: true,
+    skills_added: 1,
+    experiences_added: 0,
+    projects_added: 0,
+    educations_added: 0,
+  })
 })
 
 enableAutoUnmount(afterEach)
 
 describe('ProfileView', () => {
-  it('档案尚未创建时进入创建引导，而不是显示加载失败', async () => {
-    vi.mocked(fetchProfile).mockRejectedValueOnce(
-      new ApiError({ code: 'RESOURCE_NOT_FOUND', message: '个人档案尚未创建。', status: 404 }),
-    )
+  it('档案尚未创建时先选择创建方式，而不是显示加载失败或堆叠两个表单', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
 
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('创建个人档案')
-    expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(true)
-    expect(wrapper.text()).toContain('创建后即可单独维护工作经历和教育经历')
+    expect(wrapper.text()).toContain('尚未创建个人档案')
+    expect(wrapper.find('[data-testid="start-manual-create"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="start-resume-import"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
-    // 未创建时不应渲染依赖档案存在与否的面板。
+    // 入口常驻；未选路径时两个表单都已挂载但不可见（既不堆叠，也保留各自状态）。
+    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
+    // 依赖档案存在与否的面板在任何情况下都不出现。
     expect(wrapper.find('[data-testid="panel-skills"]').exists()).toBe(false)
+  })
+
+  it('选择"从已有简历导入"在当前页弹出文件选择弹窗，不跳转到单独页面', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
+    const wrapper = mountView()
+    await flushPromises()
+    expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(false)
+
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
+    await flushPromises()
+
+    const modal = wrapper.find('[data-testid="import-modal"]')
+    expect(modal.exists()).toBe(true)
+    // 弹窗里必须能提供简历文件，并在上传前说明数据外发范围。
+    expect(modal.find('input[type="file"]').exists()).toBe(true)
+    expect(modal.text()).toContain('大模型服务')
+    expect(modal.text()).toContain('不会自动写入个人档案')
+    // 关键断言：仍在当前页——入口卡片没有消失，导入内容就地展开。
+    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
+    // 入口不重复：页面已提供同名按钮，展开区里不能再出现第二个。
+    expect(wrapper.findAll('[data-testid="open-import-modal"]')).toHaveLength(0)
+    expect(wrapper.text()).toContain('还没有待核对候选')
+  })
+
+  it('手动创建与导入在同一页内互斥切换，入口始终可见', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="start-manual-create"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
+
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
+    await flushPromises()
+    // 同页切换动态区：入口卡片仍在，两个表单互斥。
+    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
+  })
+
+  it('无档案时导入与手动创建互斥展示；返回手动创建不落库且保留候选', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
+    // 互斥：选择导入时手动创建表单不显示，避免两个表单同时堆叠。
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
+
+    await generateImportPreview(wrapper)
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="import-back-to-manual"]').trigger('click')
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
+    // 返回手动创建只是切换动态区：仍在同一页、不落库，且候选仍留在内存里（组件未卸载）。
+    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(createProfile).not.toHaveBeenCalled()
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
+  })
+
+  it('确认导入后刷新档案聚合并展示正式档案', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound()).mockResolvedValueOnce(profileFixture())
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
+    await generateImportPreview(wrapper)
+    await wrapper.find('[data-testid="profile-import-reviewed"]').setValue(true)
+    await wrapper.find('[data-testid="confirm-import"]').trigger('click')
+    await flushPromises()
+
+    expect(confirmProfileImport).toHaveBeenCalledOnce()
+    // 关键断言：确认后必须重新拉取聚合，界面才可能显示正式档案。
+    expect(fetchProfile).toHaveBeenCalledTimes(2)
+    expect(wrapper.find('[data-testid="profile-start-choices"]').exists()).toBe(false)
+    expect((wrapper.find('[data-testid="panel-basics"] input').element as HTMLInputElement).value).toBe('张伟')
   })
 
   it('加载失败时显示后端提示与错误编号，不显示业务面板', async () => {
@@ -113,6 +281,10 @@ describe('ProfileView', () => {
     const fullName = wrapper.find('[data-testid="panel-basics"] input')
     expect((fullName.element as HTMLInputElement).value).toBe('张伟')
     expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(true)
+    // 创建/编辑档案表单与候选核对页共用同一套字段网格（桌面端每行最多两个普通字段）。
+    expect(wrapper.find('[data-testid="panel-basics"] .profile-field-grid').exists()).toBe(true)
+    // 已有档案时页面上没有别的导入入口，因此由面板自己提供按钮。
+    expect(wrapper.find('[data-testid="open-import-modal"]').exists()).toBe(true)
     for (const key of [
       'basics',
       'preference',

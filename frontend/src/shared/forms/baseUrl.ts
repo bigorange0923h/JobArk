@@ -20,7 +20,7 @@ const LOOPBACK_HOSTS = ['localhost', '127.0.0.1', '::1', '[::1]']
  *
  * 注意:
  *     带用户名、密码、查询参数或片段的地址一律拒绝：它们既可能把凭据写进日志，
- *     也让"基地址"语义变得不确定（网关只在其后拼接固定路径）。
+ *     也让"基地址"语义变得不确定（大模型服务适配器只在其后拼接固定路径）。
  */
 export function isSafeBaseUrl(value: string): boolean {
   try {

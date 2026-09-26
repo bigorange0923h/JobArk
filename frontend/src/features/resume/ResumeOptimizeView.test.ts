@@ -46,14 +46,14 @@ it('明确确认外部发送后生成候选，显示双侧预览而非自动确�
   expect(wrapper.find('pre').exists()).toBe(false)
 })
 
-it('网关不可用时保留目标与基线，不出现虚假的候选', async () => {
+it('大模型服务不可用时保留目标与基线，不出现虚假的候选', async () => {
   const wrapper = mount(ResumeOptimizeView, { props:{resumeId:'r1'}, global:{ stubs:{RouterLink:true} } })
   await flushPromises()
   await fillRequest(wrapper)
-  vi.mocked(requestV1).mockRejectedValue(new ApiError({code:'CONFLICT', status:409, message:'尚未配置 AI 网关'}))
+  vi.mocked(requestV1).mockRejectedValue(new ApiError({code:'CONFLICT', status:409, message:'尚未配置大模型服务'}))
   await wrapper.find('form').trigger('submit')
   await flushPromises()
-  expect(wrapper.find('.ant-alert-error').text()).toContain('尚未配置 AI 网关')
+  expect(wrapper.find('.ant-alert-error').text()).toContain('尚未配置大模型服务')
   expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('后端开发')
   expect(wrapper.find('.comparison').exists()).toBe(false)
 })

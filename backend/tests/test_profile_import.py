@@ -182,6 +182,7 @@ def test_preview_checks_model_quotes(
         "valid_item_count": 3,
         "rejected_item_count": 1,
         "unmapped_field_count": 0,
+        "excluded_field_count": 0,
     }
     assert preview["candidate"]["experiences"] == []
     assert len(preview["candidate"]["skills"]) == 1
@@ -201,9 +202,17 @@ def test_preview_checks_model_quotes(
     invalid = [
         record for record in caplog.records if getattr(record, "event", None) == "profile_import_candidate_invalid"
     ]
+    shapes = [
+        record for record in caplog.records if getattr(record, "event", None) == "profile_import_model_output_shape"
+    ]
     assert len(invalid) == 1
+    assert len(shapes) == 1
     assert vars(invalid[0])["candidate_group"] == "experience"
     assert vars(invalid[0])["candidate_index"] == 0
+    shape = vars(shapes[0])["model_output_shape"]
+    assert shape["type"] == "object"
+    assert shape["fields"]["experiences"]["type"] == "array"
+    assert shape["fields"]["experiences"]["items"][0]["fields"]["company"] == {"type": "str"}
     assert "不存在的公司" not in caplog.text
     assert "张三" not in caplog.text
 
@@ -239,6 +248,200 @@ def test_preview_keeps_supported_fields_and_reports_unknown_item_fields(
             "message": "模型返回了当前档案结构未支持的字段；这些字段未作为候选事实导入。",
         }
     ]
+
+
+def test_preview_keeps_project_when_only_optional_fields_lack_quote(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """项目名称与摘录有效时，模型概括的可选字段被清空而不会拖累整个项目。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        candidate = _candidate()
+        candidate["projects"][0]["description"] = "负责订单核心能力建设"
+        candidate["projects"][0]["achievements"] = "系统稳定性显著提升"
+        candidate["projects"][0]["tech_stack"] = ["Spring Boot", "PostgreSQL"]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    project = preview["candidate"]["projects"][0]
+    assert project["name"] == "订单系统重构"
+    assert project["responsibilities"] == "主导订单链路拆分"
+    assert project["description"] is None
+    assert project["achievements"] is None
+    assert project["tech_stack"] == ["Spring Boot"]
+    assert preview["completeness"] == {
+        "status": "PARTIAL",
+        "valid_item_count": 4,
+        "rejected_item_count": 0,
+        "unmapped_field_count": 0,
+        "excluded_field_count": 3,
+    }
+    assert preview["warnings"] == [
+        {
+            "group": "projects",
+            "index": 0,
+            "code": "FIELD_NOT_IN_QUOTE",
+            "fields": ["description", "achievements", "tech_stack"],
+            "message": "这些字段未能在项目原文摘录中逐字定位，未作为简历事实导入；可由本人补充。",
+        }
+    ]
+
+
+def test_preview_generates_project_with_name_role_stack_description_and_dates(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """简历中的项目含名称、角色、技术栈、说明与日期时，应生成完整候选项目并可确认写入。
+
+    这是"项目经历无法填充到候选档案"的回归用例：修复前只要项目的可选取值没能全部逐字落在
+    同一段摘录里，`_check_sourced_item` 就会把整条项目判为越界并丢弃，用户看到的是项目经历为空。
+    """
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回带项目说明与日期的候选，参数字段与契约一致。"""
+        candidate = _candidate()
+        candidate["projects"] = [
+            {
+                "name": "订单系统重构",
+                "role": "负责人",
+                "description": "主导订单链路拆分",
+                "tech_stack": ["Spring Boot"],
+                "start_date": "2021-01-01",
+                "end_date": "2022-01-01",
+                "source_quote": (
+                    "订单系统重构 负责人 技术栈 Spring Boot 主导订单链路拆分 性能提升 30% 2021 年至 2022 年"
+                ),
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    upload = _upload()
+    preview = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+
+    assert preview.status_code == 200, preview.text
+    project = preview.json()["data"]["candidate"]["projects"][0]
+    assert project["name"] == "订单系统重构"
+    assert project["role"] == "负责人"
+    assert project["tech_stack"] == ["Spring Boot"]
+    assert project["description"] == "主导订单链路拆分"
+    assert project["start_date"] == "2021-01-01"
+    assert project["end_date"] == "2022-01-01"
+    assert preview.json()["data"]["completeness"]["rejected_item_count"] == 0
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={**upload, **preview.json()["data"], "project_indices": [0], "confirmed": True},
+    )
+
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["data"]["projects_added"] == 1
+    saved_project = db_client.get(API).json()["data"]["projects"][0]
+    assert saved_project["name"] == "订单系统重构"
+    assert saved_project["role"] == "负责人"
+    assert saved_project["description"] == "主导订单链路拆分"
+
+
+def test_preview_keeps_project_skeleton_when_only_name_has_evidence(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """只有项目名称有原文证据时，保留项目骨架并把其余可选字段留空，而不是丢弃整条项目。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回摘录仅覆盖项目名称的候选，模拟模型未把字段纳入摘录的情况。"""
+        candidate = _candidate()
+        candidate["projects"] = [
+            {
+                "name": "订单系统重构",
+                "role": "负责人",
+                "description": "主导订单链路拆分",
+                "tech_stack": ["Spring Boot"],
+                "start_date": "2021-01-01",
+                "end_date": "2022-01-01",
+                "source_quote": "订单系统重构",
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    project = preview["candidate"]["projects"][0]
+    assert project["name"] == "订单系统重构"
+    # 缺失可选字段留空（None/[]），既不伪造默认值，也不隐藏字段。
+    assert project["role"] is None
+    assert project["description"] is None
+    assert project["tech_stack"] == []
+    assert project["start_date"] is None
+    assert project["end_date"] is None
+    assert preview["completeness"]["rejected_item_count"] == 0
+    assert preview["completeness"]["excluded_field_count"] == 5
+    assert preview["warnings"][0]["code"] == "FIELD_NOT_IN_QUOTE"
+    assert preview["warnings"][0]["fields"] == [
+        "role",
+        "description",
+        "tech_stack",
+        "start_date",
+        "end_date",
+    ]
+
+
+def test_preview_maps_project_title_alias_and_string_tech_stack(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模型沿用工作经历命名（title）或把技术栈写成字符串时，项目仍应进入候选并给出可见提示。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回用 `title` 表示项目名、技术栈为分隔字符串的候选。"""
+        candidate = _candidate()
+        candidate["projects"] = [
+            {
+                "title": "订单系统重构",
+                "role": "负责人",
+                "tech_stack": "Spring Boot",
+                "description": "主导订单链路拆分",
+                "start_date": "2021-01-01",
+                "end_date": "2022-01-01",
+                "source_quote": (
+                    "订单系统重构 负责人 技术栈 Spring Boot 主导订单链路拆分 性能提升 30% 2021 年至 2022 年"
+                ),
+            }
+        ]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    project = preview["candidate"]["projects"][0]
+    assert project["name"] == "订单系统重构"
+    assert project["tech_stack"] == ["Spring Boot"]
+    assert preview["completeness"]["unmapped_field_count"] == 0
+    assert preview["warnings"][0] == {
+        "group": "projects",
+        "index": 0,
+        "code": "FIELD_ALIAS_MAPPED",
+        "fields": ["title", "tech_stack"],
+        "message": "模型使用了与本档案契约等价的字段名或字符串技术栈，已归一化后继续按原文摘录校验。",
+    }
 
 
 def test_preview_rejects_only_schema_invalid_item(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:

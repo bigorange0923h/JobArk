@@ -3,6 +3,11 @@
 外部 HTTP 集中在适配层：领域模块只提交已解析的请求配置与结构化输入，由本模块负责
 地址校验、请求构造、响应大小限制与安全错误映射。所有调用都在工作线程中执行，
 调用方必须在等待网络之前结束数据库事务（见 ADR 0002），避免长事务占用连接。
+
+注意:
+    模块名与 `gateway` 相关标识是**内部实现命名**（OpenAI 兼容协议适配器），
+    不是用户可见的产品术语；面向用户的文案统一称“大模型服务”。除非一并提供兼容迁移方案，
+    不要为了统一文案重命名本模块、错误类或既有的 `JOBARK_AI_GATEWAY_*` 环境变量。
 """
 
 import asyncio
@@ -212,6 +217,27 @@ def _extract_message_content(response: dict[str, Any]) -> str:
     return content
 
 
+def _log_model_output(task: str, parsed: dict[str, Any]) -> None:
+    """在显式开启诊断开关时把模型返回的 JSON 原文写入日志。
+
+    参数:
+        task: 固定任务名，便于区分是哪类候选。
+        parsed: 模型返回并已解析的 JSON 对象。
+
+    注意:
+        本函数是**唯一**把模型输出正文写入日志的入口，默认关闭：内容可能包含简历里的姓名、
+        联系方式与工作经历，属于个人信息，常规日志与响应都不得承载（见 docs/requirements/v1.md）。
+        生产环境由 `Settings` 的校验直接拒绝开启该开关；开启时用 `WARNING` 级别并带
+        `event=ai_model_output`，方便采集侧识别与按需过滤这些含个人信息的行。
+    """
+    if not get_settings().ai_log_model_output:
+        return
+    logger.warning(
+        "模型输出原文（诊断用，含个人信息）",
+        extra={"event": "ai_model_output", "task": task, "model_output": parsed},
+    )
+
+
 async def generate(
     config: ResolvedAiModel, task: str, input_data: dict[str, Any], schema: dict[str, Any]
 ) -> dict[str, Any]:
@@ -261,4 +287,6 @@ async def generate(
     if not isinstance(parsed, dict):
         logger.warning("AI 响应不是 JSON 对象", extra={"event": "ai_response_invalid", "reason": "non_object_json"})
         raise ValidationFailedError("AI 返回的 JSON 不是对象，原始资料已保留，请稍后手动重试。")
-    return cast(dict[str, Any], parsed)
+    parsed_object = cast(dict[str, Any], parsed)
+    _log_model_output(task, parsed_object)
+    return parsed_object

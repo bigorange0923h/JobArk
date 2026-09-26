@@ -55,7 +55,7 @@ onMounted(() => { void load() })
       <a-form layout="vertical" @submit.prevent="generate">
         <a-form-item label="基线版本" required><a-select v-model:value="baseId" :disabled="busy" placeholder="选择正式版本" :options="versions.map(v => ({ value: v.id, label: `版本 ${v.version_no}` }))" data-testid="base-version" /></a-form-item>
         <a-form-item label="目标方向" required><a-textarea v-model:value="target" :rows="4" :maxlength="2000" placeholder="说明目标职位或侧重点" data-testid="target-direction" /></a-form-item>
-        <a-form-item><a-checkbox v-model:checked="consent" data-testid="gateway-consent">确认发送目标方向和简历条目到已配置的 AI 网关；条目自由文本可能包含个人信息</a-checkbox></a-form-item>
+        <a-form-item><a-checkbox v-model:checked="consent" data-testid="gateway-consent">确认发送目标方向和简历条目到已配置的大模型服务；条目自由文本可能包含个人信息</a-checkbox></a-form-item>
         <a-button type="primary" :loading="busy" :disabled="!consent || !baseId || !target.trim()" data-testid="generate-draft" @click="generate">生成候选稿</a-button>
       </a-form>
     </a-card>

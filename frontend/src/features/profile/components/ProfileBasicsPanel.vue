@@ -6,6 +6,10 @@
  * `POST /profile` 提交（不带乐观锁版本号）。做成一个组件而不是两个，是因为字段完全相同，
  * 分成两份迟早会出现"创建表单能填城市、编辑表单漏了"这类不一致。
  *
+ * 字段不再在本文件里逐个书写，而是按 `basicsFields.ts` 的共享定义渲染：导入候选核对页用的是
+ * 同一份定义（取其子集），因此两处的字段顺序、标签与帮助文本不可能漂移。布局复用
+ * `theme.css` 的 `.profile-field-grid`（桌面端每行最多两个普通字段、长文本独占一行、窄屏单列）。
+ *
  * 公开链接是唯一的数组字段，用可增删的行内输入维护；**整行留空即忽略**，只填一半则在前端拦下，
  * 因为那种情况下用户意图不明，而提交上去只会得到一条难懂的嵌套字段错误。
  */
@@ -24,6 +28,8 @@ import {
 import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
+import { BASIC_FIELDS, type BasicFieldName } from '../basicsFields'
+
 const props = defineProps<{
   /** 当前档案；为 null 表示尚未创建。 */
   profile: Profile | null
@@ -41,12 +47,8 @@ interface LinkDraft {
   url: string
 }
 
-const fullName = ref('')
-const headline = ref('')
-const summary = ref('')
-const email = ref('')
-const phone = ref('')
-const city = ref('')
+/** 字段名 → 输入框文本；空字符串代表"未填写"，提交时统一转为 null。 */
+const values = ref<Record<string, string>>({})
 const links = ref<LinkDraft[]>([])
 const fieldErrors = ref<Record<string, string>>({})
 const linksError = ref<string | null>(null)
@@ -74,16 +76,20 @@ const alertDescription = computed(() => {
   return parts.length === 0 ? undefined : parts.join(' ')
 })
 
+/** 读取一个字段的当前文本；缺省为空字符串。 */
+function text(name: BasicFieldName): string {
+  return values.value[name] ?? ''
+}
+
 /** 用当前档案重置表单；`profile` 变化（例如冲突后重新加载）时同步覆盖，避免界面显示旧值。 */
 watch(
   () => props.profile,
   (profile) => {
-    fullName.value = profile?.full_name ?? ''
-    headline.value = profile?.headline ?? ''
-    summary.value = profile?.summary ?? ''
-    email.value = profile?.email ?? ''
-    phone.value = profile?.phone ?? ''
-    city.value = profile?.city ?? ''
+    const next: Record<string, string> = {}
+    for (const field of BASIC_FIELDS) {
+      next[field.name] = profile?.[field.name] ?? ''
+    }
+    values.value = next
     links.value = (profile?.links ?? []).map((link) => ({ label: link.label, url: link.url }))
     fieldErrors.value = {}
     linksError.value = null
@@ -91,6 +97,10 @@ watch(
   },
   { immediate: true },
 )
+
+function setValue(name: BasicFieldName, value: unknown): void {
+  values.value[name] = typeof value === 'string' ? value : ''
+}
 
 function addLink(): void {
   links.value = [...links.value, { label: '', url: '' }]
@@ -116,7 +126,7 @@ async function submit(): Promise<void> {
     return
   }
 
-  if (fullName.value.trim() === '') {
+  if (text('full_name').trim() === '') {
     fieldErrors.value = { full_name: '该项为必填。' }
     return
   }
@@ -129,24 +139,24 @@ async function submit(): Promise<void> {
     }))
     if (props.profile === null) {
       const payload: ProfileCreateInput = {
-        full_name: fullName.value.trim(),
-        headline: emptyToNull(headline.value),
-        summary: emptyToNull(summary.value),
-        email: emptyToNull(email.value),
-        phone: emptyToNull(phone.value),
-        city: emptyToNull(city.value),
+        full_name: text('full_name').trim(),
+        headline: emptyToNull(text('headline')),
+        summary: emptyToNull(text('summary')),
+        email: emptyToNull(text('email')),
+        phone: emptyToNull(text('phone')),
+        city: emptyToNull(text('city')),
         links: payloadLinks,
       }
       await createProfile(payload)
     } else {
       const payload: ProfileBasicsInput = {
         version: props.profile.version,
-        full_name: fullName.value.trim(),
-        headline: emptyToNull(headline.value),
-        summary: emptyToNull(summary.value),
-        email: emptyToNull(email.value),
-        phone: emptyToNull(phone.value),
-        city: emptyToNull(city.value),
+        full_name: text('full_name').trim(),
+        headline: emptyToNull(text('headline')),
+        summary: emptyToNull(text('summary')),
+        email: emptyToNull(text('email')),
+        phone: emptyToNull(text('phone')),
+        city: emptyToNull(text('city')),
         links: payloadLinks,
       }
       await saveProfileBasics(payload)
@@ -198,61 +208,40 @@ function emptyToNull(value: string): string | null {
       data-testid="error-basics"
     />
 
-    <a-form layout="vertical">
+    <a-form layout="vertical" class="profile-field-grid">
       <a-form-item
-        label="姓名"
-        :help="fieldErrors['full_name'] ?? '用于简历与投递材料，请填真实姓名。'"
-        :validate-status="fieldErrors['full_name'] === undefined ? undefined : 'error'"
+        v-for="field in BASIC_FIELDS"
+        :key="field.name"
+        :label="field.label"
+        :class="{ 'profile-field-grid__wide': field.wide }"
+        :required="field.required"
+        :help="fieldErrors[field.name] ?? field.help"
+        :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
       >
-        <a-input :value="fullName" :maxlength="100" allow-clear @update:value="(value: unknown) => (fullName = String(value))" />
+        <a-input
+          v-if="field.kind === 'text'"
+          :value="text(field.name)"
+          :maxlength="field.maxLength"
+          :placeholder="field.placeholder"
+          allow-clear
+          @update:value="(value: unknown) => setValue(field.name, value)"
+        />
+        <a-textarea
+          v-else
+          :value="text(field.name)"
+          :maxlength="field.maxLength"
+          :rows="3"
+          :placeholder="field.placeholder"
+          allow-clear
+          @update:value="(value: unknown) => setValue(field.name, value)"
+        />
       </a-form-item>
 
       <a-form-item
-        label="一句话头衔"
-        :help="fieldErrors['headline']"
-        :validate-status="fieldErrors['headline'] === undefined ? undefined : 'error'"
+        label="公开链接"
+        class="profile-field-grid__wide"
+        :help="linksError ?? '例如 GitHub、博客；留空的整行会被忽略。'"
       >
-        <a-input :value="headline" :maxlength="200" allow-clear @update:value="(value: unknown) => (headline = String(value))" />
-      </a-form-item>
-
-      <a-form-item
-        label="个人简介"
-        :help="fieldErrors['summary']"
-        :validate-status="fieldErrors['summary'] === undefined ? undefined : 'error'"
-      >
-        <a-textarea :value="summary" :rows="3" allow-clear @update:value="(value: unknown) => (summary = String(value))" />
-      </a-form-item>
-
-      <a-row :gutter="16">
-        <a-col :span="12">
-          <a-form-item
-            label="邮箱"
-            :help="fieldErrors['email']"
-            :validate-status="fieldErrors['email'] === undefined ? undefined : 'error'"
-          >
-            <a-input :value="email" :maxlength="320" allow-clear @update:value="(value: unknown) => (email = String(value))" />
-          </a-form-item>
-        </a-col>
-        <a-col :span="12">
-          <a-form-item
-            label="手机"
-            :help="fieldErrors['phone']"
-            :validate-status="fieldErrors['phone'] === undefined ? undefined : 'error'"
-          >
-            <a-input :value="phone" :maxlength="50" allow-clear @update:value="(value: unknown) => (phone = String(value))" />
-          </a-form-item>
-        </a-col>
-      </a-row>
-
-      <a-form-item
-        label="所在城市"
-        :help="fieldErrors['city']"
-        :validate-status="fieldErrors['city'] === undefined ? undefined : 'error'"
-      >
-        <a-input :value="city" :maxlength="100" allow-clear @update:value="(value: unknown) => (city = String(value))" />
-      </a-form-item>
-
-      <a-form-item label="公开链接" :help="linksError ?? '例如 GitHub、博客；留空的整行会被忽略。'">
         <div v-for="(link, index) in links" :key="index" class="link-row">
           <a-input v-model:value="link.label" :maxlength="50" placeholder="名称（如 GitHub）" />
           <a-input v-model:value="link.url" :maxlength="2048" placeholder="https://…" />
@@ -261,9 +250,11 @@ function emptyToNull(value: string): string | null {
         <a-button type="dashed" block @click="addLink">添加链接</a-button>
       </a-form-item>
 
-      <a-button type="primary" :loading="saving" data-testid="save-basics" @click="submit">
-        {{ isCreate ? '创建档案' : '保存' }}
-      </a-button>
+      <a-form-item class="profile-field-grid__wide">
+        <a-button type="primary" :loading="saving" data-testid="save-basics" @click="submit">
+          {{ isCreate ? '创建档案' : '保存' }}
+        </a-button>
+      </a-form-item>
     </a-form>
   </a-card>
 </template>

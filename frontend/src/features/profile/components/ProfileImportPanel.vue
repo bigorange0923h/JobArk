@@ -1,14 +1,18 @@
 <script setup lang="ts">
 /**
- * 文档导入只保留临时候选；确认前不把 AI 结果写入档案。
+ * 从已有简历导入：入口只是主按钮，真正的外发告知与确认收在弹窗里。
  *
- * 候选在预览阶段可编辑：用户修正或补全的字段可能不再逐字出现在原文摘录中，后端会把这类条目
- * 改挂"本人陈述"证据；因此这里让除 `source_quote` 之外的字段可改，而摘录保持只读——它是来源凭证，
- * 允许编辑就等于允许伪造来源。
+ * 数据真实性边界：
+ * - 预览阶段只在内存里持有候选，不写库；确认接口才会落库。
+ * - 候选可逐字段修正，但 `source_quote`（原文摘录）保持只读——它是来源凭证，允许编辑
+ *   就等于允许伪造来源。被改到摘录之外的条目在确认时改挂"本人陈述"证据，由后端裁决。
  *
- * 各分区的字段配置集中在本文件的 `SECTIONS` 里，与后端候选结构一一对应；
- * 新增一类候选只需要在这里加一个分区，而不是再写一段结构相同的模板。
+ * 布局约定：
+ * - 基本信息按 `basicsFields.ts` 的共享定义渲染，与"创建个人档案"表单同一套顺序/标签/帮助文本。
+ * - 每条候选是一张卡片：摘要在标题行（与是否导入的复选框并排），字段区复用 `.profile-field-grid`
+ *   （桌面端每行最多两个普通字段、长文本独占一行、窄屏单列），原文摘录独立成块。
  */
+
 import { computed, ref } from 'vue'
 
 import {
@@ -21,8 +25,28 @@ import {
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { createLocalError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
-defineProps<{ hasProfile: boolean }>()
-const emit = defineEmits<{ changed: [] }>()
+import { IMPORT_BASIC_FIELDS, type ImportBasicField, type ImportBasicFieldName } from '../basicsFields'
+
+const props = withDefaults(
+  defineProps<{
+    /** 是否已有个人档案：为 true 时导入只能补充事实，不覆盖根信息。 */
+    hasProfile: boolean
+    /**
+     * 是否显示面板自带的入口按钮与隐私说明。
+     *
+     * 页面已经有「从已有简历导入」按钮时传 false：同一入口出现两次会让人以为点错了地方。
+     * 隐藏入口不会丢失告知——弹窗内的发送范围说明与"继续即同意"覆盖同一范围。
+     */
+    showEntry?: boolean
+  }>(),
+  { showEntry: true },
+)
+const emit = defineEmits<{
+  /** 确认导入成功，页面应重新加载档案聚合。 */
+  changed: []
+  /** 用户选择"返回手动创建"，页面切回创建表单；此处不落库、不清空候选。 */
+  back: []
+}>()
 
 type CandidateSectionKey = 'skills' | 'experiences' | 'projects' | 'educations'
 type CandidateFieldKind = 'text' | 'textarea' | 'date' | 'tags'
@@ -33,6 +57,10 @@ interface CandidateField {
   name: string
   label: string
   kind: CandidateFieldKind
+  /** 被勾选的条目在提交前必须补齐该字段，否则后端会以领域规则拒绝。 */
+  required?: boolean
+  /** 长文本字段独占一行。 */
+  wide?: boolean
 }
 
 interface CandidateSection {
@@ -43,32 +71,24 @@ interface CandidateSection {
   summary: (item: CandidateItem) => string
 }
 
-const BASIC_FIELDS = [
-  { name: 'full_name', label: '姓名' },
-  { name: 'headline', label: '头衔' },
-  { name: 'email', label: '邮箱' },
-  { name: 'phone', label: '手机' },
-  { name: 'city', label: '城市' },
-] as const
-
 const SECTIONS: CandidateSection[] = [
   {
     key: 'skills',
     title: '技能',
-    fields: [{ name: 'name', label: '技能名称', kind: 'text' }],
+    fields: [{ name: 'name', label: '技能名称', kind: 'text', required: true }],
     summary: (item) => String(item['name'] ?? ''),
   },
   {
     key: 'experiences',
     title: '工作经历',
     fields: [
-      { name: 'company', label: '公司', kind: 'text' },
-      { name: 'title', label: '职位', kind: 'text' },
+      { name: 'company', label: '公司', kind: 'text', required: true },
+      { name: 'title', label: '职位', kind: 'text', required: true },
       { name: 'location', label: '地点', kind: 'text' },
-      { name: 'start_date', label: '开始日期', kind: 'date' },
+      { name: 'start_date', label: '开始日期', kind: 'date', required: true },
       { name: 'end_date', label: '结束日期', kind: 'date' },
-      { name: 'responsibilities', label: '职责', kind: 'textarea' },
-      { name: 'achievements', label: '成果', kind: 'textarea' },
+      { name: 'responsibilities', label: '职责', kind: 'textarea', wide: true },
+      { name: 'achievements', label: '成果', kind: 'textarea', wide: true },
     ],
     summary: (item) =>
       `${item['company'] ?? ''} · ${item['title'] ?? ''}（${item['start_date'] ?? ''} — ${item['end_date'] ?? '至今'}）`,
@@ -77,11 +97,11 @@ const SECTIONS: CandidateSection[] = [
     key: 'projects',
     title: '项目经历',
     fields: [
-      { name: 'name', label: '项目名称', kind: 'text' },
+      { name: 'name', label: '项目名称', kind: 'text', required: true },
       { name: 'role', label: '本人角色', kind: 'text' },
-      { name: 'description', label: '项目说明', kind: 'textarea' },
-      { name: 'responsibilities', label: '职责', kind: 'textarea' },
-      { name: 'achievements', label: '成果', kind: 'textarea' },
+      { name: 'description', label: '项目说明', kind: 'textarea', wide: true },
+      { name: 'responsibilities', label: '职责', kind: 'textarea', wide: true },
+      { name: 'achievements', label: '成果', kind: 'textarea', wide: true },
       { name: 'tech_stack', label: '技术栈', kind: 'tags' },
       { name: 'url', label: '项目链接', kind: 'text' },
       { name: 'start_date', label: '开始日期', kind: 'date' },
@@ -93,7 +113,7 @@ const SECTIONS: CandidateSection[] = [
     key: 'educations',
     title: '教育经历',
     fields: [
-      { name: 'school', label: '学校', kind: 'text' },
+      { name: 'school', label: '学校', kind: 'text', required: true },
       { name: 'major', label: '专业', kind: 'text' },
       { name: 'degree', label: '学历/学位', kind: 'text' },
       { name: 'start_date', label: '开始日期', kind: 'date' },
@@ -105,6 +125,7 @@ const SECTIONS: CandidateSection[] = [
 ]
 
 const fileInput = ref<HTMLInputElement | null>(null)
+const modalOpen = ref(false)
 const file = ref<File | null>(null)
 const contentBase64 = ref('')
 /** 服务端返回的预览（原文件哈希等），写入时仍以它为准做换文件校验。 */
@@ -115,8 +136,11 @@ const consent = ref(false)
 const reviewed = ref(false)
 const busyPreview = ref(false)
 const progressStage = ref<ProfileImportStage | 'reading_file'>('reading_file')
+/** 请求体已发送/总字节；只由传输层上报的真实进度驱动，不用它推算模型阶段。 */
+const uploadLoaded = ref(0)
+const uploadTotal = ref(0)
 const busyConfirm = ref(false)
-/** 本地文件校验与服务端失败共用一个提示位置；无法定位字段的失败走全局通知。 */
+/** 本地校验与服务端失败共用一个提示位置；无法定位字段的失败走全局通知。 */
 const error = ref<ParsedServerError | null>(null)
 const result = ref('')
 const selected = ref<Record<CandidateSectionKey, number[]>>({
@@ -126,25 +150,42 @@ const selected = ref<Record<CandidateSectionKey, number[]>>({
   educations: [],
 })
 const busy = computed(() => busyPreview.value || busyConfirm.value)
+/** 只有选了文件并勾选外发同意才允许"继续"——未确认不得调用预览接口。 */
+const canContinue = computed(() => file.value !== null && consent.value && !busy.value)
+const confirmLabel = computed(() =>
+  props.hasProfile ? '确认写入个人档案' : '确认使用候选并创建个人档案',
+)
+/** 卡片标题：作为独立入口时说明"这里能做什么"，被页面驱动时说明"这里会出现什么"。 */
+const cardTitle = computed(() => (props.showEntry ? '从已有简历导入' : '待核对候选'))
 const progressText = computed(() => ({
   reading_file: '正在读取文件…',
   received: '请求已送达，正在解析文档…',
   document_parsed: '文档解析完成，正在读取模型配置…',
   model_resolved: '模型配置已读取，准备生成候选…',
-  ai_request_started: '模型正在生成候选，通常需要几十秒…',
-  ai_request_retrying: '模型服务短暂不可用，正在自动重试一次…',
+  ai_request_started: '大模型服务正在生成候选，通常需要几十秒…',
+  ai_request_retrying: '大模型服务短暂不可用，正在自动重试一次…',
   ai_response_parsed: '模型已返回，正在校验候选结构和原文摘录…',
   candidate_validated: '候选已校验，正在展示预览…',
 })[progressStage.value])
+
+/** 上传阶段的真实百分比；总量未知时为 0，界面据此回退到阶段文案。 */
+const uploadPercent = computed(() =>
+  uploadTotal.value > 0 ? Math.min(100, Math.round((uploadLoaded.value / uploadTotal.value) * 100)) : 0,
+)
+/** 只在仍在发送请求体时显示进度条：上传完成后继续显示 100% 会掩盖模型阶段。 */
+const showUploadProgress = computed(
+  () => busyPreview.value && uploadTotal.value > 0 && uploadPercent.value < 100,
+)
 
 /** 局部候选必须明确说明遗漏，不能让用户把可确认条目误认为整份简历已被完整抽取。 */
 const partialPreviewMessage = computed(() => {
   const current = preview.value
   if (current === null || current.completeness.status !== 'PARTIAL') return ''
-  const { valid_item_count, rejected_item_count, unmapped_field_count } = current.completeness
+  const { valid_item_count, rejected_item_count, unmapped_field_count, excluded_field_count } = current.completeness
   const parts = [`本次仅生成部分可验证候选：${valid_item_count} 条可核对`]
   if (rejected_item_count > 0) parts.push(`${rejected_item_count} 条因格式或证据不足未纳入`)
   if (unmapped_field_count > 0) parts.push(`${unmapped_field_count} 个未映射字段未导入`)
+  if (excluded_field_count > 0) parts.push(`${excluded_field_count} 个字段缺少原文证据而未导入`)
   return `${parts.join('，')}。请检查下方遗漏说明或手工补录。`
 })
 
@@ -159,6 +200,24 @@ const errorDescription = computed(() => {
   }
   return parts.length === 0 ? undefined : parts.join(' ')
 })
+
+function openModal(): void {
+  error.value = null
+  modalOpen.value = true
+}
+
+/**
+ * 供父页面在"选择从已有简历导入"时直接打开弹窗。
+ *
+ * 暴露动作而不是内部状态：页面无需知道弹窗由哪个 ref 控制，也就不会绕过弹窗内的外发告知。
+ */
+defineExpose({ open: openModal })
+
+/** 生成过程中不允许关闭：请求仍在进行，关闭会让"取消"与"结果"产生歧义。 */
+function closeModal(): void {
+  if (busyPreview.value) return
+  modalOpen.value = false
+}
 
 function chooseFile(): void {
   fileInput.value?.click()
@@ -221,8 +280,16 @@ async function generate(): Promise<void> {
   draft.value = null
   try {
     contentBase64.value = await encodeFile(file.value)
-    const next = await previewProfileImportStream(file.value.name, contentBase64.value, consent.value, (stage) => {
-      progressStage.value = stage
+    uploadLoaded.value = 0
+    uploadTotal.value = 0
+    const next = await previewProfileImportStream(file.value.name, contentBase64.value, consent.value, {
+      onStage: (stage) => {
+        progressStage.value = stage
+      },
+      onUploadProgress: (loaded, total) => {
+        uploadLoaded.value = loaded
+        uploadTotal.value = total
+      },
     })
     preview.value = next
     draft.value = cloneCandidate(next.candidate)
@@ -233,6 +300,8 @@ async function generate(): Promise<void> {
       educations: next.candidate.educations.map((_, index) => index),
     }
     reviewed.value = false
+    // 候选已生成，弹窗完成使命；核对与确认在面板里进行，避免弹窗内堆叠长表单。
+    modalOpen.value = false
   } catch (cause: unknown) {
     // 文件读取失败是本地问题，需要就地提示；服务端失败中无法定位字段的走全局通知。
     error.value = cause instanceof Error && cause.message === '文件读取失败。'
@@ -264,7 +333,7 @@ function tagsOf(item: CandidateItem, name: string): string[] {
   return Array.isArray(value) ? (value as string[]) : []
 }
 
-function basicTextOf(name: (typeof BASIC_FIELDS)[number]['name']): string {
+function basicTextOf(name: ImportBasicFieldName): string {
   const candidate = draft.value
   if (candidate === null) return ''
   const value: unknown = candidate[name]
@@ -280,13 +349,14 @@ function setValue(key: CandidateSectionKey, index: number, field: CandidateField
   if (field.kind === 'tags') {
     item[field.name] = Array.isArray(value) ? value : []
   } else {
+    // 空字符串统一写成 null：不产生"空字符串事实"，与后端确认契约一致。
     const text = typeof value === 'string' ? value : ''
     item[field.name] = text === '' ? null : text
   }
   reviewed.value = false
 }
 
-function setBasic(name: (typeof BASIC_FIELDS)[number]['name'], value: unknown): void {
+function setBasic(name: ImportBasicFieldName, value: unknown): void {
   const candidate = draft.value
   if (candidate === null) return
   const text = typeof value === 'string' ? value : ''
@@ -298,17 +368,54 @@ function setBasic(name: (typeof BASIC_FIELDS)[number]['name'], value: unknown): 
   reviewed.value = false
 }
 
+/**
+ * 提交前的领域必填校验。
+ *
+ * 候选允许留空（简历没提供就显示为空），但**被勾选**的条目不能带空的必填字段提交：
+ * 后端会以领域规则拒绝（422），这里提前拦下并指出具体条目，让用户可以补全、取消该条
+ * 或干脆不勾选该条。后端校验仍是最终防线，此处不是唯一防线。
+ */
+function firstMissingRequiredField(): string | null {
+  for (const section of SECTIONS) {
+    const items = itemsOf(section.key)
+    for (const index of selected.value[section.key]) {
+      const item = items[index]
+      if (item === undefined) continue
+      for (const field of section.fields) {
+        if (field.required !== true) continue
+        if (textOf(item, field.name).trim() === '') {
+          return `${section.title}第 ${index + 1} 条缺少必填的「${field.label}」：请补全、取消该条或不勾选该条。`
+        }
+      }
+    }
+  }
+  return null
+}
+
 /** 用户确认后一次性提交；已有基本资料绝不从候选覆盖。 */
 async function apply(): Promise<void> {
-  if (preview.value === null || draft.value === null || file.value === null || !reviewed.value || busy.value) return
+  // 取局部快照后再提交：确认过程中这些引用不会被其它分支改写，也避免依赖跨 await 的收窄。
+  const currentPreview = preview.value
+  const currentDraft = draft.value
+  const currentFile = file.value
+  if (currentPreview === null || currentDraft === null || currentFile === null || !reviewed.value || busy.value) return
+  if (currentDraft.full_name.trim() === '') {
+    error.value = createLocalError('候选姓名为空，无法创建档案：请补全姓名，或先返回手动创建。')
+    return
+  }
+  const missing = firstMissingRequiredField()
+  if (missing !== null) {
+    error.value = createLocalError(missing)
+    return
+  }
   busyConfirm.value = true
   error.value = null
   try {
     const saved = await confirmProfileImport({
-      filename: file.value.name,
+      filename: currentFile.name,
       contentBase64: contentBase64.value,
-      sourceHash: preview.value.source_hash,
-      candidate: draft.value,
+      sourceHash: currentPreview.source_hash,
+      candidate: currentDraft,
       skillIndices: selected.value.skills,
       experienceIndices: selected.value.experiences,
       projectIndices: selected.value.projects,
@@ -324,6 +431,7 @@ async function apply(): Promise<void> {
     contentBase64.value = ''
     reviewed.value = false
     consent.value = false
+    modalOpen.value = false
     emit('changed')
   } catch (cause: unknown) {
     error.value = resolveActionFailure(cause, '导入简历候选')
@@ -331,29 +439,133 @@ async function apply(): Promise<void> {
     busyConfirm.value = false
   }
 }
+
+/** 返回手动创建：只切换页面状态，不落库、不清空已选文件与内存候选。 */
+function backToManual(): void {
+  emit('back')
+}
+
+/** 供模板读取共享字段定义（避免在模板里再次罗列字段）。 */
+const basicFields: readonly ImportBasicField[] = IMPORT_BASIC_FIELDS
 </script>
 
 <template>
-  <a-card title="从已有简历导入" class="import-panel" data-testid="profile-import-panel">
-    <p class="import-intro">上传带文字层的 PDF 或 HTML 简历，先预览候选，再选择要写入的内容。原文件不会保存在服务端；扫描件暂不支持 OCR。短暂的模型连接或服务错误会最多自动重试一次。</p>
-    <a-alert v-if="hasProfile" type="info" show-icon message="已有档案只补充经历与技能，不覆盖现有基本信息。" class="import-notice" />
-    <div class="file-row">
-      <input ref="fileInput" class="file-input" type="file" accept=".pdf,.html,.htm,application/pdf,text/html" aria-label="选择 PDF 或 HTML 简历" @change="onFileChange" />
-      <a-button :disabled="busy" data-testid="choose-resume-file" @click="chooseFile">选择简历文件</a-button>
-      <span class="file-name">{{ file?.name ?? '尚未选择文件' }}</span>
+  <a-card class="import-panel" data-testid="profile-import-panel">
+    <template #title>{{ cardTitle }}</template>
+    <!--
+      入口只在"面板自己承担入口"时显示：页面已经提供「从已有简历导入」按钮时（showEntry=false），
+      再来一个同名按钮会让人以为点错了入口。隐藏入口不丢信息：弹窗里的发送范围说明与"继续即同意"覆盖同一范围。
+    -->
+    <div v-if="showEntry" class="import-entry">
+      <a-button type="primary" data-testid="open-import-modal" @click="openModal">从已有简历导入</a-button>
+      <p class="import-privacy">
+        简历原文件不会上传或保存在服务端。只有你在弹窗中确认后，才会把本地提取的简历文字发送到已配置的大模型服务
+        生成待核对候选；候选经你逐项核对并确认后才会写入个人档案。扫描件（无文字层的 PDF）暂不支持。
+      </p>
     </div>
-    <a-checkbox v-model:checked="consent" :disabled="!file || busy" data-testid="profile-import-consent">
-      我同意将简历提取文字（可能包含姓名、联系方式和工作经历）发送到已配置的 AI 网关；短暂失败时最多会再发送一次
-    </a-checkbox>
-    <div class="import-actions">
-      <a-button type="primary" :loading="busyPreview" :disabled="!file || !consent || busy" data-testid="preview-import" @click="generate">生成待核对候选</a-button>
-    </div>
-    <div v-if="busyPreview" class="import-progress" role="status" aria-live="polite" data-testid="profile-import-progress">
-      <a-spin size="small" />
-      <span>{{ progressText }}</span>
-    </div>
-    <a-alert v-if="error" type="error" show-icon :message="error.message" :description="errorDescription" class="import-notice" data-testid="profile-import-error" />
-    <a-alert v-if="result" type="success" show-icon :message="result" class="import-notice" data-testid="profile-import-success" />
+    <a-alert
+      v-if="showEntry && hasProfile"
+      type="info"
+      show-icon
+      message="已有档案只补充经历与技能，不覆盖现有基本信息。"
+      class="import-notice"
+    />
+    <p v-if="!showEntry && draft === null && result === ''" class="import-empty-hint">
+      还没有待核对候选：点上方「从已有简历导入」选择 PDF 或 HTML 简历，候选会在这里出现，原文件不会保存在服务端。
+    </p>
+
+    <!--
+      与仓库其它弹窗一致：不用传送门（`:get-container="false"`），测试可以直接在组件树里断言，
+      页面也不会留下游离节点。`data-testid` 放在内容上，Modal 会自行处理组件标签上的属性透传。
+    -->
+    <a-modal
+      v-if="modalOpen"
+      :open="true"
+      :get-container="false"
+      :width="640"
+      :mask-closable="false"
+      :closable="!busyPreview"
+      title="从已有简历导入"
+      @cancel="closeModal"
+    >
+      <div data-testid="import-modal">
+        <a-alert
+          type="info"
+          show-icon
+          message="发送范围与写入边界"
+          description="简历原文件不会上传或保存在服务端；将从 PDF/HTML 本地提取的简历文字发送到已配置的大模型服务，用于生成待核对候选。提取文字可能包含姓名、联系方式与工作经历。候选不会自动写入个人档案：只有你逐项核对并确认后才会落库。"
+          class="import-notice"
+        />
+        <div class="file-row">
+          <input
+            ref="fileInput"
+            class="file-input"
+            type="file"
+            accept=".pdf,.html,.htm,application/pdf,text/html"
+            aria-label="选择 PDF 或 HTML 简历"
+            @change="onFileChange"
+          />
+          <a-button :disabled="busyPreview" data-testid="choose-resume-file" @click="chooseFile">选择简历文件</a-button>
+          <span class="file-name">{{ file?.name ?? '尚未选择文件' }}</span>
+        </div>
+        <a-checkbox v-model:checked="consent" :disabled="!file || busyPreview" data-testid="profile-import-consent">
+          我已知悉并同意：把本地提取的简历文字发送到已配置的大模型服务；短暂的连接或服务错误时最多会自动重试一次
+        </a-checkbox>
+        <div v-if="busyPreview" class="import-progress" role="status" aria-live="polite" data-testid="profile-import-progress">
+          <!-- 上传阶段按真实字节走；上传完成后换成后端阶段文案，两者不混用同一个数字。 -->
+          <div v-if="showUploadProgress" class="upload-row" data-testid="profile-import-upload-progress">
+            <span>正在上传简历文件…</span>
+            <a-progress :percent="uploadPercent" :show-info="false" class="upload-bar" />
+            <span>{{ uploadPercent }}%</span>
+          </div>
+          <template v-else>
+            <a-spin size="small" />
+            <span>{{ progressText }}</span>
+          </template>
+        </div>
+        <a-alert
+          v-if="error"
+          type="error"
+          show-icon
+          :message="error.message"
+          :description="errorDescription"
+          class="import-notice"
+          data-testid="profile-import-error"
+        />
+      </div>
+      <template #footer>
+        <a-button :disabled="busyPreview" data-testid="cancel-import" @click="closeModal">取消</a-button>
+        <a-button
+          type="primary"
+          :loading="busyPreview"
+          :disabled="!canContinue"
+          data-testid="preview-import"
+          @click="generate"
+        >
+          继续
+        </a-button>
+      </template>
+    </a-modal>
+
+    <a-alert
+      v-if="result"
+      type="success"
+      show-icon
+      :message="result"
+      class="import-notice"
+      data-testid="profile-import-success"
+    />
+
+    <!-- 候选审核区在弹窗之外：表单较长，放进弹窗会与"继续/取消"产生歧义。 -->
+    <a-alert
+      v-if="error && !modalOpen"
+      type="error"
+      show-icon
+      :message="error.message"
+      :description="errorDescription"
+      class="import-notice"
+      data-testid="profile-import-error"
+    />
 
     <div v-if="draft" class="candidate" data-testid="profile-import-preview">
       <a-divider>待核对内容</a-divider>
@@ -371,45 +583,67 @@ async function apply(): Promise<void> {
               {{ item.group }} 第 {{ item.index + 1 }} 条：{{ item.message }}
             </li>
             <li v-for="warning in preview?.warnings" :key="`warning-${warning.group}-${warning.index}`">
-              {{ warning.group }} 第 {{ warning.index + 1 }} 条：{{ warning.fields.join('、') }} 未映射，未作为事实导入。
+              {{ warning.group }} 第 {{ warning.index + 1 }} 条（{{ warning.fields.join('、') }}）：{{ warning.message }}
             </li>
           </ul>
         </template>
       </a-alert>
       <p class="candidate-note">
         以下均是未验证候选，可直接修正或补全字段；摘录只读，它记录内容在原文中的出处。
-        取消勾选可排除错误条目。简历只写年份或年月时，日期中的缺失月份/日可能以 1 补位，不表示原文提供了精确日期。
+        取消勾选可排除错误条目。简历未提供的可选字段会显示为空，不会写入无意义的空事实。
+        简历只写年份或年月时，日期中的缺失月份/日可能以 1 补位，不表示原文提供了精确日期。
         修正过的条目写入后会以“本人陈述”作为来源，而不是简历原文。
       </p>
-      <a-form layout="vertical" class="basics-form">
-        <a-form-item v-for="field in BASIC_FIELDS" :key="field.name" :label="field.label">
-          <a-input
-            :value="basicTextOf(field.name)"
-            allow-clear
-            :data-testid="`candidate-basics-${field.name}`"
-            @update:value="(value: unknown) => setBasic(field.name, value)"
-          />
-        </a-form-item>
-      </a-form>
-      <p class="source-quote">姓名原文：{{ draft.name_quote }}</p>
+
+      <section class="candidate-section">
+        <h3>基本信息</h3>
+        <a-form layout="vertical" class="profile-field-grid">
+          <a-form-item
+            v-for="field in basicFields"
+            :key="field.name"
+            :label="field.label"
+            :class="{ 'profile-field-grid__wide': field.wide }"
+            :required="field.required"
+            :help="field.help"
+          >
+            <a-input
+              :value="basicTextOf(field.name)"
+              :maxlength="field.maxLength"
+              allow-clear
+              :data-testid="`candidate-basics-${field.name}`"
+              @update:value="(value: unknown) => setBasic(field.name, value)"
+            />
+          </a-form-item>
+        </a-form>
+        <p class="source-quote">姓名原文：{{ draft.name_quote }}</p>
+      </section>
 
       <section v-for="section in SECTIONS" :key="section.key" class="candidate-section">
         <h3>{{ section.title }}（{{ itemsOf(section.key).length }}）</h3>
         <a-empty v-if="!itemsOf(section.key).length" :description="`未提取到${section.title}`" />
-        <div
+        <a-card
           v-for="(item, index) in itemsOf(section.key)"
           :key="index"
+          size="small"
           class="candidate-item"
           :data-testid="`candidate-item-${section.key}-${index}`"
         >
-          <a-checkbox
-            :checked="selected[section.key].includes(index)"
-            @update:checked="(checked: boolean) => toggle(section.key, index, checked)"
-          >
-            {{ section.summary(item) }}
-          </a-checkbox>
-          <a-form layout="vertical" class="candidate-form">
-            <a-form-item v-for="field in section.fields" :key="field.name" :label="field.label">
+          <template #title>
+            <a-checkbox
+              :checked="selected[section.key].includes(index)"
+              @update:checked="(checked: boolean) => toggle(section.key, index, checked)"
+            >
+              {{ section.summary(item) }}
+            </a-checkbox>
+          </template>
+          <a-form layout="vertical" class="profile-field-grid">
+            <a-form-item
+              v-for="field in section.fields"
+              :key="field.name"
+              :label="field.label"
+              :class="{ 'profile-field-grid__wide': field.wide }"
+              :required="field.required"
+            >
               <a-input
                 v-if="field.kind === 'text'"
                 :value="textOf(item, field.name)"
@@ -440,12 +674,25 @@ async function apply(): Promise<void> {
               />
             </a-form-item>
           </a-form>
-          <p class="source-quote">原文：{{ textOf(item, 'source_quote') }}</p>
-        </div>
+          <p class="source-quote">原文摘录（只读）：{{ textOf(item, 'source_quote') }}</p>
+        </a-card>
       </section>
-      <a-checkbox v-model:checked="reviewed" data-testid="profile-import-reviewed">我已对照摘录核对所选内容，理解它们会以“未验证”状态写入档案</a-checkbox>
+
+      <a-checkbox v-model:checked="reviewed" data-testid="profile-import-reviewed">
+        我已对照摘录核对所选内容，理解它们会以“未验证”状态写入档案
+      </a-checkbox>
       <div class="import-actions">
-        <a-button type="primary" :loading="busyConfirm" :disabled="!reviewed || busy" data-testid="confirm-import" @click="apply">确认写入个人档案</a-button>
+        <a-button type="primary" :loading="busyConfirm" :disabled="!reviewed || busy" data-testid="confirm-import" @click="apply">
+          {{ confirmLabel }}
+        </a-button>
+        <a-button
+          v-if="!hasProfile"
+          :disabled="busy"
+          data-testid="import-back-to-manual"
+          @click="backToManual"
+        >
+          返回手动创建
+        </a-button>
       </div>
     </div>
   </a-card>
@@ -453,20 +700,24 @@ async function apply(): Promise<void> {
 
 <style scoped>
 .import-panel { margin-bottom: var(--ja-space-section); }
-.import-intro, .candidate-note { color: var(--ja-color-muted); line-height: 1.65; }
+.import-entry { display: flex; align-items: flex-start; gap: 12px; flex-wrap: wrap; }
+.import-privacy, .candidate-note { color: var(--ja-color-muted); line-height: 1.65; }
+.import-privacy { flex: 1 1 320px; margin: 0; font-size: 13px; }
+.import-empty-hint { margin: 0; color: var(--ja-color-muted); font-size: 13px; line-height: 1.65; }
 .file-row { display: flex; align-items: center; gap: 12px; margin: 16px 0; flex-wrap: wrap; }
 .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .file-name { color: var(--ja-color-muted); font-size: 13px; overflow-wrap: anywhere; }
 .import-actions, .import-notice { margin-top: 16px; }
+.import-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .import-progress { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--ja-color-muted); }
+.upload-row { display: flex; align-items: center; gap: 10px; width: 100%; }
+.upload-bar { flex: 1 1 auto; min-width: 0; }
 .candidate { margin-top: 20px; }
-.basics-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr)); gap: 0 12px; }
-.basics-form :deep(.ant-form-item) { margin-bottom: 12px; }
 .candidate-section { margin: 20px 0; }
 .candidate-section h3 { margin-bottom: 10px; font-size: 15px; }
-.candidate-item { padding: 10px 12px; border: 1px solid var(--ja-color-border); border-radius: var(--ja-radius); margin-bottom: 8px; }
-.candidate-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 0 12px; margin-top: 8px; }
-.candidate-form :deep(.ant-form-item) { margin-bottom: 8px; }
+.candidate-item { margin-bottom: 10px; }
+.candidate-item :deep(.ant-card-head) { min-height: 42px; }
+.candidate-item :deep(.ant-form-item) { margin-bottom: 8px; }
 .full-width { width: 100%; }
 .source-quote { margin: 6px 0 0; color: var(--ja-color-muted); font-size: 12px; line-height: 1.6; overflow-wrap: anywhere; }
 .import-diagnostics { margin: 8px 0 0; padding-left: 20px; }

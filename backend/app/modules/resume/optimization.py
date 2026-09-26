@@ -27,7 +27,7 @@ class OptimizationRequest(BaseModel):
 
     base_resume_version_id: UUID
     target: str = Field(min_length=1, max_length=2000, description="目标方向或需突出的重点。")
-    confirm_external: bool = Field(description="确认发送简历条目到已配置的 AI 网关。")
+    confirm_external: bool = Field(description="确认发送简历条目到已配置的大模型服务。")
 
 
 class Selection(BaseModel):
@@ -53,7 +53,7 @@ async def optimize(
 ) -> ApiResponse[ResumeDraftRead]:
     """读取固定版本，结束事务后请求选择方案，校验索引并创建待确认稿。"""
     if not payload.confirm_external:
-        raise ValidationFailedError("请确认将简历条目发送到已配置的 AI 网关。")
+        raise ValidationFailedError("请确认将简历条目发送到已配置的大模型服务。")
     base = await session.get(ResumeVersion, payload.base_resume_version_id)
     if base is None or base.resume_id != resume_id:
         raise ResourceNotFoundError("基线简历版本不存在。")

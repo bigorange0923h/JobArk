@@ -41,7 +41,7 @@ from .service import normalize_skill_name
 MAX_FILE_BYTES = 3 * 1024 * 1024
 MAX_PDF_PAGES = 10
 MAX_TEXT_CHARS = 40_000
-# 预览不会写入业务事实；只对网关明确标记为短暂的失败额外尝试一次，避免无界重发简历文本。
+# 预览不会写入业务事实；只对大模型服务明确标记为短暂的失败额外尝试一次，避免无界重发简历文本。
 MAX_PREVIEW_AI_ATTEMPTS = 2
 PREVIEW_RETRY_DELAY_SECONDS = 1.0
 logger = logging.getLogger(__name__)
@@ -136,6 +136,7 @@ class ImportPreviewCompleteness(BaseModel):
     valid_item_count: int = Field(ge=0)
     rejected_item_count: int = Field(ge=0)
     unmapped_field_count: int = Field(ge=0)
+    excluded_field_count: int = Field(ge=0)
 
 
 class ImportPreviewRejectedItem(BaseModel):
@@ -149,11 +150,11 @@ class ImportPreviewRejectedItem(BaseModel):
 
 
 class ImportPreviewWarning(BaseModel):
-    """未映射字段的可见诊断；保留字段名而不把未建模内容伪装成可确认事实。"""
+    """未进入候选事实的字段诊断；只保留字段名，不把未经证实的内容伪装成事实。"""
 
     group: str
     index: int = Field(ge=0)
-    code: Literal["UNMAPPED_MODEL_FIELD"]
+    code: Literal["UNMAPPED_MODEL_FIELD", "FIELD_NOT_IN_QUOTE", "FIELD_ALIAS_MAPPED"]
     fields: list[str] = Field(min_length=1)
     message: str
 
@@ -361,6 +362,86 @@ def _check_sourced_item(
     return edited
 
 
+def _filter_unquoted_project_fields(item: SourcedProject, text: str, index: int) -> tuple[SourcedProject, list[str]]:
+    """保留项目的可证实骨架，剔除不在同一原文摘录内的可选字段。
+
+    项目名称和摘录仍是不可放宽的锚点：两者任一无效时整条项目拒绝。其余字段若是模型摘要、
+    改写或摘录遗漏，则不作为简历事实进入候选；用户可在预览中补回，确认时会转为本人陈述。
+    """
+    normalized_quote = _normalize(item.source_quote)
+    if normalized_quote not in text:
+        _log_candidate_invalid("project", index, "quote_not_in_document")
+        raise ValidationFailedError("候选内容无法逐字定位到简历原文，未写入个人档案。")
+    if _normalize(item.name) not in normalized_quote:
+        _log_candidate_invalid("project", index, "value_not_in_quote", candidate_field="name")
+        raise ValidationFailedError("候选项目名称无法逐字定位到简历原文，未进入待确认列表。")
+
+    update: dict[str, object] = {}
+    excluded: list[str] = []
+    for field in ("role", "description", "responsibilities", "achievements", "url"):
+        value = getattr(item, field)
+        if value and _normalize(value) not in normalized_quote:
+            update[field] = None
+            excluded.append(field)
+    verified_tech_stack = [value for value in item.tech_stack if _normalize(value) in normalized_quote]
+    if len(verified_tech_stack) != len(item.tech_stack):
+        update["tech_stack"] = verified_tech_stack
+        excluded.append("tech_stack")
+    for field in ("start_date", "end_date"):
+        value = getattr(item, field)
+        if value and str(value.year) not in item.source_quote:
+            update[field] = None
+            excluded.append(field)
+
+    sanitized = item.model_copy(update=update)
+    if sanitized.start_date and sanitized.end_date and sanitized.end_date < sanitized.start_date:
+        # 日期次序异常时没有可信方式推断哪一个错误；保留项目但不让错误日期成为候选事实。
+        sanitized = sanitized.model_copy(update={"start_date": None, "end_date": None})
+        excluded.extend(field for field in ("start_date", "end_date") if field not in excluded)
+    return sanitized, excluded
+
+
+# 模型常沿用工作经历的字段命名描述项目；这些等价键只在 `name` 缺失时用于补齐名称锚点。
+_PROJECT_NAME_ALIASES = ("title", "project_name")
+# 技术栈被模型写成一句话时按常见分隔符拆分；拆分只改变形态，不产生原文之外的取值。
+_TECH_STACK_SEPARATORS = re.compile(r"[,，、;；|/]+")
+
+
+def _normalize_project_item(raw_mapping: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
+    """把模型沿用其它分组命名的项目字段归一到候选契约。
+
+    参数:
+        raw_mapping: 模型返回的项目对象原始字段。
+
+    返回:
+        tuple[dict[str, Any], list[str]]: 归一化后的字段字典，以及实际发生归一化的字段名。
+
+    注意:
+        只做两类形态归一：等价字段名（如 `title`）补到 `name`、字符串技术栈拆成列表。
+        取值本身一字不改，因此归一化后仍必须通过与其它字段完全相同的原文摘录逐字校验。
+        项目名称是不可放宽的锚点，所以仅在 `name` 缺失或为空时才接受等价字段——`title`
+        也可能是角色，不能在已有 `name` 时覆盖它。
+    """
+    normalized = dict(raw_mapping)
+    mapped: list[str] = []
+    name = normalized.get("name")
+    if not (isinstance(name, str) and name.strip()):
+        for alias in _PROJECT_NAME_ALIASES:
+            candidate = normalized.get(alias)
+            if isinstance(candidate, str) and candidate.strip():
+                normalized["name"] = candidate
+                del normalized[alias]
+                mapped.append(alias)
+                break
+    tech_stack = normalized.get("tech_stack")
+    if isinstance(tech_stack, str):
+        parts = [part.strip() for part in _TECH_STACK_SEPARATORS.split(tech_stack) if part.strip()]
+        if parts:
+            normalized["tech_stack"] = parts
+            mapped.append("tech_stack")
+    return normalized, mapped
+
+
 def _check_basics(candidate: ImportCandidate, text: str, *, allow_edits: bool) -> None:
     """校验姓名及可选基本信息；姓名与姓名摘录是整个候选信封的最小可信锚点。"""
     normalized_name_quote = _normalize(candidate.name_quote)
@@ -416,6 +497,42 @@ def _check_candidate(candidate: ImportCandidate, text: str, *, allow_edits: bool
 def _validation_fields(error: ValidationError) -> list[str]:
     """把 Pydantic 错误压缩为稳定字段路径，不回传模型原始内容。"""
     return sorted({".".join(str(part) for part in item["loc"]) for item in error.errors()})
+
+
+def _model_output_shape(value: object, *, depth: int = 0) -> object:
+    """生成可安全写日志的模型输出形状，不包含简历、候选字段值或响应正文。
+
+    只保留对象字段名、数组长度和标量类型，用于定位字段漂移或嵌套层级错误；对深层、过长
+    数组和过多字段截断，避免异常响应本身放大日志体积。未知字段名可帮助识别契约漂移，
+    但其值永远不会进入日志。
+    """
+    if depth >= 4:
+        return {"type": type(value).__name__, "truncated": True}
+    if isinstance(value, dict):
+        mapping = cast("dict[object, object]", value)
+        fields: list[str] = sorted(key for key in mapping if isinstance(key, str))
+        visible_fields = fields[:50]
+        result: dict[str, object] = {
+            "type": "object",
+            "fields": {key: _model_output_shape(mapping[key], depth=depth + 1) for key in visible_fields},
+        }
+        if len(fields) > len(visible_fields):
+            result["omitted_field_count"] = len(fields) - len(visible_fields)
+        if len(fields) != len(mapping):
+            result["non_text_key_count"] = len(mapping) - len(fields)
+        return result
+    if isinstance(value, list):
+        items = cast("list[object]", value)
+        visible_items: list[object] = items[:20]
+        result = {
+            "type": "array",
+            "length": len(items),
+            "items": [_model_output_shape(item, depth=depth + 1) for item in visible_items],
+        }
+        if len(items) > len(visible_items):
+            result["omitted_item_count"] = len(items) - len(visible_items)
+        return result
+    return {"type": type(value).__name__}
 
 
 def _parse_preview_candidate(
@@ -480,6 +597,28 @@ def _parse_preview_candidate(
                 _log_candidate_invalid(group_names[collection], index, "schema_item_invalid_key")
                 continue
             raw_mapping = cast("dict[str, Any]", raw_object)
+            if collection == "projects":
+                # 归一化只修字段形态，不放松证据要求；发生归一化时对用户可见，避免静默改写。
+                raw_mapping, alias_fields = _normalize_project_item(raw_mapping)
+                if alias_fields:
+                    warnings.append(
+                        ImportPreviewWarning(
+                            group=collection,
+                            index=index,
+                            code="FIELD_ALIAS_MAPPED",
+                            fields=alias_fields,
+                            message="模型使用了与本档案契约等价的字段名或字符串技术栈，已归一化后继续按原文摘录校验。",
+                        )
+                    )
+                    logger.info(
+                        "模型项目字段已归一化",
+                        extra={
+                            "event": "profile_import_candidate_alias_mapped",
+                            "candidate_group": group_names[collection],
+                            "candidate_index": index,
+                            "fields": alias_fields,
+                        },
+                    )
             supported_fields: set[str] = set(model.model_fields)
             unknown_fields: list[str] = sorted(set(raw_mapping) - supported_fields)
             normalized_item: dict[str, Any] = {
@@ -519,6 +658,29 @@ def _parse_preview_candidate(
                 )
                 _log_candidate_invalid(group_names[collection], index, "schema_invalid", fields=fields)
                 continue
+            if isinstance(item, SourcedProject):
+                try:
+                    item, excluded_fields = _filter_unquoted_project_fields(item, text, index)
+                except ValidationFailedError:
+                    rejected.append(
+                        ImportPreviewRejectedItem(
+                            group=collection,
+                            index=index,
+                            code="EVIDENCE_INVALID",
+                            message="该项目的名称或原文摘录无法逐字定位到简历原文，未进入待确认列表。",
+                        )
+                    )
+                    continue
+                if excluded_fields:
+                    warnings.append(
+                        ImportPreviewWarning(
+                            group=collection,
+                            index=index,
+                            code="FIELD_NOT_IN_QUOTE",
+                            fields=excluded_fields,
+                            message="这些字段未能在项目原文摘录中逐字定位，未作为简历事实导入；可由本人补充。",
+                        )
+                    )
             try:
                 _check_sourced_item(group_names[collection], index, item, text, allow_edits=False)
             except ValidationFailedError:
@@ -548,12 +710,18 @@ def _parse_preview_candidate(
     # 基础资料与姓名是整个档案候选的锚点，不存在可安全保留的同级替代项，继续整体拒绝。
     _check_basics(candidate, text, allow_edits=False)
     valid_item_count = sum(len(items) for items in accepted.values())
-    unmapped_field_count = sum(len(warning.fields) for warning in warnings)
+    unmapped_field_count = sum(
+        len(warning.fields) for warning in warnings if warning.code == "UNMAPPED_MODEL_FIELD"
+    )
+    excluded_field_count = sum(
+        len(warning.fields) for warning in warnings if warning.code == "FIELD_NOT_IN_QUOTE"
+    )
     completeness = ImportPreviewCompleteness(
         status="PARTIAL" if rejected or warnings else "COMPLETE",
         valid_item_count=valid_item_count,
         rejected_item_count=len(rejected),
         unmapped_field_count=unmapped_field_count,
+        excluded_field_count=excluded_field_count,
     )
     return candidate, completeness, rejected, warnings
 
@@ -581,7 +749,7 @@ async def preview(
         ConflictError: 尚未配置默认模型，或凭据无法解密。
     """
     if not confirm_external:
-        raise ValidationFailedError("请先确认将简历文字发送到已配置的 AI 网关。")
+        raise ValidationFailedError("请先确认将简历文字发送到已配置的大模型服务。")
     logger.info("导入预览开始", extra={"event": "profile_import_preview", "stage": "started"})
     try:
         document = await asyncio.to_thread(parse_document, upload)
@@ -654,7 +822,14 @@ async def preview(
             raise
     else:  # pragma: no cover - range 与 break 的完备性保护。
         raise AssertionError("预览调用未产生结果")
-    logger.info("候选生成完成", extra={"event": "profile_import_preview", "stage": "ai_response_parsed"})
+    logger.info(
+        "候选生成完成",
+        extra={
+            "event": "profile_import_model_output_shape",
+            "stage": "ai_response_parsed",
+            "model_output_shape": _model_output_shape(result),
+        },
+    )
     if on_progress is not None:
         await on_progress("ai_response_parsed")
     try:

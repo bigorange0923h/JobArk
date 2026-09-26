@@ -203,6 +203,7 @@ export interface ProfileImportCompleteness {
   valid_item_count: number
   rejected_item_count: number
   unmapped_field_count: number
+  excluded_field_count: number
 }
 /** 单个模型条目因结构或证据不可信而未进入候选。 */
 export interface ProfileImportRejectedItem {
@@ -216,7 +217,7 @@ export interface ProfileImportRejectedItem {
 export interface ProfileImportWarning {
   group: string
   index: number
-  code: 'UNMAPPED_MODEL_FIELD'
+  code: 'UNMAPPED_MODEL_FIELD' | 'FIELD_NOT_IN_QUOTE' | 'FIELD_ALIAS_MAPPED'
   fields: string[]
   message: string
 }
@@ -406,73 +407,191 @@ const importStages: ReadonlySet<string> = new Set<ProfileImportStage>([
   'received', 'document_parsed', 'model_resolved', 'ai_request_started', 'ai_request_retrying', 'ai_response_parsed', 'candidate_validated',
 ])
 
-/** 同一次请求中读取 SSE 阶段和最终统一响应；断流不能当作成功。 */
-export async function previewProfileImportStream(
+/** 预览过程的进度回调：上传字节与后端阶段分别上报。 */
+export interface ProfileImportStreamHandlers {
+  /** 后端已完成的处理阶段码。 */
+  onStage: (stage: ProfileImportStage) => void
+  /**
+   * 请求体上传进度（已发送字节 / 总字节）。
+   *
+   * 只有浏览器给出可计算的总量时才会回调：没有真实分母时宁可不上报，也不给假百分比。
+   */
+  onUploadProgress?: (loaded: number, total: number) => void
+}
+
+/** 单次预览的最长等待时间；与后端 SSE 的 15 秒保活相比留足余量。 */
+const IMPORT_STREAM_TIMEOUT_MS = 90_000
+
+/**
+ * 同一次请求中读取上传进度、SSE 阶段与最终统一响应；断流不能当作成功。
+ *
+ * 参数:
+ *     filename: 原始文件名，仅用于后端判断格式。
+ *     contentBase64: 简历文件的 base64 内容。
+ *     confirmExternal: 用户是否已明确同意把提取文字发往大模型服务。
+ *     handlers: 进度回调；`onStage` 报告后端阶段，`onUploadProgress` 报告真实上传字节。
+ *
+ * 返回:
+ *     Promise<ProfileImportPreview>: 待人工核对的候选。
+ *
+ * 异常:
+ *     ApiError: 超时（`TIMEOUT`）、连接失败（`NETWORK_ERROR`）、协议或流异常
+ *         （`UNEXPECTED_RESPONSE`），以及后端业务错误（保留后端 `code`/`requestId`）。
+ *
+ * 注意:
+ *     用 `XMLHttpRequest` 而不是 `fetch`：只有前者能上报**真实**的上传字节进度，
+ *     `fetch` 无法观察请求体发送过程。百分比只用于上传阶段，模型阶段仍只用真实阶段码。
+ *     解析按增量进行（`responseText` 只追加、只消费增量），因此分块到达的事件不会被重复处理。
+ */
+export function previewProfileImportStream(
   filename: string,
   contentBase64: string,
   confirmExternal: boolean,
-  onProgress: (stage: ProfileImportStage) => void,
+  handlers: ProfileImportStreamHandlers,
 ): Promise<ProfileImportPreview> {
-  let response: Response
-  try {
-    response = await fetch(`${API_V1_PREFIX}/profile/import-preview-stream`, {
-      ...jsonInit('POST', { filename, content_base64: contentBase64, confirm_external: confirmExternal }),
-      headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
-      signal: AbortSignal.timeout(90_000),
-    })
-  } catch (cause: unknown) {
-    if (cause instanceof DOMException && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
-      throw new ApiError({ code: 'TIMEOUT', message: '生成导入候选超时，请稍后重试。' })
-    }
-    throw new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' })
-  }
-  if (!response.ok) return unwrapResponse<ProfileImportPreview>(response)
-  const requestId = response.headers.get('X-Request-ID')
-  if (!response.body || !response.headers.get('Content-Type')?.includes('text/event-stream')) {
-    throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '服务未返回导入进度流。', requestId })
-  }
+  return new Promise<ProfileImportPreview>((resolve, reject) => {
+    const request = new XMLHttpRequest()
+    let finished = false
+    let consumed = 0
+    let buffer = ''
 
-  const reader = response.body.getReader()
-  const decoder = new TextDecoder()
-  let buffer = ''
-  try {
-    while (true) {
-      const { done, value } = await reader.read()
-      buffer += decoder.decode(value, { stream: !done })
+    /** 读取响应头里的请求编号；响应头尚未到达时返回 null，用于给失败补上可追踪编号。 */
+    const responseRequestId = (): string | null => request.getResponseHeader('X-Request-ID')
+
+    /** 认领终态：保证 resolve/reject 只发生一次，后续事件全部忽略。 */
+    const finishWith = (response: Response): void => {
+      if (finished) return
+      finished = true
+      resolve(unwrapResponse<ProfileImportPreview>(response))
+    }
+
+    const failWith = (error: ApiError): void => {
+      if (finished) return
+      finished = true
+      reject(error)
+    }
+
+    /** 把一条 SSE 片段转成终态响应；进度事件直接回调，非终态返回 null。 */
+    const readBlock = (block: string): Response | null => {
+      const event = block.match(/^event: (.+)$/m)?.[1]
+      const data = block.match(/^data: (.+)$/m)?.[1]
+      if (!event || !data) return null
+      let parsed: unknown
+      try {
+        parsed = JSON.parse(data)
+      } catch {
+        throw new ApiError({
+          code: 'UNEXPECTED_RESPONSE',
+          message: '导入进度流格式无效。',
+          requestId: responseRequestId(),
+        })
+      }
+      if (event === 'progress' && isRecord(parsed) && typeof parsed['stage'] === 'string' && importStages.has(parsed['stage'])) {
+        handlers.onStage(parsed['stage'] as ProfileImportStage)
+        return null
+      }
+      if (event === 'result' || event === 'error') {
+        const status = event === 'error' && isRecord(parsed) && typeof parsed['http_status'] === 'number'
+          ? parsed['http_status'] : 200
+        return new Response(JSON.stringify(parsed), {
+          status,
+          headers: { 'X-Request-ID': responseRequestId() ?? '' },
+        })
+      }
+      return null
+    }
+
+    /** 消费自上次以来新增的响应文本；遇到终态事件时返回它。 */
+    const consume = (): Response | null => {
+      const text: unknown = request.responseText
+      if (typeof text !== 'string') return null
+      if (text.length > consumed) {
+        buffer += text.slice(consumed)
+        consumed = text.length
+      }
       buffer = buffer.replace(/\r\n/g, '\n')
       let boundary = buffer.indexOf('\n\n')
       while (boundary !== -1) {
         const block = buffer.slice(0, boundary)
         buffer = buffer.slice(boundary + 2)
-        const event = block.match(/^event: (.+)$/m)?.[1]
-        const data = block.match(/^data: (.+)$/m)?.[1]
-        if (event && data) {
-          let parsed: unknown
-          try { parsed = JSON.parse(data) } catch { throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '导入进度流格式无效。', requestId }) }
-          if (event === 'progress' && isRecord(parsed) && typeof parsed['stage'] === 'string' && importStages.has(parsed['stage'])) {
-            onProgress(parsed['stage'] as ProfileImportStage)
-          } else if (event === 'result' || event === 'error') {
-            const status = event === 'error' && isRecord(parsed) && typeof parsed['http_status'] === 'number'
-              ? parsed['http_status'] : 200
-            return unwrapResponse<ProfileImportPreview>(new Response(JSON.stringify(parsed), {
-              status, headers: { 'X-Request-ID': requestId ?? '' },
-            }))
-          }
-        }
+        const terminal = readBlock(block)
+        if (terminal !== null) return terminal
         boundary = buffer.indexOf('\n\n')
       }
-      if (done) break
+      return null
     }
-  } catch (cause: unknown) {
-    if (cause instanceof ApiError) throw cause
-    if (cause instanceof DOMException && (cause.name === 'TimeoutError' || cause.name === 'AbortError')) {
-      throw new ApiError({ code: 'TIMEOUT', message: '生成导入候选超时，请稍后重试。', requestId })
+
+    /** 增量推送期间的安全入口：解析异常不能从事件回调里逃出。 */
+    const pump = (): void => {
+      if (finished) return
+      try {
+        const terminal = consume()
+        if (terminal !== null) finishWith(terminal)
+      } catch (error: unknown) {
+        failWith(
+          error instanceof ApiError
+            ? error
+            : new ApiError({
+                code: 'UNEXPECTED_RESPONSE',
+                message: '导入进度流格式无效。',
+                requestId: responseRequestId(),
+              }),
+        )
+      }
     }
-    throw new ApiError({ code: 'NETWORK_ERROR', message: '导入进度连接中断，请重试。', requestId })
-  } finally {
-    await reader.cancel().catch(() => undefined)
-  }
-  throw new ApiError({ code: 'UNEXPECTED_RESPONSE', message: '导入进度已中断，未收到最终结果。', requestId })
+
+    request.open('POST', `${API_V1_PREFIX}/profile/import-preview-stream`)
+    request.setRequestHeader('Content-Type', 'application/json')
+    request.setRequestHeader('Accept', 'text/event-stream')
+    request.timeout = IMPORT_STREAM_TIMEOUT_MS
+    request.upload.onprogress = (event: ProgressEvent): void => {
+      // 没有可计算的总量就不上报：否则界面只能显示一个编造的分母。
+      if (event.lengthComputable && event.total > 0) {
+        handlers.onUploadProgress?.(event.loaded, event.total)
+      }
+    }
+    request.onprogress = pump
+    request.onreadystatechange = (): void => {
+      // 部分实现只在 readyState=3 时刷新文本；与 onprogress 并存会重复读取，
+      // 但消费位置以 `consumed` 为准，重复调用不会重复处理事件。
+      if (request.readyState === 3) pump()
+    }
+    request.onload = (): void => {
+      pump()
+      if (finished) return
+      if (request.status >= 200 && request.status < 300) {
+        // 2xx 却没有终态事件：不能当作成功。
+        const streaming = (request.getResponseHeader('Content-Type') ?? '').includes('text/event-stream')
+        failWith(new ApiError({
+          code: 'UNEXPECTED_RESPONSE',
+          message: streaming ? '导入进度已中断，未收到最终结果。' : '服务未返回导入进度流。',
+          requestId: responseRequestId(),
+        }))
+        return
+      }
+      // 非 2xx 交给统一契约解析，保留后端错误码与字段级原因。
+      finishWith(new Response(request.responseText, {
+        status: request.status,
+        headers: { 'X-Request-ID': responseRequestId() ?? '' },
+      }))
+    }
+    request.onerror = (): void => {
+      failWith(new ApiError({
+        code: 'NETWORK_ERROR',
+        message: '无法连接到服务，请确认后端是否已启动。',
+        requestId: responseRequestId(),
+      }))
+    }
+    request.ontimeout = (): void => {
+      failWith(new ApiError({
+        code: 'TIMEOUT',
+        message: '生成导入候选超时，请稍后重试。',
+        requestId: responseRequestId(),
+      }))
+    }
+
+    request.send(JSON.stringify({ filename, content_base64: contentBase64, confirm_external: confirmExternal }))
+  })
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

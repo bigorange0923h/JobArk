@@ -53,7 +53,7 @@ async def parse_snapshot(session: SessionDep, snapshot_id: UUID, payload: ParseR
     if snapshot is None:
         raise ResourceNotFoundError("JD 快照不存在。")
     if payload.engine == "AI" and not payload.confirm_external:
-        raise ValidationFailedError("请确认将 JD 原文发送到已配置的 AI 网关。")
+        raise ValidationFailedError("请确认将 JD 原文发送到已配置的大模型服务。")
     raw = snapshot.raw_jd
     await session.rollback()
     # 默认模型解析必须放在"解析失败可保存为 FAILED 产物"的 try 之外：

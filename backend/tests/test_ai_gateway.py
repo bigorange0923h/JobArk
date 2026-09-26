@@ -21,7 +21,7 @@ from pydantic import ValidationError
 
 from app.ai.llm import gateway
 from app.ai.llm.gateway import ResolvedAiModel
-from app.core.config import Settings
+from app.core.config import AppEnv, Settings
 from app.core.errors import ValidationFailedError
 from app.modules.resume.optimization import Selection
 
@@ -40,6 +40,15 @@ def _config(**overrides: Any) -> ResolvedAiModel:
 def _settings() -> Settings:
     """返回固定超时的测试配置，不读取 .env。"""
     return Settings(ai_timeout_seconds=30, _env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+def _diagnostic_settings() -> Settings:
+    """返回开启了"模型输出写入日志"的测试配置。
+
+    用 `model_copy` 而不是再构造一次 `Settings`：既避免重复依赖 `_env_file` 这个未声明参数，
+    也保证除诊断开关外的配置与 `_settings()` 完全一致。
+    """
+    return _settings().model_copy(update={"ai_log_model_output": True})
 
 
 class _UpstreamHTTPError(urllib.error.URLError):
@@ -207,6 +216,49 @@ def test_gateway_logs_http_status_without_upstream_body(
     assert "private-upstream-token" not in caplog.text
     assert "private-resume-content" not in caplog.text
     assert "secret" not in caplog.text
+
+
+def test_gateway_does_not_log_model_output_by_default(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """默认不把模型输出写进日志：候选内容可能包含简历里的个人信息。"""
+    captured: dict[str, Any] = {}
+    body = json.dumps({"choices": [{"message": {"content": json.dumps({"full_name": "张三"})}}]}).encode()
+    _install_opener(monkeypatch, captured, body)
+
+    with caplog.at_level(logging.INFO, logger="app.ai.llm.gateway"):
+        result = asyncio.run(gateway.generate(_config(), "extract_profile_from_resume", {}, {}))
+
+    assert result == {"full_name": "张三"}
+    assert "张三" not in caplog.text
+    assert [record for record in caplog.records if getattr(record, "event", None) == "ai_model_output"] == []
+
+
+def test_gateway_logs_model_output_when_diagnostics_enabled(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    """显式开启诊断开关后，模型返回的 JSON 原文写入日志，用于排查候选为何缺失或被改写。"""
+    captured: dict[str, Any] = {}
+    filled = {"projects": [{"name": "订单系统重构", "role": "项目经理"}]}
+    body = json.dumps({"choices": [{"message": {"content": json.dumps(filled, ensure_ascii=False)}}]}).encode()
+    _install_opener(monkeypatch, captured, body)
+    # 必须在 _install_opener 之后覆盖：它会把 get_settings 换成固定超时的替身。
+    monkeypatch.setattr(gateway, "get_settings", _diagnostic_settings)
+
+    with caplog.at_level(logging.WARNING, logger="app.ai.llm.gateway"):
+        result = asyncio.run(gateway.generate(_config(), "extract_profile_from_resume", {}, {}))
+
+    assert result == filled
+    records = [record for record in caplog.records if getattr(record, "event", None) == "ai_model_output"]
+    assert len(records) == 1
+    assert vars(records[0])["task"] == "extract_profile_from_resume"
+    assert vars(records[0])["model_output"] == filled
+
+
+def test_model_output_logging_is_rejected_in_production() -> None:
+    """生产环境禁止开启模型输出日志：这些内容属于个人信息，必须在启动时失败而不是静默记录。"""
+    with pytest.raises(ValidationError):
+        Settings(app_env=AppEnv.PROD, ai_log_model_output=True, _env_file=None)  # pyright: ignore[reportCallIssue]
 
 
 def test_gateway_rejects_redirect(monkeypatch: pytest.MonkeyPatch) -> None:
