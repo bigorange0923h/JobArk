@@ -62,6 +62,9 @@ class Settings(BaseSettings):
     # 默认关闭，且禁止在 prod 开启（见下方 validator）：模型输出可能包含简历里的姓名、
     # 联系方式与工作经历，常规日志与响应都不得承载这些内容。
     ai_log_model_output: bool = False
+    # 临时开发夹具：用内置样例简历与固定抽取结果替代真实大模型调用，便于本地联调导入流程。
+    # 默认关闭，仅 local/test 生效；夹具数据与样例文本自洽，不放宽任何校验（见 modules/profile/import_fixture.py）。
+    profile_import_fixture: bool = False
     # 跨域白名单，默认空表示完全不挂载 CORS 中间件。
     # 开发期前端通过 Vite 代理使用相对路径访问后端（同源），生产同源部署，都不需要 CORS；
     # 只有前后端确实分离到不同源时才按环境显式启用，环境变量写法为逗号分隔，例如
@@ -70,21 +73,30 @@ class Settings(BaseSettings):
     cors_allowed_origins: Annotated[list[str], NoDecode] = []
 
     @model_validator(mode="after")
-    def _forbid_model_output_logging_in_prod(self) -> Settings:
-        """禁止在生产环境把模型输出原文写入日志。
+    def _forbid_dev_switches_in_prod(self) -> Settings:
+        """禁止在生产环境开启仅供本地调试的开关。
 
         返回:
             Settings: 校验通过的自身实例。
 
         异常:
-            ValueError: `prod` 环境同时开启 `ai_log_model_output` 时抛出。
+            ValueError: `prod` 环境开启任一调试开关时抛出。
 
         注意:
-            模型输出可能包含简历中的姓名、联系方式与经历，属于个人信息。让不安全配置在**启动时**
-            直接失败，比"记录下来了但没人注意"更安全，也避免生产日志被个人信息污染。
+            `ai_log_model_output` 会把个人信息写进日志，`profile_import_fixture` 会用内置样例数据
+            替代真实抽取。让不安全配置在**启动时**直接失败，比"开着了但没人注意"更安全。
         """
-        if self.ai_log_model_output and self.app_env is AppEnv.PROD:
-            raise ValueError("ai_log_model_output 仅允许在 local/test 环境用于诊断；生产环境禁止开启。")
+        if self.app_env is AppEnv.PROD:
+            enabled = [
+                name
+                for name, value in (
+                    ("ai_log_model_output", self.ai_log_model_output),
+                    ("profile_import_fixture", self.profile_import_fixture),
+                )
+                if value
+            ]
+            if enabled:
+                raise ValueError(f"{'、'.join(enabled)} 仅允许在 local/test 环境用于调试；生产环境禁止开启。")
         return self
 
     @field_validator("cors_allowed_origins", mode="before")

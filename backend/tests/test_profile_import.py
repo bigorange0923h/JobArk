@@ -1,6 +1,7 @@
 """简历导入的本地解析、AI 候选约束与确认落库测试。"""
 
 import base64
+import copy
 import json
 import logging
 from io import BytesIO
@@ -8,18 +9,22 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 from pypdf import PdfWriter
 from pypdf.generic import DecodedStreamObject, DictionaryObject, NameObject
 
 from app.ai.llm.gateway import TransientAiGatewayError
+from app.core.config import AppEnv, Settings
 from app.core.errors import ValidationFailedError
-from app.modules.profile.import_service import ResumeUpload, parse_document
+from app.modules.profile import import_service
+from app.modules.profile.import_service import ImportCandidate, ResumeUpload, parse_document
 
 API = "/api/v1/profile"
 AI_API = "/api/v1/ai"
 HTML = (
     "<html><head><title>不应出现</title></head><body>"
     "<h1>张三</h1><p>北京 Python</p>"
+    "<p>GitHub github.com/zhangsan</p>"
     "<p>甲公司 后端工程师 2020 年至 2022 年</p>"
     "<p>订单系统重构 负责人 技术栈 Spring Boot 主导订单链路拆分 性能提升 30% 2021 年至 2022 年</p>"
     "<p>乙大学 计算机科学 学士 2016 年至 2020 年</p>"
@@ -74,6 +79,27 @@ def _candidate() -> dict[str, Any]:
             }
         ],
     }
+
+
+def _with_origin(candidate: dict[str, Any], origin: str) -> dict[str, Any]:
+    """给候选的每个条目补上来源标记，供直接构造确认请求的用例使用。
+
+    参数:
+        candidate: 候选字典；会被深拷贝，调用方的原对象不变。
+        origin: `RESUME` 或 `MANUAL`。
+
+    返回:
+        dict[str, Any]: 补好来源的候选。
+
+    注意:
+        预览流程由服务端判定来源，因此 `_candidate()` 本身不写 `origin`：写了反而会触发
+        "模型试图声明来源"的告警，与真实调用不一致。只有绕开预览直接确认的用例才需要补。
+    """
+    updated = copy.deepcopy(candidate)
+    for collection in ("skills", "experiences", "projects", "educations"):
+        for item in updated[collection]:
+            item["origin"] = origin
+    return updated
 
 
 def _configure_default_model(client: TestClient) -> None:
@@ -444,6 +470,134 @@ def test_preview_maps_project_title_alias_and_string_tech_stack(
     }
 
 
+def test_preview_keeps_summary_and_links_when_evidenced(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """个人简介与公开链接能逐字定位时进入候选，并在确认后写入新建档案。
+
+    这两个字段是与"创建个人档案"表单对齐的部分：两条路径共用同一个表单，因此候选也必须能承载它们。
+    """
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回带个人简介与链接的候选；链接故意补上协议前缀，验证按去协议比较。"""
+        candidate = _candidate()
+        candidate["summary"] = "北京 Python"
+        candidate["links"] = [{"label": "GitHub", "url": "https://github.com/zhangsan"}]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    upload = _upload()
+    response = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    assert preview["candidate"]["summary"] == "北京 Python"
+    assert preview["candidate"]["links"] == [{"label": "GitHub", "url": "https://github.com/zhangsan"}]
+    assert preview["warnings"] == []
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={**upload, **preview, "skill_indices": [0], "confirmed": True},
+    )
+
+    assert saved.status_code == 201, saved.text
+    profile = db_client.get(API).json()["data"]
+    assert profile["summary"] == "北京 Python"
+    assert profile["links"] == [{"label": "GitHub", "url": "https://github.com/zhangsan"}]
+
+
+def test_preview_clears_unquoted_summary_and_links_without_losing_other_candidates(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """个人简介与链接定位不到原文时只清空这两个字段，不拖垮整次导入。
+
+    与项目经历同样的教训：模型复述一段自我评价或补一个域名很常见，若因此整体拒绝，
+    用户会连可验证的技能与经历一起丢掉。
+    """
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回被改写的简介、一个编造的链接，以及一个可定位的链接。"""
+        candidate = _candidate()
+        candidate["summary"] = "五年后端经验，擅长高并发"
+        candidate["links"] = [
+            {"label": "GitHub", "url": "github.com/zhangsan"},
+            {"label": "GitHub", "url": "github.com/someone-else"},
+        ]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    preview = response.json()["data"]
+    candidate = preview["candidate"]
+    assert candidate["summary"] is None
+    assert candidate["links"] == [{"label": "GitHub", "url": "github.com/zhangsan"}]
+    # 其他候选不受影响：这正是字段级隔离要保证的事情。
+    assert [skill["name"] for skill in candidate["skills"]] == ["Python"]
+    assert len(candidate["experiences"]) == 1
+    assert len(candidate["projects"]) == 1
+    assert preview["completeness"]["rejected_item_count"] == 0
+    assert preview["completeness"]["excluded_field_count"] == 2
+    assert preview["warnings"] == [
+        {
+            "group": "basics",
+            "index": 0,
+            "code": "FIELD_NOT_IN_QUOTE",
+            "fields": ["links", "summary"],
+            "message": "这些基本信息未能在简历原文中逐字定位或格式不可用，未作为简历事实导入；可由本人补充。",
+        }
+    ]
+
+
+def test_confirm_does_not_overwrite_existing_summary_or_links(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """已有档案时导入只补充事实，不覆盖既有个人简介与公开链接。"""
+    _configure_default_model(db_client)
+    created = db_client.post(
+        API,
+        json={
+            "full_name": "张三",
+            "summary": "既有简介",
+            "links": [{"label": "博客", "url": "https://blog.example"}],
+        },
+    )
+    assert created.status_code == 201, created.text
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回与既有档案不同、但同样可定位的简介与链接。"""
+        candidate = _candidate()
+        candidate["summary"] = "北京 Python"
+        candidate["links"] = [{"label": "GitHub", "url": "github.com/zhangsan"}]
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    upload = _upload()
+    preview = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+    assert preview.status_code == 200, preview.text
+    data = preview.json()["data"]
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={**upload, **data, "skill_indices": [0], "confirmed": True},
+    )
+
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["data"]["created_profile"] is False
+    profile = db_client.get(API).json()["data"]
+    assert profile["summary"] == "既有简介"
+    assert profile["links"] == [{"label": "博客", "url": "https://blog.example"}]
+    assert [skill["name"] for skill in profile["skills"]] == ["Python"]
+
+
 def test_preview_rejects_only_schema_invalid_item(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
     """单项字段类型错误不再导致同批有效条目丢失。"""
     _configure_default_model(db_client)
@@ -580,7 +734,7 @@ def test_confirm_rejects_changed_file(db_client: TestClient) -> None:
     payload: dict[str, Any] = {
         **_upload(),
         "source_hash": "0" * 64,
-        "candidate": _candidate(),
+        "candidate": _with_origin(_candidate(), "RESUME"),
         "confirmed": True,
     }
     response = db_client.post(f"{API}/import-confirm", json=payload)
@@ -597,7 +751,7 @@ def test_import_preserves_existing_profile_and_checks_indices(db_client: TestCli
     payload: dict[str, Any] = {
         **upload,
         "source_hash": source_hash,
-        "candidate": _candidate(),
+        "candidate": _with_origin(_candidate(), "RESUME"),
         "skill_indices": [0],
         "experience_indices": [0],
         "education_indices": [0],
@@ -763,14 +917,18 @@ def test_imported_item_can_be_edited_after_import(
     payload = updated.json()["data"]
     assert payload["role"] == "技术负责人"
     assert payload["tech_stack"] == ["Spring Boot", "MySQL"]
-    # 编辑不会改变来源证据：事实仍然可以追溯到导入时的记录。
-    assert payload["source_evidence_id"] == project["source_evidence_id"]
+    # 编辑内容后来源改挂「本人编辑」：旧简历摘录不再为新内容背书（见 docs/requirements/v1.md 2.1）。
+    assert payload["source_evidence_id"] != project["source_evidence_id"]
+    evidences = {item["id"]: item for item in db_client.get(f"{API}/evidences").json()["data"]}
+    assert evidences[payload["source_evidence_id"]]["source_type"] == "MANUAL_DECLARATION"
+    # 历史来源记录仍在，只是不再被这条事实引用。
+    assert project["source_evidence_id"] in evidences
 
 
 def test_confirm_still_rejects_rewritten_quote(db_client: TestClient) -> None:
     """摘录本身仍必须真实存在于原文：放宽字段值不等于允许编造来源。"""
     upload = _upload()
-    candidate = _candidate()
+    candidate = _with_origin(_candidate(), "RESUME")
     candidate["projects"][0]["source_quote"] = "原文里没有的摘录"
     payload: dict[str, Any] = {
         **upload,
@@ -783,5 +941,352 @@ def test_confirm_still_rejects_rewritten_quote(db_client: TestClient) -> None:
     response = db_client.post(f"{API}/import-confirm", json=payload)
 
     assert response.status_code == 422
-    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    # 断言到字段：否则"缺少其它字段"导致同样的 422，用例会为错误的原因通过。
+    assert any(
+        (detail["field"] or "") == "candidate.projects.0.source_quote" for detail in error["details"]
+    ), error["details"]
     assert db_client.get(API).status_code == 404
+
+
+def _fixture_settings() -> Settings:
+    """返回启用内置导入夹具的测试配置，不读取 .env。"""
+    return Settings(profile_import_fixture=True, _env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+def _settings_for(app_env: AppEnv) -> Settings:
+    """返回指定运行环境的测试配置，不读取 .env。"""
+    return Settings(app_env=app_env, _env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+def test_mock_extraction_switch_scope(monkeypatch: pytest.MonkeyPatch) -> None:
+    """临时开关只在 local 生效：其他环境走真实模型分支，避免联调开关盖住真实流程。"""
+    monkeypatch.setattr(import_service, "_FORCE_MOCK_EXTRACTION_IN", AppEnv.LOCAL)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr("app.modules.profile.import_service.get_settings", lambda: _settings_for(AppEnv.LOCAL))
+    assert import_service._mock_extraction_enabled() is True  # pyright: ignore[reportPrivateUsage]
+
+    monkeypatch.setattr("app.modules.profile.import_service.get_settings", lambda: _settings_for(AppEnv.TEST))
+    assert import_service._mock_extraction_enabled() is False  # pyright: ignore[reportPrivateUsage]
+
+
+def test_local_environment_uses_mock_without_any_configuration(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """local 环境不做任何配置就返回内置 mock：这是联调时"不再请求大模型"的依据。"""
+    monkeypatch.setattr(import_service, "_FORCE_MOCK_EXTRACTION_IN", AppEnv.LOCAL)  # pyright: ignore[reportPrivateUsage]
+    monkeypatch.setattr("app.modules.profile.import_service.get_settings", lambda: _settings_for(AppEnv.LOCAL))
+    preview = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert preview.status_code == 200, preview.text
+    data = preview.json()["data"]
+    assert data["fixture"] is True
+    assert data["candidate"]["full_name"] == "李雷"
+    assert data["completeness"]["rejected_item_count"] == 0
+
+
+def test_fixture_preview_fills_candidate_without_configured_model(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """开启夹具后无需配置模型即可跑通候选填充与确认写入，且候选仍经过完整校验。
+
+    这是联调导入流程的入口：夹具只替换"外部输入"，因此这里同时断言四个分组都被填充、
+    没有条目被拒（说明固定结果与样例文本确实自洽），并且确认写入走的是既有流程。
+    """
+    monkeypatch.setattr("app.modules.profile.import_service.get_settings", _fixture_settings)
+    upload = _upload()
+    preview = db_client.post(f"{API}/import-preview", json={**upload, "confirm_external": True})
+
+    assert preview.status_code == 200, preview.text
+    data = preview.json()["data"]
+    assert data["fixture"] is True
+    assert data["completeness"]["rejected_item_count"] == 0
+    candidate = data["candidate"]
+    assert candidate["full_name"] == "李雷"
+    assert [skill["name"] for skill in candidate["skills"]] == ["Python", "PostgreSQL"]
+    assert candidate["experiences"][0]["company"] == "甲公司"
+    assert candidate["projects"][0]["name"] == "订单系统重构"
+    assert candidate["educations"][0]["school"] == "乙大学"
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **upload,
+            **data,
+            "skill_indices": [0, 1],
+            "experience_indices": [0],
+            "project_indices": [0],
+            "education_indices": [0],
+            "confirmed": True,
+        },
+    )
+
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["data"]["created_profile"] is True
+    profile = db_client.get(API).json()["data"]
+    assert profile["full_name"] == "李雷"
+    assert len(profile["skills"]) == 2
+    assert profile["projects"][0]["name"] == "订单系统重构"
+
+
+def test_fixture_switch_is_rejected_in_production() -> None:
+    """生产环境禁止开启内置夹具：那会用内置样例数据替代真实抽取。"""
+    with pytest.raises(ValidationError):
+        Settings(app_env=AppEnv.PROD, profile_import_fixture=True, _env_file=None)  # pyright: ignore[reportCallIssue]
+
+
+def _preview_for_confirm(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """跑一次真实预览流程，返回可直接用于确认的候选数据。
+
+    参数:
+        db_client: 已配置默认模型的测试客户端。
+        monkeypatch: 用于替换大模型调用。
+
+    返回:
+        dict[str, Any]: 预览响应的 `data`（含 source_hash 与候选）。
+    """
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """返回一份可逐字定位到测试简历的候选。"""
+        return _candidate()
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+    assert response.status_code == 200, response.text
+    return response.json()["data"]
+
+
+def test_model_schema_excludes_origin_but_client_contract_requires_it() -> None:
+    """发给模型的 Schema 不含条目来源，客户端确认契约却必须提供：来源只能由服务端判定。"""
+    model_schema = import_service._model_candidate_schema()  # pyright: ignore[reportPrivateUsage]
+
+    for name in ("SourcedSkill", "SourcedExperience", "SourcedProject", "SourcedEducation"):
+        item = model_schema["$defs"][name]
+        assert "origin" not in item["properties"], name
+        assert "origin" not in item.get("required", []), name
+
+    with pytest.raises(ValidationError):
+        ImportCandidate.model_validate(
+            {
+                "full_name": "张三",
+                "name_quote": "张三",
+                "skills": [{"name": "Python", "source_quote": "熟悉 Python"}],
+            }
+        )
+
+
+def test_preview_marks_extracted_items_as_resume_origin(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """预览返回的条目来源是服务端判定的 RESUME，模型无法自行声明来源。"""
+    _configure_default_model(db_client)
+
+    async def fake_generate(
+        config: Any, task: str, input_data: dict[str, Any], schema: dict[str, Any]
+    ) -> dict[str, Any]:
+        """故意让模型声明"本人填写"，验证服务端会忽略并强制按简历原文校验。"""
+        candidate = _candidate()
+        for skill in candidate["skills"]:
+            skill["origin"] = "MANUAL"
+        return candidate
+
+    monkeypatch.setattr("app.modules.profile.import_service.gateway.generate", fake_generate)
+    response = db_client.post(f"{API}/import-preview", json={**_upload(), "confirm_external": True})
+
+    assert response.status_code == 200, response.text
+    data = response.json()["data"]
+    assert [skill["origin"] for skill in data["candidate"]["skills"]] == ["RESUME"]
+    assert data["candidate"]["skills"][0]["source_quote"] == "北京 Python"
+    assert data["warnings"] == [
+        {
+            "group": "skills",
+            "index": 0,
+            "code": "UNMAPPED_MODEL_FIELD",
+            "fields": ["origin"],
+            "message": "模型返回的条目来源字段已忽略：条目来源由服务端按原文校验结果判定。",
+        }
+    ]
+
+
+def test_confirm_accepts_user_added_items_without_quote(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户在候选页新增的条目不需要摘录即可写入，并按「本人填写」记录来源。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    candidate = data["candidate"]
+    candidate["skills"].append({"origin": "MANUAL", "name": "Kubernetes"})
+    candidate["projects"].append(
+        {"origin": "MANUAL", "name": "个人博客系统", "role": "作者", "tech_stack": ["Vue"]}
+    )
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **_upload(),
+            **data,
+            "candidate": candidate,
+            "skill_indices": [0, 1],
+            "project_indices": [0, 1],
+            "confirmed": True,
+        },
+    )
+
+    assert saved.status_code == 201, saved.text
+    body = saved.json()["data"]
+    assert body["skills_added"] == 2
+    assert body["projects_added"] == 2
+    assert body["manual_item_count"] == 2
+
+    profile = db_client.get(API).json()["data"]
+    manual_evidences = [item for item in profile["evidences"] if item["source_type"] == "MANUAL_DECLARATION"]
+    assert len(manual_evidences) == 1
+    assert manual_evidences[0]["title"] == "导入本人填写：sample.html"
+    manual_evidence_id = manual_evidences[0]["id"]
+    skills = {item["name"]: item for item in profile["skills"]}
+    assert skills["Kubernetes"]["source_evidence_id"] == manual_evidence_id
+    assert skills["Python"]["source_evidence_id"] != manual_evidence_id
+    # 新增条目也只是本人陈述，不是"已核实能力"。
+    assert skills["Kubernetes"]["claim_status"] == "UNVERIFIED"
+
+
+def test_confirm_rejects_manual_item_that_carries_quote(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """本人填写的条目不允许携带摘录，避免用一段原文给编造内容做来源背书。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    candidate = data["candidate"]
+    candidate["skills"].append({"origin": "MANUAL", "name": "Kubernetes", "source_quote": "北京 Python"})
+
+    response = db_client.post(
+        f"{API}/import-confirm",
+        json={**_upload(), **data, "candidate": candidate, "skill_indices": [0, 1], "confirmed": True},
+    )
+
+    assert response.status_code == 422
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    # 出错的是整个条目（来源与摘录的搭配违规），字段路径指向该条目，原因里点名 source_quote。
+    # 请求体校验的错误路径带 FastAPI 的 `body.` 前缀。
+    assert any((detail["field"] or "").endswith("candidate.skills.1") for detail in error["details"]), error["details"]
+    assert any("source_quote" in (detail["reason"] or "") for detail in error["details"]), error["details"]
+    assert db_client.get(API).status_code == 404
+
+
+def test_confirm_rejects_resume_item_with_quote_absent_from_document(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """声明为简历来源的条目，其摘录必须真实存在于上传文件：假摘录不得冒充简历内容。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    candidate = data["candidate"]
+    candidate["skills"].append({"origin": "RESUME", "name": "Rust", "source_quote": "精通 Rust 与异步运行时"})
+
+    response = db_client.post(
+        f"{API}/import-confirm",
+        json={**_upload(), **data, "candidate": candidate, "skill_indices": [0, 1], "confirmed": True},
+    )
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert any(
+        (detail["field"] or "") == "candidate.skills.1.source_quote" for detail in error["details"]
+    ), error["details"]
+    assert db_client.get(API).status_code == 404
+
+
+def test_confirm_reattributes_modified_resume_item_to_manual(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """用户改到摘录之外的条目改按「本人填写」写入，不再挂在旧简历摘录下。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    candidate = data["candidate"]
+    # 摘录本身仍然真实存在，但项目名称已被用户改成原文里没有的写法。
+    candidate["projects"][0]["name"] = "订单系统重构（自研）"
+
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **_upload(),
+            **data,
+            "candidate": candidate,
+            "skill_indices": [0],
+            "project_indices": [0],
+            "confirmed": True,
+        },
+    )
+
+    assert saved.status_code == 201, saved.text
+    assert saved.json()["data"]["manual_item_count"] == 1
+    profile = db_client.get(API).json()["data"]
+    resume_evidence = next(item for item in profile["evidences"] if item["source_type"] == "RESUME_DOCUMENT")
+    manual_evidence = next(item for item in profile["evidences"] if item["source_type"] == "MANUAL_DECLARATION")
+    assert profile["projects"][0]["source_evidence_id"] == manual_evidence["id"]
+    assert profile["projects"][0]["name"] == "订单系统重构（自研）"
+    # 技能未被修改，仍挂在简历摘录下。
+    assert profile["skills"][0]["source_evidence_id"] == resume_evidence["id"]
+
+
+def test_confirm_rejects_duplicate_items(db_client: TestClient, monkeypatch: pytest.MonkeyPatch) -> None:
+    """同一次确认里重复的条目按字段返回 422，而不是写进去两条一样的记录。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    candidate = data["candidate"]
+    candidate["skills"].append({"origin": "MANUAL", "name": "python"})
+
+    response = db_client.post(
+        f"{API}/import-confirm",
+        json={**_upload(), **data, "candidate": candidate, "skill_indices": [0, 1], "confirmed": True},
+    )
+
+    assert response.status_code == 422, response.text
+    error = response.json()["error"]
+    assert error["code"] == "VALIDATION_ERROR"
+    assert any((detail["field"] or "") == "candidate.skills.1" for detail in error["details"]), error["details"]
+
+
+def test_editing_imported_fact_reattributes_source_to_manual(
+    db_client: TestClient, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """确认后编辑已导入事实：内容改了改挂「本人编辑」，且不需要补交任何证明。"""
+    _configure_default_model(db_client)
+    data = _preview_for_confirm(db_client, monkeypatch)
+    saved = db_client.post(
+        f"{API}/import-confirm",
+        json={
+            **_upload(),
+            **data,
+            "candidate": data["candidate"],
+            "skill_indices": [0],
+            "experience_indices": [0],
+            "confirmed": True,
+        },
+    )
+    assert saved.status_code == 201, saved.text
+
+    profile = db_client.get(API).json()["data"]
+    experience = profile["experiences"][0]
+    resume_evidence_id = experience["source_evidence_id"]
+    assert resume_evidence_id is not None
+
+    patched = db_client.patch(
+        f"{API}/experiences/{experience['id']}",
+        json={"version": experience["version"], "company": "甲公司（已更名）"},
+    )
+
+    assert patched.status_code == 200, patched.text
+    updated = patched.json()["data"]
+    assert updated["company"] == "甲公司（已更名）"
+    assert updated["source_evidence_id"] != resume_evidence_id
+
+    evidences = db_client.get(f"{API}/evidences").json()["data"]
+    assert any(item["title"] == "本人编辑：内容修订" for item in evidences)
+    # 历史来源记录不被删除，只是不再被这条事实引用。
+    assert any(item["id"] == resume_evidence_id for item in evidences)
+    # 编辑不要求补交证明，也不把内容标为已核实。
+    assert updated["company"] == "甲公司（已更名）"

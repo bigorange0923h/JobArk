@@ -11,7 +11,7 @@
  *   确认导入后刷新聚合并展示正式档案。
  */
 
-import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
+import { enableAutoUnmount, flushPromises, mount, type DOMWrapper, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
@@ -27,6 +27,7 @@ import {
 } from '@/shared/api/profile'
 
 import ProfileView from './ProfileView.vue'
+import { BASIC_FIELDS, IMPORT_BASIC_FIELDS } from './basicsFields'
 
 // 只替换本页真正调用的接口；其余导出（描述符需要的写法集合）保持真实，避免测试用的替身与
 // 真实类型脱节。
@@ -83,10 +84,12 @@ function importPreviewFixture(): ProfileImportPreview {
       full_name: '张三',
       name_quote: '张三',
       headline: null,
+      summary: null,
       email: null,
       phone: null,
       city: null,
-      skills: [{ name: 'Python', source_quote: '熟悉 Python' }],
+      links: [],
+      skills: [{ origin: 'RESUME', name: 'Python', source_quote: '熟悉 Python' }],
       experiences: [],
       projects: [],
       educations: [],
@@ -100,6 +103,7 @@ function importPreviewFixture(): ProfileImportPreview {
     },
     rejected_items: [],
     warnings: [],
+    fixture: false,
   }
 }
 
@@ -123,12 +127,47 @@ async function generateImportPreview(wrapper: VueWrapper): Promise<void> {
     value: [new File(['<html>张三 熟悉 Python</html>'], 'sample.html', { type: 'text/html' })],
   })
   await input.trigger('change')
-  await wrapper.find('[data-testid="profile-import-consent"]').setValue(true)
   await wrapper.find('[data-testid="preview-import"]').trigger('click')
   // 等候选真的落到面板，而不是赌一个固定延时。
   await vi.waitFor(() => {
     expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
   })
+}
+
+/** 基本信息字段在页面上的可比较形态；用标签定位，因为两页共用同一套字段定义。 */
+interface BasicFieldShape {
+  label: string
+  control: string
+  placeholder: string | null
+  maxlength: string | null
+  required: boolean
+}
+
+/**
+ * 读取一个基本信息区块的字段形态。
+ *
+ * 用于断言“两个页面字段一模一样”：只比标签、控件形态、占位符、长度上限与必填标记——
+ * 这些正是共享字段定义（`basicsFields.ts`）负责的内容；字段值不在比较范围内。
+ *
+ * 没有标签或没有控件的表单项会被跳过：创建页的“公开链接”在尚未添加任何链接时只渲染
+ * “添加链接”按钮，那不是一个基本信息字段。
+ */
+function basicFieldShapes(section: DOMWrapper<Element>): BasicFieldShape[] {
+  return section
+    .findAll('.ant-form-item')
+    .map((item) => {
+      const label = item.find('label')
+      const control = item.find('input, textarea')
+      if (!label.exists() || !control.exists()) return null
+      return {
+        label: label.text(),
+        control: control.element.tagName.toLowerCase(),
+        placeholder: control.attributes('placeholder') ?? null,
+        maxlength: control.attributes('maxlength') ?? null,
+        required: item.find('.ant-form-item-required').exists(),
+      }
+    })
+    .filter((shape): shape is BasicFieldShape => shape !== null)
 }
 
 beforeEach(() => {
@@ -144,6 +183,7 @@ beforeEach(() => {
     experiences_added: 0,
     projects_added: 0,
     educations_added: 0,
+    manual_item_count: 0,
   })
 })
 
@@ -251,6 +291,53 @@ describe('ProfileView', () => {
     expect(fetchProfile).toHaveBeenCalledTimes(2)
     expect(wrapper.find('[data-testid="profile-start-choices"]').exists()).toBe(false)
     expect((wrapper.find('[data-testid="panel-basics"] input').element as HTMLInputElement).value).toBe('张伟')
+  })
+
+  it('候选页与手动创建页用同一套字段与布局，不维护第二份模板', async () => {
+    vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
+
+    const wrapper = mountView()
+    await flushPromises()
+
+    // 无档案时两条路径都挂在 DOM 上（导入路径由 v-show 隐藏），因此可以同时取到两侧字段。
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
+    await generateImportPreview(wrapper)
+
+    // 两侧都由同一个共享布局组件渲染：不是"看起来相似"，而是同一份代码。
+    const createSection = wrapper.find('[data-testid="panel-basics"] .basics-section')
+    const candidateSection = wrapper.find('[data-testid="profile-import-panel"] .basics-section')
+    expect(createSection.exists()).toBe(true)
+    expect(candidateSection.exists()).toBe(true)
+
+    const createFields = basicFieldShapes(createSection)
+    const candidateFields = basicFieldShapes(candidateSection)
+
+    // 创建页按共享定义全集渲染（公开链接等额外表单项排在字段之后，不参与比较）。
+    expect(createFields.slice(0, BASIC_FIELDS.length).map((field) => field.label)).toEqual(
+      BASIC_FIELDS.map((field) => field.label),
+    )
+    // 候选页渲染的是候选契约支持的子集，顺序与创建页一致。
+    expect(candidateFields.map((field) => field.label)).toEqual(
+      IMPORT_BASIC_FIELDS.map((field) => field.label),
+    )
+
+    // 同名字段在两页的标签、控件形态、占位符、长度上限与必填标记必须逐项相同。
+    for (const field of candidateFields) {
+      expect(createFields.find((item) => item.label === field.label)).toEqual(field)
+    }
+
+    // 公开链接是数组字段：两页同样各有同一个链接编辑区，标签与帮助文本逐字一致。
+    for (const section of [createSection, candidateSection]) {
+      const linksItem = section
+        .findAll('.ant-form-item')
+        .find((item) => item.find('label').text() === '公开链接')
+      expect(linksItem).toBeDefined()
+      expect(linksItem?.text()).toContain('例如 GitHub、博客；留空的整行会被忽略。')
+    }
+
+    // 布局同源：两页都用同一套字段网格（桌面端每行最多两个普通字段、长文本独占一行、窄屏单列）。
+    expect(createSection.find('.profile-field-grid').exists()).toBe(true)
+    expect(candidateSection.find('.profile-field-grid').exists()).toBe(true)
   })
 
   it('加载失败时显示后端提示与错误编号，不显示业务面板', async () => {

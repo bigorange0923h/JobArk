@@ -60,6 +60,21 @@ _DOMAIN_TABLES = (
 )
 
 
+@pytest.fixture(autouse=True)
+def _disable_forced_mock_extraction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """测试默认关闭"local 环境强制 mock 抽取"的临时开关。
+
+    参数:
+        monkeypatch: 用于把模块常量临时置空的夹具。
+
+    注意:
+        领域服务读取的是全局 `get_settings()`，它会加载开发者本地的 `backend/.env`；本机 `.env`
+        的 `JOBARK_APP_ENV=local` 会让导入流程默认返回 mock 数据，使大量用例悄悄测不到真实分支。
+        这里统一关掉，需要 mock 的用例自行开启（设 `profile_import_fixture` 或临时打开该常量）。
+    """
+    monkeypatch.setattr("app.modules.profile.import_service._FORCE_MOCK_EXTRACTION_IN", None)
+
+
 @pytest.fixture
 def settings() -> Settings:
     """返回测试专用配置。

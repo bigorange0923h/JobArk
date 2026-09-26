@@ -10,24 +10,26 @@ import logging
 import re
 import uuid
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import date
 from html.parser import HTMLParser
 from io import BytesIO
 from pathlib import PurePosixPath
-from typing import Any, Literal, cast
+from typing import Any, Literal, Self, cast
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from pypdf import PdfReader
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.ai import service as ai_service
 from app.ai.llm import gateway
-from app.core.config import get_settings
+from app.core.config import AppEnv, get_settings
 from app.core.errors import ConflictError, ValidationFailedError
+from app.core.responses import ErrorDetail
 
 from . import repository as repo
 from .enums import ClaimStatus, EvidenceSourceType, VerificationStatus
+from .import_fixture import FIXTURE_SOURCE_HASH, FIXTURE_TEXT, mock_extract_profile
 from .models import (
     PersonalProfile,
     ProfileEducation,
@@ -36,6 +38,7 @@ from .models import (
     ProfileProject,
     ProfileSkill,
 )
+from .schemas import ProfileLink
 from .service import normalize_skill_name
 
 MAX_FILE_BYTES = 3 * 1024 * 1024
@@ -45,6 +48,27 @@ MAX_TEXT_CHARS = 40_000
 MAX_PREVIEW_AI_ATTEMPTS = 2
 PREVIEW_RETRY_DELAY_SECONDS = 1.0
 logger = logging.getLogger(__name__)
+# TODO(临时联调): 在 local 环境强制使用内置 mock 抽取结果，验证"上传简历 → 抽取 → 填充"时
+# 无需配置服务商与凭据。恢复真实调用只需把这里改成 None；此后仍可用
+# JOBARK_PROFILE_IMPORT_FIXTURE 在 local/test 单独开启 mock。
+_FORCE_MOCK_EXTRACTION_IN: AppEnv | None = AppEnv.LOCAL
+
+
+def _mock_extraction_enabled() -> bool:
+    """是否用内置固定值替代大模型抽取。
+
+    返回:
+        bool: 需要 mock 时返回 True。
+
+    注意:
+        两组条件都天然排除生产：临时开关只在指定的运行环境生效，而 `profile_import_fixture`
+        在 prod 会被配置校验直接拒绝开启，因此样例数据不可能进入真实档案。
+        mock 只替换"外部输入"，候选仍走同一套 Schema 与逐字原文校验。
+    """
+    settings = get_settings()
+    if _FORCE_MOCK_EXTRACTION_IN is not None and settings.app_env is _FORCE_MOCK_EXTRACTION_IN:
+        return True
+    return settings.profile_import_fixture
 
 
 class ResumeUpload(BaseModel):
@@ -54,18 +78,59 @@ class ResumeUpload(BaseModel):
     content_base64: str = Field(min_length=1, max_length=4_200_000, description="PDF/HTML 文件的 base64 内容。")
 
 
-class SourcedSkill(BaseModel):
-    """带原文摘录的技能候选，不代表已验证能力。"""
+# 候选条目的来源语义（见 docs/requirements/v1.md 2.1）。
+# 两类来源必须能被区分：否则"用户新增条目"要么进不来（强制摘录），要么只能靠假摘录混进来。
+ItemOrigin = Literal["RESUME", "MANUAL"]
+
+
+class SourcedItemBase(BaseModel):
+    """带来源语义的候选条目基类。
+
+    - `RESUME`：内容来自简历原文，必须带真实摘录。预览阶段逐字校验摘录确实存在于上传文件，
+      字段取值也必须落在摘录内；摘录是来源凭证，不是可填可不填的备注。
+    - `MANUAL`：用户本人填写，或把 AI 条目改到摘录之外。**不接受摘录**——允许携带就等于允许
+      用一段复制来的原文给编造内容做背书。
+
+    来源只决定"挂哪条证据"和"要不要做原文校验"，两类条目都要通过各自的必填、长度与日期顺序校验。
+    """
 
     model_config = ConfigDict(extra="forbid")
+    origin: ItemOrigin = Field(description="RESUME=来自简历原文摘录；MANUAL=本人填写。")
+    source_quote: str | None = Field(
+        default=None,
+        max_length=500,
+        description="原文摘录；仅 RESUME 条目提供，MANUAL 条目携带会被拒绝。",
+    )
+
+    @model_validator(mode="after")
+    def _validate_origin_quote(self) -> Self:
+        """校验来源与摘录的搭配。
+
+        返回:
+            Self: 校验通过的自身实例。
+
+        异常:
+            ValueError: RESUME 缺少摘录，或 MANUAL 携带摘录时抛出（FastAPI 转为 422）。
+        """
+        quote = (self.source_quote or "").strip()
+        if self.origin == "RESUME" and quote == "":
+            raise ValueError("origin 为 RESUME 的条目必须提供 source_quote。")
+        if self.origin == "MANUAL" and quote != "":
+            raise ValueError(
+                "origin 为 MANUAL 的条目不接受 source_quote：请勿用摘录给本人填写的内容做来源背书。"
+            )
+        return self
+
+
+class SourcedSkill(SourcedItemBase):
+    """技能候选，不代表已验证能力。"""
+
     name: str = Field(min_length=1, max_length=100)
-    source_quote: str = Field(min_length=1, max_length=500)
 
 
-class SourcedExperience(BaseModel):
-    """带原文摘录的工作经历候选。"""
+class SourcedExperience(SourcedItemBase):
+    """工作经历候选。"""
 
-    model_config = ConfigDict(extra="forbid")
     company: str = Field(min_length=1, max_length=200)
     title: str = Field(min_length=1, max_length=200)
     start_date: date
@@ -73,11 +138,10 @@ class SourcedExperience(BaseModel):
     location: str | None = Field(default=None, max_length=100)
     responsibilities: str | None = Field(default=None, max_length=3000)
     achievements: str | None = Field(default=None, max_length=3000)
-    source_quote: str = Field(min_length=1, max_length=500)
 
 
-class SourcedProject(BaseModel):
-    """带原文摘录的项目经历候选。
+class SourcedProject(SourcedItemBase):
+    """项目经历候选。
 
     日期允许留空，因为简历里的项目常常只给名称与技术栈。
 
@@ -88,7 +152,6 @@ class SourcedProject(BaseModel):
         Profile 的项目事实没有单独的职责/成果列；合并只做拼接，不产生原文之外的内容。
     """
 
-    model_config = ConfigDict(extra="forbid")
     name: str = Field(min_length=1, max_length=200)
     role: str | None = Field(default=None, max_length=100)
     description: str | None = Field(default=None, max_length=3000)
@@ -98,31 +161,35 @@ class SourcedProject(BaseModel):
     url: str | None = Field(default=None, max_length=2048)
     start_date: date | None = None
     end_date: date | None = None
-    source_quote: str = Field(min_length=1, max_length=500)
 
 
-class SourcedEducation(BaseModel):
-    """带原文摘录的教育经历候选。"""
+class SourcedEducation(SourcedItemBase):
+    """教育经历候选。"""
 
-    model_config = ConfigDict(extra="forbid")
     school: str = Field(min_length=1, max_length=200)
     major: str | None = Field(default=None, max_length=200)
     degree: str | None = Field(default=None, max_length=64)
     start_date: date | None = None
     end_date: date | None = None
-    source_quote: str = Field(min_length=1, max_length=500)
 
 
 class ImportCandidate(BaseModel):
-    """未确认的档案候选；覆盖可从简历提取的基本信息与四类事实（技能、工作经历、项目、教育）。"""
+    """未确认的档案候选；覆盖可从简历提取的基本信息与四类事实（技能、工作经历、项目、教育）。
+
+    字段与"创建个人档案"表单（前端 `basicsFields.ts`）逐项对齐：两个页面共用同一个表单，
+    因此候选也必须能承载个人简介与公开链接，否则两边又会各显示一套字段。
+    `summary` 与 `links` 都有默认值，旧客户端不传它们仍然可用（向后兼容）。
+    """
 
     model_config = ConfigDict(extra="forbid")
     full_name: str = Field(min_length=1, max_length=100)
     name_quote: str = Field(min_length=1, max_length=500)
     headline: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=3000)
     email: str | None = Field(default=None, max_length=320)
     phone: str | None = Field(default=None, max_length=50)
     city: str | None = Field(default=None, max_length=100)
+    links: list[ProfileLink] = Field(default_factory=list[ProfileLink], max_length=20)
     skills: list[SourcedSkill] = Field(default_factory=list[SourcedSkill], max_length=40)
     experiences: list[SourcedExperience] = Field(default_factory=list[SourcedExperience], max_length=20)
     projects: list[SourcedProject] = Field(default_factory=list[SourcedProject], max_length=20)
@@ -168,6 +235,10 @@ class ImportPreviewRead(BaseModel):
     completeness: ImportPreviewCompleteness
     rejected_items: list[ImportPreviewRejectedItem] = Field(default_factory=list[ImportPreviewRejectedItem])
     warnings: list[ImportPreviewWarning] = Field(default_factory=list[ImportPreviewWarning])
+    fixture: bool = Field(
+        default=False,
+        description="为 true 表示本次候选来自内置开发夹具，不是真实大模型抽取结果。",
+    )
 
 
 class _ImportCandidateRoot(BaseModel):
@@ -177,9 +248,12 @@ class _ImportCandidateRoot(BaseModel):
     full_name: str = Field(min_length=1, max_length=100)
     name_quote: str = Field(min_length=1, max_length=500)
     headline: str | None = Field(default=None, max_length=200)
+    summary: str | None = Field(default=None, max_length=3000)
     email: str | None = Field(default=None, max_length=320)
     phone: str | None = Field(default=None, max_length=50)
     city: str | None = Field(default=None, max_length=100)
+    # 与其它集合一样只做"是列表"这一层校验，条目格式在候选解析里逐项隔离。
+    links: list[Any] = Field(default_factory=list)
     skills: list[Any] = Field(default_factory=list)
     experiences: list[Any] = Field(default_factory=list)
     projects: list[Any] = Field(default_factory=list)
@@ -207,6 +281,10 @@ class ImportApplyRead(BaseModel):
     experiences_added: int
     projects_added: int
     educations_added: int
+    manual_item_count: int = Field(
+        default=0,
+        description="本次写入的条目中按「本人填写」记录来源的条数（用户新增或改到摘录之外）。",
+    )
 
 
 @dataclass(frozen=True)
@@ -307,23 +385,34 @@ def _log_candidate_invalid(group: str, index: int | None, reason: str, **extra: 
     )
 
 
-def _item_values(item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation) -> list[str | None]:
-    """返回必须被对应摘录覆盖的值；字段列表与候选模型显式对齐。"""
+def _item_field_values(
+    item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation,
+) -> list[tuple[str, str | None]]:
+    """返回必须被对应摘录覆盖的 (字段名, 取值)；字段列表与候选模型显式对齐。
+
+    带字段名是因为错误要按字段返回：只说"这条不合法"，用户不知道自己改的是哪个输入框。
+    """
     if isinstance(item, SourcedSkill):
-        return [item.name]
+        return [("name", item.name)]
     if isinstance(item, SourcedExperience):
-        return [item.company, item.title, item.location, item.responsibilities, item.achievements]
+        return [
+            ("company", item.company),
+            ("title", item.title),
+            ("location", item.location),
+            ("responsibilities", item.responsibilities),
+            ("achievements", item.achievements),
+        ]
     if isinstance(item, SourcedProject):
         return [
-            item.name,
-            item.role,
-            item.description,
-            item.responsibilities,
-            item.achievements,
-            item.url,
-            *item.tech_stack,
+            ("name", item.name),
+            ("role", item.role),
+            ("description", item.description),
+            ("responsibilities", item.responsibilities),
+            ("achievements", item.achievements),
+            ("url", item.url),
+            *[(f"tech_stack.{position}", value) for position, value in enumerate(item.tech_stack)],
         ]
-    return [item.school, item.major, item.degree]
+    return [("school", item.school), ("major", item.major), ("degree", item.degree)]
 
 
 def _check_sourced_item(
@@ -332,34 +421,76 @@ def _check_sourced_item(
     item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation,
     text: str,
     *,
-    allow_edits: bool,
+    allow_deviation: bool,
 ) -> bool:
-    """校验一个候选条目的摘录、字段和日期，返回其是否已被用户修订。
+    """校验条目的结构与原文证据，返回它是否应按「本人填写」记录来源。
 
-    预览阶段以条目为最小隔离单位：一个项目的 Schema 或证据错误不能影响其他条目。
-    确认阶段仍会重新调用本函数，且只有用户修改过的条目可以超出原文摘录。
+    参数:
+        group: 条目分组名（单数），用于日志与错误字段路径。
+        index: 条目在分组内的下标，用于日志与错误字段路径。
+        item: 待校验条目。
+        text: 本地提取的简历原文。
+        allow_deviation: 是否允许 RESUME 条目偏离摘录（确认阶段为 True）。开启后偏离不报错，
+            而是转为「本人填写」——内容变了就不该继续借旧摘录做证明。
+
+    返回:
+        bool: True 表示该条目应按「本人填写」记录来源（`MANUAL` 条目恒为 True）。
+
+    异常:
+        ValidationFailedError: 日期倒序、摘录无法定位到原文，或（未开启偏离容忍时）取值超出摘录。
+
+    注意:
+        `MANUAL` 条目不做任何原文校验：用户新增的条目本来就没有摘录，要求它提供摘录只会逼用户
+        编造一段原文。它们的可信度由「本人填写」这一来源如实表达，而不是靠摘录。
     """
-    normalized_quote = _normalize(item.source_quote)
-    if normalized_quote not in text:
-        _log_candidate_invalid(group, index, "quote_not_in_document")
-        raise ValidationFailedError("候选内容无法逐字定位到简历原文，未写入个人档案。")
-    edited = any(_normalize(value) not in normalized_quote for value in _item_values(item) if value)
-    if edited and not allow_edits:
-        _log_candidate_invalid(group, index, "value_not_in_quote")
-        raise ValidationFailedError("候选内容无法逐字定位到简历原文，未写入个人档案。")
     start_date = getattr(item, "start_date", None)
     end_date = getattr(item, "end_date", None)
     if start_date is not None and end_date is not None and end_date < start_date:
         _log_candidate_invalid(group, index, "end_date_before_start_date")
-        raise ValidationFailedError("候选的结束日期早于开始日期，未写入个人档案。")
-    if not edited:
+        raise ValidationFailedError(
+            "候选的结束日期早于开始日期，未写入个人档案。",
+            details=[
+                ErrorDetail(
+                    field=f"candidate.{group}s.{index}.end_date",
+                    reason="结束日期不得早于开始日期。",
+                )
+            ],
+        )
+    if item.origin == "MANUAL":
+        return True
+    quote = item.source_quote or ""
+    normalized_quote = _normalize(quote)
+    if normalized_quote not in text:
+        _log_candidate_invalid(group, index, "quote_not_in_document")
+        raise ValidationFailedError(
+            "候选内容无法逐字定位到简历原文，未写入个人档案。",
+            details=[
+                ErrorDetail(
+                    field=f"candidate.{group}s.{index}.source_quote",
+                    reason="摘录无法在上传的简历原文中逐字定位；若内容是你自己填写的，请按本人填写提交。",
+                )
+            ],
+        )
+    deviating = [
+        name for name, value in _item_field_values(item) if value and _normalize(value) not in normalized_quote
+    ]
+    if not deviating:
         for item_date in (start_date, end_date):
-            if item_date and str(item_date.year) not in item.source_quote:
-                if not allow_edits:
-                    _log_candidate_invalid(group, index, "date_year_not_in_quote")
-                    raise ValidationFailedError("候选日期未出现在对应原文摘录中，未写入个人档案。")
-                edited = True
-    return edited
+            if item_date and str(item_date.year) not in quote:
+                deviating.append("start_date" if item_date is start_date else "end_date")
+    if deviating and not allow_deviation:
+        _log_candidate_invalid(group, index, "value_not_in_quote", fields=deviating)
+        raise ValidationFailedError(
+            "候选内容无法逐字定位到简历原文，未写入个人档案。",
+            details=[
+                ErrorDetail(
+                    field=f"candidate.{group}s.{index}.{name}",
+                    reason="取值未出现在原文摘录中。",
+                )
+                for name in deviating
+            ],
+        )
+    return bool(deviating)
 
 
 def _filter_unquoted_project_fields(item: SourcedProject, text: str, index: int) -> tuple[SourcedProject, list[str]]:
@@ -368,7 +499,8 @@ def _filter_unquoted_project_fields(item: SourcedProject, text: str, index: int)
     项目名称和摘录仍是不可放宽的锚点：两者任一无效时整条项目拒绝。其余字段若是模型摘要、
     改写或摘录遗漏，则不作为简历事实进入候选；用户可在预览中补回，确认时会转为本人陈述。
     """
-    normalized_quote = _normalize(item.source_quote)
+    quote = item.source_quote or ""
+    normalized_quote = _normalize(quote)
     if normalized_quote not in text:
         _log_candidate_invalid("project", index, "quote_not_in_document")
         raise ValidationFailedError("候选内容无法逐字定位到简历原文，未写入个人档案。")
@@ -389,7 +521,7 @@ def _filter_unquoted_project_fields(item: SourcedProject, text: str, index: int)
         excluded.append("tech_stack")
     for field in ("start_date", "end_date"):
         value = getattr(item, field)
-        if value and str(value.year) not in item.source_quote:
+        if value and str(value.year) not in quote:
             update[field] = None
             excluded.append(field)
 
@@ -442,6 +574,65 @@ def _normalize_project_item(raw_mapping: dict[str, Any]) -> tuple[dict[str, Any]
     return normalized, mapped
 
 
+def _link_in_text(link: ProfileLink, text: str) -> bool:
+    """公开链接是否能在简历原文中逐字定位。
+
+    简历里的地址常写作 `github.com/foo`，而模型会补成 `https://github.com/foo`，因此地址按
+    “去掉协议与尾斜杠”后比较；名称（如 GitHub、个人博客）同样必须来自原文，否则等于替用户
+    编造一个称呼。任一半定位不到就不采用，避免把编造的链接写进档案。
+    """
+    normalized_url = _normalize(link.url).rstrip("/")
+    forms = {normalized_url}
+    for prefix in ("https://", "http://"):
+        if normalized_url.startswith(prefix):
+            forms.add(normalized_url[len(prefix) :].rstrip("/"))
+    if not any(form and form in text for form in forms):
+        return False
+    return _normalize(link.label) in text
+
+
+def _parse_links(raw_links: list[Any]) -> tuple[list[ProfileLink], int]:
+    """把模型给出的公开链接逐项校验为 `ProfileLink`，返回可用条目与被丢弃的条数。
+
+    条目级隔离：单条链接格式不对只丢弃该条，不影响其它基本信息与四类事实。
+    """
+    kept: list[ProfileLink] = []
+    dropped = 0
+    for raw_link in raw_links:
+        if not isinstance(raw_link, dict):
+            dropped += 1
+            continue
+        try:
+            kept.append(ProfileLink.model_validate(raw_link))
+        except ValidationError:
+            dropped += 1
+    return kept, dropped
+
+
+def _filter_unquoted_basics(candidate: ImportCandidate, text: str) -> tuple[ImportCandidate, list[str]]:
+    """清空无法逐字定位的可选基本信息（个人简介、公开链接），返回清洗后的候选与被清空的字段。
+
+    基本信息整体是可信锚点，但个人简介与公开链接是**可缺省的长文本/列表**：模型很容易用自己的
+    话复述一段自我评价，若因此整体拒绝，用户会连同可验证的技能与经历一起丢掉——项目经历曾经
+    踩过同样的坑。因此这两个字段按字段级隔离：定位不到就留空并提示，绝不伪装成简历事实。
+
+    注意:
+        只在预览阶段调用。确认阶段允许用户改到摘录之外（那是本人陈述），因此不清洗。
+    """
+    updates: dict[str, Any] = {}
+    excluded: list[str] = []
+    if candidate.summary and _normalize(candidate.summary) not in text:
+        updates["summary"] = None
+        excluded.append("summary")
+    evidenced_links = [link for link in candidate.links if _link_in_text(link, text)]
+    if len(evidenced_links) != len(candidate.links):
+        updates["links"] = evidenced_links
+        excluded.append("links")
+    if not updates:
+        return candidate, []
+    return candidate.model_copy(update=updates), excluded
+
+
 def _check_basics(candidate: ImportCandidate, text: str, *, allow_edits: bool) -> None:
     """校验姓名及可选基本信息；姓名与姓名摘录是整个候选信封的最小可信锚点。"""
     normalized_name_quote = _normalize(candidate.name_quote)
@@ -460,28 +651,28 @@ def _check_basics(candidate: ImportCandidate, text: str, *, allow_edits: bool) -
             )
 
 
-def _check_candidate(candidate: ImportCandidate, text: str, *, allow_edits: bool) -> set[tuple[str, int]]:
-    """校验候选与简历原文的关系，并标出被用户修订过的条目。
+def _check_candidate(candidate: ImportCandidate, text: str) -> set[tuple[str, int]]:
+    """校验确认阶段的候选，返回应按「本人填写」记录来源的 (分组, 下标) 集合。
 
     参数:
-        candidate: 待写入的候选。
+        candidate: 待写入的候选，可能已被用户在候选页修改或新增。
         text: 本地提取的简历原文。
-        allow_edits: 是否允许字段值超出摘录取值（确认阶段为 True）。
 
     返回:
-        set[tuple[str, int]]: 被判定为"用户修订"的 (分组, 下标) 集合；严格模式下恒为空集。
+        set[tuple[str, int]]: 需要挂「本人填写」证据的条目集合。
 
     异常:
-        ValidationFailedError: 摘录无法定位到原文；或在严格模式下字段值、日期年份超出摘录；
-            或起止日期顺序非法。
+        ValidationFailedError: 基本信息锚点失效、`RESUME` 条目摘录无法定位到原文、日期顺序非法，
+            或 `MANUAL` 条目携带摘录（伪装简历来源）。
 
     注意:
-        两个阶段的严格度必须不同：预览阶段（allow_edits=False）仍逐字校验，模型编造的内容
-        无法进入候选；确认阶段允许用户修正内容，被改到摘录之外的条目不再要求逐字定位，
-        但摘录本身必须真实存在于原文，写入时这些条目改挂"本人陈述"证据而不是简历证据。
+        确认阶段与预览阶段的差别只在"偏离摘录"的处理：预览阶段仍逐字校验，模型改写原文的内容
+        无法进入候选；确认阶段把偏离摘录的 `RESUME` 条目降级为「本人填写」，而不是拒绝——
+        用户有权把 AI 的结果改成事实，但改写后的内容不能再借旧摘录做证明。
+        `MANUAL` 条目（用户新增或已改写）不校验摘录，它们的来源如实记为本人填写。
     """
-    _check_basics(candidate, text, allow_edits=allow_edits)
-    edited: set[tuple[str, int]] = set()
+    _check_basics(candidate, text, allow_edits=True)
+    manual: set[tuple[str, int]] = set()
     for group, items in (
         ("skill", candidate.skills),
         ("experience", candidate.experiences),
@@ -489,9 +680,62 @@ def _check_candidate(candidate: ImportCandidate, text: str, *, allow_edits: bool
         ("education", candidate.educations),
     ):
         for index, item in enumerate(items):
-            if _check_sourced_item(group, index, item, text, allow_edits=allow_edits):
-                edited.add((group, index))
-    return edited
+            if _check_sourced_item(group, index, item, text, allow_deviation=True):
+                manual.add((group, index))
+    return manual
+
+
+def _ensure_no_duplicate_items(
+    group: str,
+    items: list[tuple[int, SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation]],
+) -> list[ErrorDetail]:
+    """找出同一次提交里重复的条目，返回字段级错误。
+
+    参数:
+        group: 条目分组名（单数）。
+        items: (原始下标, 条目) 列表，仅包含用户选中的条目。
+
+    返回:
+        list[ErrorDetail]: 重复项的错误明细；没有重复时为空列表。
+
+    注意:
+        只检查同一次提交内部的重复：与档案中已有条目的重复由写入阶段按既有去重规则跳过
+        （已有档案导入只补充未重复条目）。用户新填的条目重复属于输入错误，应在写入前指出。
+    """
+    seen: dict[str, int] = {}
+    details: list[ErrorDetail] = []
+    for index, item in items:
+        key = _item_identity(group, item)
+        first = seen.get(key)
+        if first is None:
+            seen[key] = index
+            continue
+        details.append(
+            ErrorDetail(
+                field=f"candidate.{group}s.{index}",
+                reason=f"与第 {first + 1} 条重复，请删除其中一条。",
+            )
+        )
+    return details
+
+
+def _item_identity(group: str, item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation) -> str:
+    """条目的业务唯一键，用于去重判断（大小写与空白归一）。
+
+    参数:
+        group: 条目分组名（单数）。
+        item: 候选条目。
+
+    返回:
+        str: 归一化后的唯一键。
+    """
+    if isinstance(item, SourcedSkill):
+        return normalize_skill_name(item.name)
+    if isinstance(item, SourcedExperience):
+        return "|".join([_normalize(item.company).casefold(), _normalize(item.title).casefold(), str(item.start_date)])
+    if isinstance(item, SourcedProject):
+        return _normalize(item.name).casefold()
+    return "|".join([_normalize(item.school).casefold(), _normalize(item.major or "").casefold()])
 
 
 def _validation_fields(error: ValidationError) -> list[str]:
@@ -533,6 +777,37 @@ def _model_output_shape(value: object, *, depth: int = 0) -> object:
             result["omitted_item_count"] = len(items) - len(visible_items)
         return result
     return {"type": type(value).__name__}
+
+
+def _model_candidate_schema() -> dict[str, Any]:
+    """返回发给模型的 JSON Schema：与候选契约一致，但**不含** `origin`。
+
+    返回:
+        dict[str, Any]: 去掉条目来源字段后的候选 Schema。
+
+    注意:
+        来源由服务端判定（模型只能产出"来自简历原文"的条目），所以它不该出现在模型契约里：
+        留在 Schema 中会让模型每次都尝试填它，而服务端随后必须剥离并告警，结果是**每条候选**
+        都挂一条无意义的警告、`completeness` 永远为 PARTIAL，真实问题反而被噪声淹没。
+        客户端的确认契约仍然要求 `origin`（缺了就 422，失败关闭）。
+    """
+    schema = ImportCandidate.model_json_schema()
+    raw_definitions = schema.get("$defs")
+    if not isinstance(raw_definitions, dict):
+        return schema
+    definitions = cast("dict[str, Any]", raw_definitions)
+    for name in ("SourcedSkill", "SourcedExperience", "SourcedProject", "SourcedEducation"):
+        raw_item = definitions.get(name)
+        if not isinstance(raw_item, dict):
+            continue
+        item = cast("dict[str, Any]", raw_item)
+        properties = item.get("properties")
+        if isinstance(properties, dict):
+            cast("dict[str, Any]", properties).pop("origin", None)
+        required = item.get("required")
+        if isinstance(required, list):
+            item["required"] = [field for field in cast("list[str]", required) if field != "origin"]
+    return schema
 
 
 def _parse_preview_candidate(
@@ -619,11 +894,34 @@ def _parse_preview_candidate(
                             "fields": alias_fields,
                         },
                     )
+            # 条目来源由服务端判定：模型只能产出"来自简历原文"的条目，不能自行声明"本人填写"
+            # 来绕过摘录校验。模型若返回 origin，先剥离并留下可见提示。
+            if "origin" in raw_mapping:
+                raw_mapping = {key: value for key, value in raw_mapping.items() if key != "origin"}
+                warnings.append(
+                    ImportPreviewWarning(
+                        group=collection,
+                        index=index,
+                        code="UNMAPPED_MODEL_FIELD",
+                        fields=["origin"],
+                        message="模型返回的条目来源字段已忽略：条目来源由服务端按原文校验结果判定。",
+                    )
+                )
+                logger.info(
+                    "模型试图声明条目来源",
+                    extra={
+                        "event": "profile_import_candidate_origin_ignored",
+                        "candidate_group": group_names[collection],
+                        "candidate_index": index,
+                    },
+                )
             supported_fields: set[str] = set(model.model_fields)
             unknown_fields: list[str] = sorted(set(raw_mapping) - supported_fields)
             normalized_item: dict[str, Any] = {
                 key: value for key, value in raw_mapping.items() if key in supported_fields
             }
+            # 提取阶段的一切条目都按简历原文来源校验：来源不是模型可以选择的字段。
+            normalized_item["origin"] = "RESUME"
             if unknown_fields:
                 warnings.append(
                     ImportPreviewWarning(
@@ -682,7 +980,7 @@ def _parse_preview_candidate(
                         )
                     )
             try:
-                _check_sourced_item(group_names[collection], index, item, text, allow_edits=False)
+                _check_sourced_item(group_names[collection], index, item, text, allow_deviation=False)
             except ValidationFailedError:
                 rejected.append(
                     ImportPreviewRejectedItem(
@@ -695,13 +993,16 @@ def _parse_preview_candidate(
                 continue
             accepted[collection].append(item)
 
+    parsed_links, dropped_link_count = _parse_links(root.links)
     candidate = ImportCandidate(
         full_name=root.full_name,
         name_quote=root.name_quote,
         headline=root.headline,
+        summary=root.summary,
         email=root.email,
         phone=root.phone,
         city=root.city,
+        links=parsed_links,
         skills=accepted["skills"],
         experiences=accepted["experiences"],
         projects=accepted["projects"],
@@ -709,6 +1010,30 @@ def _parse_preview_candidate(
     )
     # 基础资料与姓名是整个档案候选的锚点，不存在可安全保留的同级替代项，继续整体拒绝。
     _check_basics(candidate, text, allow_edits=False)
+    # 个人简介与公开链接按字段级隔离：定位不到就留空，不让整份简历的可验证内容一起失败。
+    candidate, excluded_basics = _filter_unquoted_basics(candidate, text)
+    excluded_fields = set(excluded_basics)
+    if dropped_link_count:
+        excluded_fields.add("links")
+    if excluded_fields:
+        excluded_names = sorted(excluded_fields)
+        warnings.append(
+            ImportPreviewWarning(
+                group="basics",
+                index=0,
+                code="FIELD_NOT_IN_QUOTE",
+                fields=excluded_names,
+                message="这些基本信息未能在简历原文中逐字定位或格式不可用，未作为简历事实导入；可由本人补充。",
+            )
+        )
+        logger.info(
+            "候选基本信息被清空",
+            extra={
+                "event": "profile_import_candidate_excluded_basics",
+                "fields": excluded_names,
+                "dropped_link_count": dropped_link_count,
+            },
+        )
     valid_item_count = sum(len(items) for items in accepted.values())
     unmapped_field_count = sum(
         len(warning.fields) for warning in warnings if warning.code == "UNMAPPED_MODEL_FIELD"
@@ -746,7 +1071,11 @@ async def preview(
 
     异常:
         ValidationFailedError: 未确认发送，或模型返回的候选格式无效、摘录无法定位。
-        ConflictError: 尚未配置默认模型，或凭据无法解密。
+        ConflictError: 尚未配置默认模型，或凭据无法解密（夹具模式不会触发后者）。
+
+    注意:
+        开启 `profile_import_fixture` 时用内置样例文本与固定结果替代模型调用，因此不需要配置服务商；
+        它只替换外部输入，候选仍要经过同一套 Schema 与原文校验，且返回值带 `fixture=True` 标记。
     """
     if not confirm_external:
         raise ValidationFailedError("请先确认将简历文字发送到已配置的大模型服务。")
@@ -762,76 +1091,101 @@ async def preview(
     )
     if on_progress is not None:
         await on_progress("document_parsed")
-    try:
-        config = await ai_service.resolve_default_model(session, get_settings())
-    except ConflictError:
+    if _mock_extraction_enabled():
+        # mock 模式：不解析默认模型、也不发起外部请求，因此不需要配置服务商与凭据。
+        # 用样例文本替换校验语料，使固定结果与"文档"自洽；后续校验与真实抽取完全一致。
+        document = replace(document, text=FIXTURE_TEXT, source_hash=FIXTURE_SOURCE_HASH)
         logger.warning(
-            "默认模型解析失败", extra={"event": "profile_import_preview", "stage": "model_resolution_failed"}
+            "导入预览使用内置 mock 抽取结果",
+            extra={"event": "profile_import_preview", "stage": "fixture_enabled"},
         )
-        raise
-    logger.info("默认模型已解析", extra={"event": "profile_import_preview", "stage": "model_resolved"})
-    if on_progress is not None:
-        await on_progress("model_resolved")
-    # 解析默认模型开启新的读事务；等待网络前必须结束它（见 ADR 0002）。
-    await session.rollback()
-    logger.info("开始生成导入候选", extra={"event": "profile_import_preview", "stage": "ai_request_started"})
-    if on_progress is not None:
-        await on_progress("ai_request_started")
-    input_data = {
-        "resume_text": document.text,
-        "rules": (
-            "只提取原文明确出现的信息。每项提供原文中连续出现的 source_quote；"
-            "缺失字段留空，禁止推断经历、项目、学历、技能和日期。"
-            "工作经历没有明确开始年份时不要输出；仅有年份或年月时，日期中的缺失月份/日以 1 补位。"
-            "职责与成果（responsibilities/achievements）只属于工作经历与项目经历两个分组，"
-            "且仅在摘录能逐字覆盖时填写，否则留空。"
-            "项目经历仅在原文明确出现项目名称时输出，可填 name、role、description、"
-            "responsibilities、achievements、tech_stack、url 与起止日期；"
-            "日期缺失就留空，不要用工作经历的日期代替。"
-        ),
-    }
-    for attempt in range(1, MAX_PREVIEW_AI_ATTEMPTS + 1):
+        if on_progress is not None:
+            await on_progress("ai_request_started")
+        result = mock_extract_profile()
+        logger.info(
+            "夹具候选已就绪",
+            extra={
+                "event": "profile_import_model_output_shape",
+                "stage": "ai_response_parsed",
+                "model_output_shape": _model_output_shape(result),
+            },
+        )
+        if on_progress is not None:
+            await on_progress("ai_response_parsed")
+    else:
         try:
-            result = await gateway.generate(
-                config,
-                "extract_profile_from_resume",
-                input_data,
-                ImportCandidate.model_json_schema(),
-            )
-            break
-        except gateway.TransientAiGatewayError:
-            if attempt == MAX_PREVIEW_AI_ATTEMPTS:
-                logger.warning(
-                    "候选生成短暂失败且重试耗尽",
-                    extra={
-                        "event": "profile_import_preview",
-                        "stage": "ai_request_retry_exhausted",
-                        "attempt": attempt,
-                    },
-                )
-                raise
+            config = await ai_service.resolve_default_model(session, get_settings())
+        except ConflictError:
             logger.warning(
-                "候选生成发生短暂失败，将重试一次",
-                extra={"event": "profile_import_preview", "stage": "ai_request_retrying", "attempt": attempt},
+                "默认模型解析失败", extra={"event": "profile_import_preview", "stage": "model_resolution_failed"}
             )
-            if on_progress is not None:
-                await on_progress("ai_request_retrying")
-            await asyncio.sleep(PREVIEW_RETRY_DELAY_SECONDS)
-        except ValidationFailedError:
-            logger.warning("候选生成失败", extra={"event": "profile_import_preview", "stage": "ai_request_failed"})
             raise
-    else:  # pragma: no cover - range 与 break 的完备性保护。
-        raise AssertionError("预览调用未产生结果")
-    logger.info(
-        "候选生成完成",
-        extra={
-            "event": "profile_import_model_output_shape",
-            "stage": "ai_response_parsed",
-            "model_output_shape": _model_output_shape(result),
-        },
-    )
-    if on_progress is not None:
-        await on_progress("ai_response_parsed")
+        logger.info("默认模型已解析", extra={"event": "profile_import_preview", "stage": "model_resolved"})
+        if on_progress is not None:
+            await on_progress("model_resolved")
+        # 解析默认模型开启新的读事务；等待网络前必须结束它（见 ADR 0002）。
+        await session.rollback()
+        logger.info("开始生成导入候选", extra={"event": "profile_import_preview", "stage": "ai_request_started"})
+        if on_progress is not None:
+            await on_progress("ai_request_started")
+        input_data = {
+            "resume_text": document.text,
+            "rules": (
+                "只提取原文明确出现的信息。每项提供原文中连续出现的 source_quote；"
+                "缺失字段留空，禁止推断经历、项目、学历、技能和日期。"
+                "工作经历没有明确开始年份时不要输出；仅有年份或年月时，日期中的缺失月份/日以 1 补位。"
+                "职责与成果（responsibilities/achievements）只属于工作经历与项目经历两个分组，"
+                "且仅在摘录能逐字覆盖时填写，否则留空。"
+                "项目经历仅在原文明确出现项目名称时输出，可填 name、role、description、"
+                "responsibilities、achievements、tech_stack、url 与起止日期；"
+                "日期缺失就留空，不要用工作经历的日期代替。"
+                "个人简介（summary）只复制原文中的自我描述段落，逐字照抄，不要润色或补写。"
+                "公开链接（links）只输出原文中实际出现的地址，每项给出 label（原文里对该地址的称呼）"
+                "与 url；地址可以不带协议前缀，但不要补全、猜测或改写域名。"
+            ),
+        }
+        for attempt in range(1, MAX_PREVIEW_AI_ATTEMPTS + 1):
+            try:
+                result = await gateway.generate(
+                    config,
+                    "extract_profile_from_resume",
+                    input_data,
+                    _model_candidate_schema(),
+                )
+                break
+            except gateway.TransientAiGatewayError:
+                if attempt == MAX_PREVIEW_AI_ATTEMPTS:
+                    logger.warning(
+                        "候选生成短暂失败且重试耗尽",
+                        extra={
+                            "event": "profile_import_preview",
+                            "stage": "ai_request_retry_exhausted",
+                            "attempt": attempt,
+                        },
+                    )
+                    raise
+                logger.warning(
+                    "候选生成发生短暂失败，将重试一次",
+                    extra={"event": "profile_import_preview", "stage": "ai_request_retrying", "attempt": attempt},
+                )
+                if on_progress is not None:
+                    await on_progress("ai_request_retrying")
+                await asyncio.sleep(PREVIEW_RETRY_DELAY_SECONDS)
+            except ValidationFailedError:
+                logger.warning("候选生成失败", extra={"event": "profile_import_preview", "stage": "ai_request_failed"})
+                raise
+        else:  # pragma: no cover - range 与 break 的完备性保护。
+            raise AssertionError("预览调用未产生结果")
+        logger.info(
+            "候选生成完成",
+            extra={
+                "event": "profile_import_model_output_shape",
+                "stage": "ai_response_parsed",
+                "model_output_shape": _model_output_shape(result),
+            },
+        )
+        if on_progress is not None:
+            await on_progress("ai_response_parsed")
     try:
         candidate, completeness, rejected_items, warnings = _parse_preview_candidate(result, document.text)
     except ValidationFailedError:
@@ -862,6 +1216,7 @@ async def preview(
         completeness=completeness,
         rejected_items=rejected_items,
         warnings=warnings,
+        fixture=_mock_extraction_enabled(),
     )
 
 
@@ -874,17 +1229,17 @@ def _selected[T](items: list[T], indices: list[int]) -> list[T]:
     return [items[index] for index in indices]
 
 
-def _edited_item_summary(item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation) -> str:
-    """把被用户修订的条目概括成一行，作为"本人陈述"证据的内容。
+def _manual_item_summary(item: SourcedSkill | SourcedExperience | SourcedProject | SourcedEducation) -> str:
+    """把本人填写的条目概括成一行，作为「本人陈述」证据的内容。
 
     参数:
-        item: 被修订的候选条目；类型本身决定摘要形态，无需再传分组名。
+        item: 本人新增或修订过的候选条目；类型本身决定摘要形态，无需再传分组名。
 
     返回:
         str: 一行说明；只包含用户确认过的字段值，不复制简历原文。
 
     注意:
-        证据内容需要能让人看懂"这条事实的来源是用户自己改的"，因此按类型给出可读摘要，
+        证据内容需要能让人看懂"这条事实的来源是用户自己填的"，因此按类型给出可读摘要，
         而不是把整个对象序列化进去。
     """
     if isinstance(item, SourcedSkill):
@@ -933,14 +1288,20 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
     注意:
         修正过的条目（字段值超出原文摘录）改挂"本人陈述"证据，而不是简历证据：
         把改写过的内容挂在简历摘录下会伪造来源，破坏"结论可追溯到证据"。
+        已有档案时只追加四类事实，`summary`/`links` 这类根信息不覆盖（前端会禁用这两个字段，
+        避免用户填了却被静默丢弃）。
     """
     if not payload.confirmed:
         raise ValidationFailedError("请核对候选内容并确认后再写入。")
     document = await asyncio.to_thread(parse_document, payload)
+    if _mock_extraction_enabled():
+        # mock 模式下预览返回的是样例文本与样例哈希，确认时必须用同一份语料核对，
+        # 否则一批固定摘录会被拿去和用户文件比对而全部失败（见 import_fixture 模块）。
+        document = replace(document, text=FIXTURE_TEXT, source_hash=FIXTURE_SOURCE_HASH)
     if document.source_hash != payload.source_hash:
         raise ConflictError("文件已变化，请重新生成候选。")
-    edited = _check_candidate(payload.candidate, document.text, allow_edits=True)
-    # 选择项与原始下标配对：写入时要靠下标判断该条目是否被修订，从而决定挂哪条证据。
+    manual = _check_candidate(payload.candidate, document.text)
+    # 选择项与原始下标配对：写入时要靠下标判断该条目挂哪条证据（简历摘录还是本人填写）。
     skill_items = list(
         zip(payload.skill_indices, _selected(payload.candidate.skills, payload.skill_indices), strict=True)
     )
@@ -963,16 +1324,23 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
         ("project", project_items),
         ("education", education_items),
     ]
+    # 同一次提交里重复的条目属于输入错误，先按字段指出，而不是写进去两条一样的记录。
+    for group, items in selection:
+        duplicates = _ensure_no_duplicate_items(group, items)
+        if duplicates:
+            raise ValidationFailedError("确认内容中存在重复条目，请先删除重复项。", details=duplicates)
     profile = await repo.get_profile(session)
     created_profile = profile is None
     if profile is None:
+        # 建档时把候选的整份基本信息写进档案：字段与"创建个人档案"表单一一对应。
         profile = PersonalProfile(
             full_name=payload.candidate.full_name,
             headline=payload.candidate.headline,
+            summary=payload.candidate.summary,
             email=payload.candidate.email,
             phone=payload.candidate.phone,
             city=payload.candidate.city,
-            links=[],
+            links=[link.model_dump() for link in payload.candidate.links],
         )
         session.add(profile)
         await session.flush()
@@ -980,12 +1348,12 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
         raise ValidationFailedError("现有档案没有选中可新增的条目。")
 
     resume_quotes = [payload.candidate.name_quote]
-    edited_summaries: list[str] = []
+    manual_summaries: list[str] = []
     for group, items in selection:
         for index, item in items:
-            if (group, index) in edited:
-                edited_summaries.append(_edited_item_summary(item))
-            else:
+            if (group, index) in manual:
+                manual_summaries.append(_manual_item_summary(item))
+            elif item.source_quote:
                 resume_quotes.append(item.source_quote)
 
     evidence = ProfileEvidence(
@@ -998,25 +1366,25 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
     )
     session.add(evidence)
     await session.flush()
-    edited_evidence: ProfileEvidence | None = None
-    if edited_summaries:
-        # 只有确实存在被修订的条目时才建这条证据；它的来源是用户本人，因此不写入文件哈希。
-        edited_evidence = ProfileEvidence(
+    manual_evidence: ProfileEvidence | None = None
+    if manual_summaries:
+        # 只有确实存在本人填写的条目时才建这条证据；它的来源是用户本人，因此不写入文件哈希。
+        manual_evidence = ProfileEvidence(
             profile_id=profile.id,
             source_type=EvidenceSourceType.MANUAL_DECLARATION,
-            title=f"导入修订：{document.filename}"[:200],
-            content="用户在导入确认时修订的条目（来源为本人陈述，不是简历原文）：\n"
-            + "\n".join(dict.fromkeys(edited_summaries)),
+            title=f"导入本人填写：{document.filename}"[:200],
+            content="用户在导入确认时新增或修订的条目（来源为本人陈述，不是简历原文）：\n"
+            + "\n".join(dict.fromkeys(manual_summaries)),
             source_hash=None,
             verification_status=VerificationStatus.UNVERIFIED,
         )
-        session.add(edited_evidence)
+        session.add(manual_evidence)
         await session.flush()
 
     def source_evidence(group: str, index: int) -> uuid.UUID:
-        """按条目是否被修订选择证据：修订条目挂本人陈述，其余挂简历摘录。"""
-        if edited_evidence is not None and (group, index) in edited:
-            return edited_evidence.id
+        """按条目来源选择证据：本人填写的挂本人陈述，其余挂简历摘录。"""
+        if manual_evidence is not None and (group, index) in manual:
+            return manual_evidence.id
         return evidence.id
 
     existing_skills: set[str] = (
@@ -1036,6 +1404,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
         else set()
     )
     counts = {"skills": 0, "experiences": 0, "projects": 0, "educations": 0}
+    # 实际写入的条目里有多少条按「本人填写」记录来源；用于确认结果里如实说明归因（不改变可信度）。
+    manual_written = 0
     for index, item in skill_items:
         key = normalize_skill_name(item.name)
         if key in existing_skills:
@@ -1051,6 +1421,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 sort_order=counts["skills"],
             )
         )
+        if ("skill", index) in manual:
+            manual_written += 1
         counts["skills"] += 1
     for index, item in experience_items:
         key = (item.company.casefold(), item.title.casefold(), item.start_date)
@@ -1071,6 +1443,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 sort_order=counts["experiences"],
             )
         )
+        if ("experience", index) in manual:
+            manual_written += 1
         counts["experiences"] += 1
     for index, item in project_items:
         key = item.name.casefold()
@@ -1091,6 +1465,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 sort_order=counts["projects"],
             )
         )
+        if ("project", index) in manual:
+            manual_written += 1
         counts["projects"] += 1
     for index, item in education_items:
         key = (item.school.casefold(), (item.major or "").casefold())
@@ -1109,6 +1485,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 sort_order=counts["educations"],
             )
         )
+        if ("education", index) in manual:
+            manual_written += 1
         counts["educations"] += 1
     if not created_profile and not any(counts.values()):
         raise ValidationFailedError("所选条目已全部存在于档案中，没有新增内容。")
@@ -1121,4 +1499,5 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
         experiences_added=counts["experiences"],
         projects_added=counts["projects"],
         educations_added=counts["educations"],
+        manual_item_count=manual_written,
     )
