@@ -10,6 +10,7 @@
  */
 
 import type { FieldDescriptor } from '../types'
+import DegreeField from './DegreeField.vue'
 
 const props = defineProps<{
   field: FieldDescriptor
@@ -68,6 +69,12 @@ function tags(): string[] {
     class="full-width"
     allow-clear
     @update:value="(value: unknown) => emit('update', value)"
+  />
+  <DegreeField
+    v-else-if="field.kind === 'degree'"
+    :value="text()"
+    :maxlength="field.maxLength"
+    @update-value="(value: string) => emit('update', value)"
   />
   <a-select
     v-else-if="field.kind === 'select' || field.kind === 'evidence'"

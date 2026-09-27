@@ -190,20 +190,17 @@ beforeEach(() => {
 enableAutoUnmount(afterEach)
 
 describe('ProfileView', () => {
-  it('档案尚未创建时先选择创建方式，而不是显示加载失败或堆叠两个表单', async () => {
+  it('未建档时直接显示空的手动表单，导入入口在标题右侧', async () => {
     vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
 
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.text()).toContain('尚未创建个人档案')
-    expect(wrapper.find('[data-testid="start-manual-create"]').exists()).toBe(true)
+    expect(wrapper.text()).toContain('档案与联系方式')
+    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(true)
     expect(wrapper.find('[data-testid="start-resume-import"]').exists()).toBe(true)
     expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
-    // 入口常驻；未选路径时两个表单都已挂载但不可见（既不堆叠，也保留各自状态）。
-    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
-    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
     // 依赖档案存在与否的面板在任何情况下都不出现。
     expect(wrapper.find('[data-testid="panel-skills"]').exists()).toBe(false)
   })
@@ -223,55 +220,41 @@ describe('ProfileView', () => {
     expect(modal.find('input[type="file"]').exists()).toBe(true)
     expect(modal.text()).toContain('大模型服务')
     expect(modal.text()).toContain('不会自动写入个人档案')
-    // 关键断言：仍在当前页——入口卡片没有消失，导入内容就地展开。
-    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
-    // 入口不重复：页面已提供同名按钮，展开区里不能再出现第二个。
+    // 手动表单不因文件弹窗而卸载；标题右侧是唯一入口。
+    expect(wrapper.find('[data-testid="panel-basics"]').exists()).toBe(true)
     expect(wrapper.findAll('[data-testid="open-import-modal"]')).toHaveLength(0)
-    expect(wrapper.text()).toContain('还没有待核对候选')
   })
 
-  it('手动创建与导入在同一页内互斥切换，入口始终可见', async () => {
+  it('点击标题右侧导入按钮不切走手动表单', async () => {
     vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('[data-testid="start-manual-create"]').trigger('click')
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
     expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(true)
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
-
-    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
-    await flushPromises()
-    // 同页切换动态区：入口卡片仍在，两个表单互斥。
-    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
-    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(true)
   })
 
-  it('无档案时导入与手动创建互斥展示；返回手动创建不落库且保留候选', async () => {
+  it('上传继续后在弹窗内显示填充表单，取消不落库且可恢复草稿', async () => {
     vi.mocked(fetchProfile).mockRejectedValueOnce(profileNotFound())
     const wrapper = mountView()
     await flushPromises()
 
     await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     await flushPromises()
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(true)
-    // 互斥：选择导入时手动创建表单不显示，避免两个表单同时堆叠。
-    expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(false)
-
     await generateImportPreview(wrapper)
     expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(false)
 
-    await wrapper.find('[data-testid="import-back-to-manual"]').trigger('click')
+    await wrapper.find('[data-testid="cancel-review"]').trigger('click')
     await flushPromises()
 
     expect(wrapper.find('[data-testid="panel-basics"]').isVisible()).toBe(true)
-    expect(wrapper.find('[data-testid="profile-import-panel"]').isVisible()).toBe(false)
-    // 返回手动创建只是切换动态区：仍在同一页、不落库，且候选仍留在内存里（组件未卸载）。
-    expect(wrapper.find('[data-testid="profile-start-choices"]').isVisible()).toBe(true)
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
     expect(createProfile).not.toHaveBeenCalled()
+    expect(confirmProfileImport).not.toHaveBeenCalled()
+    await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
   })
 
@@ -282,15 +265,14 @@ describe('ProfileView', () => {
 
     await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     await generateImportPreview(wrapper)
-    // 写入前必须经过二次确认弹窗：按钮只表达意图，弹窗里那一下才写入。
+    // 核对弹窗里的确认是唯一写入动作。
     await wrapper.find('[data-testid="confirm-import"]').trigger('click')
-    await wrapper.find('[data-testid="confirm-import-dialog-ok"]').trigger('click')
     await flushPromises()
 
     expect(confirmProfileImport).toHaveBeenCalledOnce()
     // 关键断言：确认后必须重新拉取聚合，界面才可能显示正式档案。
     expect(fetchProfile).toHaveBeenCalledTimes(2)
-    expect(wrapper.find('[data-testid="profile-start-choices"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
     expect((wrapper.find('[data-testid="panel-basics"] input').element as HTMLInputElement).value).toBe('张伟')
   })
 
@@ -300,7 +282,7 @@ describe('ProfileView', () => {
     const wrapper = mountView()
     await flushPromises()
 
-    // 无档案时两条路径都挂在 DOM 上（导入路径由 v-show 隐藏），因此可以同时取到两侧字段。
+    // 手动表单一直在页面，导入候选在弹窗中；两侧复用同一字段实现。
     await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     await generateImportPreview(wrapper)
 
@@ -371,20 +353,11 @@ describe('ProfileView', () => {
     expect(wrapper.find('[data-testid="profile-import-panel"]').exists()).toBe(true)
     // 创建/编辑档案表单与候选核对页共用同一套字段网格（桌面端每行最多两个普通字段）。
     expect(wrapper.find('[data-testid="panel-basics"] .profile-field-grid').exists()).toBe(true)
-    // 已有档案时页面上没有别的导入入口，因此由面板自己提供按钮。
-    expect(wrapper.find('[data-testid="open-import-modal"]').exists()).toBe(true)
-    for (const key of [
-      'basics',
-      'evidences',
-      'skills',
-      'experiences',
-      'projects',
-      'educations',
-      'languages',
-      'revisions',
-    ]) {
-      expect(wrapper.find(`[data-testid="panel-${key}"]`).exists()).toBe(true)
+    expect(wrapper.find('[data-testid="start-resume-import"]').exists()).toBe(true)
+    for (const key of ['skills', 'experiences', 'projects', 'educations']) {
+      expect(wrapper.find(`[data-testid="form-section-${key}"]`).exists()).toBe(true)
     }
+    expect(wrapper.text()).toContain('其他资料与历史记录')
     expect(wrapper.find('[data-testid="panel-preference"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('求职策略')
     expect(wrapper.text()).not.toContain('求职偏好')

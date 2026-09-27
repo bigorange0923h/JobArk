@@ -18,6 +18,7 @@
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { notification } from 'ant-design-vue'
 
 import type { EditableResource } from '@/shared/api/types'
 import { ApiError } from '@/shared/api/client'
@@ -63,12 +64,13 @@ const descriptor: FactDescriptor<EditableResource, unknown> = {
 }
 
 /** 挂载面板，并把 `changed`/`conflict` 事件接到可断言的监听器上。 */
-function mountPanel(items: readonly EditableResource[] = []) {
+function mountPanel(items: readonly EditableResource[] = [], attach = false) {
   const onChanged = vi.fn()
   const onConflict = vi.fn()
   const wrapper: VueWrapper = mount(FactPanel, {
     props: { descriptor, items },
     attrs: { onChanged, onConflict },
+    ...(attach ? { attachTo: document.body } : {}),
   })
   return { wrapper, onChanged, onConflict }
 }
@@ -99,14 +101,21 @@ enableAutoUnmount(afterEach)
 
 describe('FactPanel', () => {
   it('必填项为空时拦下提交，不发起请求，并指出缺失字段', async () => {
-    const { wrapper } = mountPanel()
+    const warning = vi.spyOn(notification, 'warning').mockImplementation(() => undefined)
+    try {
+      const { wrapper } = mountPanel([], true)
 
-    await clickButton(wrapper, '新增')
-    await clickButton(wrapper, '保存')
-    await flushPromises()
+      await clickButton(wrapper, '新增')
+      await clickButton(wrapper, '保存')
+      await flushPromises()
 
-    expect(create).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('该项为必填。')
+      expect(create).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('该项为必填。')
+      expect(warning).toHaveBeenCalledWith(expect.objectContaining({ class: 'ja-form-notice ja-form-notice--warning' }))
+      expect(document.activeElement).toBe(wrapper.find('[data-testid="fact-field-name"] input').element)
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('把 422 的字段级原因显示在对应字段下，且不要求整页刷新', async () => {

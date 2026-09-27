@@ -280,7 +280,8 @@ export function educationDescriptor(evidences: Evidence[]): FactDescriptor<Educa
     fields: [
       { name: 'school', label: '学校', kind: 'text', required: true, maxLength: 200 },
       { name: 'major', label: '专业', kind: 'text', maxLength: 200 },
-      { name: 'degree', label: '学历/学位', kind: 'text', maxLength: 64, placeholder: '本科 / 硕士' },
+      // 学历用下拉选择；列表外的历史写法（学士、研究生）会落入手动输入并原样保留，不被改写。
+      { name: 'degree', label: '学历/学位', kind: 'degree', maxLength: 64 },
       { name: 'start_date', label: '开始日期', kind: 'date' },
       { name: 'end_date', label: '结束日期', kind: 'date' },
       {

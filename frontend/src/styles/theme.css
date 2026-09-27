@@ -92,3 +92,16 @@ body { background: var(--ja-color-canvas); color: var(--ja-color-text); }
 @media (max-width: 640px) {
   .profile-field-grid { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* 表单通知沿用 Alert 的浅底色、边框与语义四色；仍由通知组件负责浮层与关闭行为。 */
+.ant-notification-notice.ja-form-notice {
+  border: 1px solid transparent;
+  border-radius: var(--ja-radius);
+  box-shadow: 0 4px 16px rgb(29 33 41 / 8%);
+}
+.ant-notification-notice.ja-form-notice--success { background: #f6ffed; border-color: #b7eb8f; }
+.ant-notification-notice.ja-form-notice--info { background: #e6f4ff; border-color: #91caff; }
+.ant-notification-notice.ja-form-notice--warning { background: #fffbe6; border-color: #ffe58f; }
+.ant-notification-notice.ja-form-notice--error { background: #fff2f0; border-color: #ffccc7; }
+.ja-form-notice .ant-notification-notice-message,
+.ja-form-notice .ant-notification-notice-description { color: var(--ja-color-text); }

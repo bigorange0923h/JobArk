@@ -20,7 +20,7 @@
  * 触发保存），只填一半则先不保存，等这一行填完再说。
  */
 
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import { ApiError } from '@/shared/api/client'
 import {
@@ -32,6 +32,7 @@ import {
   type ProfileLink,
 } from '@/shared/api/profile'
 import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
+import { focusFormTarget, notifyFormIssue } from '@/shared/feedback/formNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import { BASIC_FIELDS, type BasicFieldName } from '../basicsFields'
@@ -73,7 +74,19 @@ let initialised = false
 
 const isCreate = computed(() => props.profile === null)
 
-const title = computed(() => (isCreate.value ? '创建个人档案' : '档案与联系方式'))
+function basicTarget(name: string): HTMLElement | null {
+  if (!BASIC_FIELDS.some((field) => field.name === name)) return null
+  return document.querySelector<HTMLElement>(`[data-testid="panel-basics"] [data-testid="basics-${name}"]`)
+}
+
+/** 表单旁保留原有错误文案；首次校验失败时自动定位，通知只负责提醒。 */
+async function showBasicIssue(title: string, detail: string, target: () => HTMLElement | null): Promise<void> {
+  await nextTick()
+  focusFormTarget(target())
+  notifyFormIssue({ kind: 'warning', title, detail, key: 'profile-basics-warning' })
+}
+
+const title = '档案与联系方式'
 
 const description = computed(() =>
   isCreate.value
@@ -186,6 +199,11 @@ async function saveIfDirty(): Promise<void> {
   // 只填一半的链接意图不明：先不保存，等这一行填完整（草稿留在输入框里，不会丢）。
   if (incompleteLinks(links.value).length > 0) {
     linksError.value = '每条链接都需要同时填写名称与地址；留空的整行会被忽略。'
+    const index = links.value.findIndex((link) =>
+      (link.label.trim() !== '' || link.url.trim() !== '') && (link.label.trim() === '' || link.url.trim() === ''),
+    )
+    const name = links.value[index]?.label.trim() === '' ? 'label' : 'url'
+    await showBasicIssue('请补全公开链接', linksError.value, () => document.querySelector<HTMLElement>(`[data-testid="panel-basics"] [data-testid="link-${name}-${index}"]`))
     return
   }
 
@@ -193,6 +211,7 @@ async function saveIfDirty(): Promise<void> {
   if (fullName === '') {
     // 姓名是必填锚点：既不能据此创建档案，也不能把已有档案改成没有姓名。
     fieldErrors.value = { full_name: '该项为必填。' }
+    await showBasicIssue('请填写姓名', '姓名是创建和保存个人档案的必填项。', () => basicTarget('full_name'))
     return
   }
 
@@ -245,6 +264,8 @@ function handleError(error: unknown): void {
   panelError.value = global ? null : parsed
   if (global) {
     notifyFailure(parsed, '保存基本资料')
+  } else {
+    notifyFormIssue({ kind: 'error', title: '保存基本资料失败', detail: parsed.message, key: 'profile-basics-error' })
   }
   if (parsed.code === 'CONFLICT' && parsed.fields['version'] !== undefined) {
     emit('conflict', parsed.message)
@@ -263,23 +284,17 @@ function emptyToNull(value: string): string | null {
 <template>
   <a-card :bordered="false" class="basics-panel" data-testid="panel-basics">
     <template #title>{{ title }}</template>
+    <template #extra><slot name="header-extra" /></template>
     <p class="panel-description">{{ description }}</p>
 
-    <a-alert
-      v-if="panelError"
-      type="error"
-      show-icon
-      class="panel-alert"
-      :message="panelError.message"
-      :description="alertDescription"
-      data-testid="error-basics"
-    />
+    <p v-if="panelError" class="form-error-summary" role="alert" data-testid="error-basics">{{ panelError.message }} {{ alertDescription }}</p>
 
     <!-- 基本信息字段与布局来自共享组件：与导入候选核对页是同一套定义、同一套网格。 -->
     <ProfileBasicsSection
       :fields="BASIC_FIELDS"
       :record="values"
       :errors="fieldErrors"
+      testid-prefix="basics"
       @update-field="setValue"
       @field-blur="saveIfDirty"
     >
@@ -291,6 +306,7 @@ function emptyToNull(value: string): string | null {
         @field-blur="saveIfDirty"
       />
     </ProfileBasicsSection>
+    <slot />
 
     <!--
       保存状态：不再有保存按钮，因此"到底存没存"必须由这一行回答。
@@ -303,6 +319,7 @@ function emptyToNull(value: string): string | null {
 </template>
 
 <style scoped>
+.form-error-summary { color: var(--ja-color-danger); font-size: 13px; line-height: 1.6; }
 .basics-panel {
   margin-bottom: 1rem;
 }
@@ -310,10 +327,6 @@ function emptyToNull(value: string): string | null {
 .panel-description {
   color: #6b7280;
   margin-bottom: 0.75rem;
-}
-
-.panel-alert {
-  margin-bottom: 1rem;
 }
 
 /* 保存状态：与卡片描述同级的小字，始终可见。 */

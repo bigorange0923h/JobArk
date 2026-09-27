@@ -88,6 +88,7 @@ export function notifyFailure(error: ParsedServerError, action: string): void {
     key,
     message: `${action}失败`,
     description,
+    class: 'ja-form-notice ja-form-notice--error',
     placement: 'topRight',
     duration: FAILURE_NOTICE_DURATION_SECONDS,
   })

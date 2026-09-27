@@ -12,7 +12,7 @@
 import type { FactApi } from '@/shared/api/profile'
 
 /** 表单字段的控件类型。 */
-export type FieldKind = 'text' | 'textarea' | 'number' | 'date' | 'select' | 'tags' | 'evidence'
+export type FieldKind = 'text' | 'textarea' | 'number' | 'date' | 'select' | 'degree' | 'tags' | 'evidence'
 
 /** 选项。 */
 export interface FieldOption {

@@ -9,6 +9,7 @@
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { notification } from 'ant-design-vue'
 
 import { ApiError } from '@/shared/api/client'
 import { createProfile, saveProfileBasics, type Profile } from '@/shared/api/profile'
@@ -48,12 +49,13 @@ function profileFixture(overrides: Partial<Profile> = {}): Profile {
 }
 
 /** 挂载面板；`profile=null` 表示"档案尚未创建"，此时保存动作是 `POST /profile`。 */
-function mountPanel(profile: Profile | null) {
+function mountPanel(profile: Profile | null, attach = false) {
   const onChanged = vi.fn()
   const onConflict = vi.fn()
   const wrapper: VueWrapper = mount(ProfileBasicsPanel, {
     props: { profile },
     attrs: { onChanged, onConflict },
+    ...(attach ? { attachTo: document.body } : {}),
   })
   return { wrapper, onChanged, onConflict }
 }
@@ -133,15 +135,22 @@ describe('ProfileBasicsPanel 自动保存', () => {
   })
 
   it('姓名为空时先不保存，就地指出必填并保持未保存状态', async () => {
-    const { wrapper } = mountPanel(profileFixture())
+    const warning = vi.spyOn(notification, 'warning').mockImplementation(() => undefined)
+    try {
+      const { wrapper } = mountPanel(profileFixture(), true)
 
-    await fullName(wrapper).setValue('')
-    await fullName(wrapper).trigger('blur')
-    await flushPromises()
+      await fullName(wrapper).setValue('')
+      await fullName(wrapper).trigger('blur')
+      await flushPromises()
 
-    expect(saveProfileBasics).not.toHaveBeenCalled()
-    expect(wrapper.text()).toContain('该项为必填。')
-    expect(saveState(wrapper)).toBe('dirty')
+      expect(saveProfileBasics).not.toHaveBeenCalled()
+      expect(wrapper.text()).toContain('该项为必填。')
+      expect(saveState(wrapper)).toBe('dirty')
+      expect(warning).toHaveBeenCalledWith(expect.objectContaining({ class: 'ja-form-notice ja-form-notice--warning' }))
+      expect(document.activeElement).toBe(fullName(wrapper).element)
+    } finally {
+      warning.mockRestore()
+    }
   })
 
   it('链接只填一半先不保存，补齐后再离开输入框才写入', async () => {

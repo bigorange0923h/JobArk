@@ -11,22 +11,19 @@
  * （例如"标为已验证必须挂证据"）在合并后仍然自洽。数据量是单人级别，多一次往返不值得为此冒险。
  */
 
-import { computed, nextTick, onMounted, ref } from 'vue'
+import { computed, onMounted, ref } from 'vue'
 
 import { fetchProfile, type Profile } from '@/shared/api/profile'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import FactPanel from './components/FactPanel.vue'
 import ProfileBasicsPanel from './components/ProfileBasicsPanel.vue'
+import ProfileManualFacts from './components/ProfileManualFacts.vue'
 import ProfileImportPanel from './components/ProfileImportPanel.vue'
 import RevisionPanel from './components/RevisionPanel.vue'
 import {
-  educationDescriptor,
   evidenceDescriptor,
-  experienceDescriptor,
   languageDescriptor,
-  projectDescriptor,
-  skillDescriptor,
 } from './descriptors'
 
 const profile = ref<Profile | null>(null)
@@ -35,26 +32,11 @@ const loadError = ref<ParsedServerError | null>(null)
 const conflictMessage = ref<string | null>(null)
 const loading = ref(false)
 
-/**
- * 尚未创建档案时的路径选择。
- *
- * 先选路径、再只显示对应表单：导入候选与手动创建表单同时堆叠会让用户不知道该填哪一个。
- * 两条路径都保持挂载（模板里用 `v-show`），这样"从导入返回手动创建"不会清空已选文件与内存候选。
- */
-type StartMode = 'choose' | 'manual' | 'import'
-const startMode = ref<StartMode>('choose')
-/** 导入面板实例；用于在用户"选择从已有简历导入"后直接打开文件选择弹窗。 */
+/** 导入弹窗实例；入口位于核心表单的标题右侧。 */
 const importPanel = ref<InstanceType<typeof ProfileImportPanel> | null>(null)
 
-/**
- * 进入导入路径并立即弹出文件选择弹窗。
- *
- * 先切状态再 `await nextTick()`：面板由 `v-show` 控制、切换后才挂载出实例，
- * 等一个 tick 再调用它的 `open()`，避免拿到 null 而表现为"点了没反应"。
- */
-async function startImport(): Promise<void> {
-  startMode.value = 'import'
-  await nextTick()
+/** 打开文件选择或尚未保存的候选核对弹窗，不改变手动表单。 */
+function startImport(): void {
   importPanel.value?.open()
 }
 
@@ -62,10 +44,6 @@ async function startImport(): Promise<void> {
 const evidences = computed(() => profile.value?.evidences ?? [])
 
 const evidencesDescriptor = computed(() => evidenceDescriptor())
-const skillsDescriptor = computed(() => skillDescriptor(evidences.value))
-const experiencesDescriptor = computed(() => experienceDescriptor(evidences.value))
-const projectsDescriptor = computed(() => projectDescriptor(evidences.value))
-const educationsDescriptor = computed(() => educationDescriptor(evidences.value))
 const languagesDescriptor = computed(() => languageDescriptor(evidences.value))
 
 const loadErrorDescription = computed(() => {
@@ -151,81 +129,40 @@ onMounted(() => {
       data-testid="load-error"
     />
 
-    <template v-if="notCreated">
-      <!--
-        入口常驻、动态区在它下方展开：不整块替换视图，用户不会感觉"进到了另一个页面"。
-        两个入口按钮互斥高亮，动态区只显示当前选择的那条路径，避免两个表单同时堆叠。
-      -->
-      <a-card data-testid="profile-start-choices">
-        <template #title>尚未创建个人档案</template>
-        <p class="card-hint">
-          可以先从已有简历导入候选，也可以直接手动填写。导入不会自动写入档案：候选需你逐项核对并确认后才落库。
-          创建后即可单独维护工作经历和教育经历。
-        </p>
-        <a-space wrap class="start-actions">
-          <a-button
-            :type="startMode === 'manual' ? 'primary' : 'default'"
-            data-testid="start-manual-create"
-            @click="startMode = 'manual'"
-          >
-            手动创建个人档案
-          </a-button>
-          <a-button
-            :type="startMode === 'import' ? 'primary' : 'default'"
-            data-testid="start-resume-import"
-            @click="startImport"
-          >
-            从已有简历导入
-          </a-button>
-        </a-space>
-      </a-card>
+    <ProfileBasicsPanel
+      v-if="notCreated || profile !== null"
+      :profile="profile"
+      @changed="reload"
+      @conflict="onConflict"
+    >
+      <template #header-extra>
+        <a-button data-testid="start-resume-import" @click="startImport">从已有简历导入</a-button>
+      </template>
+      <ProfileManualFacts :profile="profile" @changed="reload" @conflict="onConflict" />
+    </ProfileBasicsPanel>
 
-      <!--
-        `v-show` 而不是 `v-if`：切换路径时不卸载组件，已选文件与内存候选不会丢
-        （见 docs/requirements/v1.md 2.1）；互斥显示避免两个表单同时堆叠。
-      -->
-      <ProfileBasicsPanel
-        v-show="startMode === 'manual'"
-        :profile="null"
-        @changed="reload"
-        @conflict="onConflict"
-      />
-      <ProfileImportPanel
-        ref="importPanel"
-        v-show="startMode === 'import'"
-        :has-profile="false"
-        :show-entry="false"
-        @changed="reload"
-        @back="startMode = 'manual'"
-      />
-    </template>
+    <ProfileImportPanel
+      v-if="notCreated || profile !== null"
+      ref="importPanel"
+      :has-profile="profile !== null"
+      :show-entry="false"
+      @changed="reload"
+    />
 
-    <template v-else-if="profile !== null">
-      <ProfileImportPanel :has-profile="true" @changed="reload" />
-      <ProfileBasicsPanel :profile="profile" @changed="reload" @conflict="onConflict" />
+    <template v-if="profile !== null">
+      <a-collapse class="advanced-profile">
+        <a-collapse-panel key="advanced" header="其他资料与历史记录">
       <FactPanel
         :descriptor="evidencesDescriptor"
         :items="profile.evidences"
         @changed="reload"
         @conflict="onConflict"
       />
-      <FactPanel :descriptor="skillsDescriptor" :items="profile.skills" @changed="reload" @conflict="onConflict" />
-      <FactPanel
-        :descriptor="experiencesDescriptor"
-        :items="profile.experiences"
-        @changed="reload"
-        @conflict="onConflict"
-      />
-      <FactPanel
-        :descriptor="educationsDescriptor"
-        :items="profile.educations"
-        @changed="reload"
-        @conflict="onConflict"
-      />
-      <FactPanel :descriptor="projectsDescriptor" :items="profile.projects" @changed="reload" @conflict="onConflict" />
       <FactPanel :descriptor="languagesDescriptor" :items="profile.languages" @changed="reload" @conflict="onConflict" />
 
       <RevisionPanel />
+        </a-collapse-panel>
+      </a-collapse>
     </template>
   </section>
 </template>
@@ -236,5 +173,4 @@ onMounted(() => {
   margin-bottom: 1rem;
 }
 
-.start-actions { margin-top: 12px; }
 </style>

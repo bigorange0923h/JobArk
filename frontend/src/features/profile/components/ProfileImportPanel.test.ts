@@ -7,6 +7,8 @@
  */
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
+import { nextTick } from 'vue'
+import { notification } from 'ant-design-vue'
 
 import { confirmProfileImport, previewProfileImportStream, type ProfileImportPreview } from '@/shared/api/profile'
 
@@ -31,6 +33,27 @@ const candidate: ProfileImportPreview = {
   rejected_items: [],
   warnings: [],
   fixture: false,
+}
+
+/** 带一条教育经历的预览：学历用抽取得到的"学士"（预设列表之外的写法）。 */
+function educationPreview(): ProfileImportPreview {
+  return {
+    ...candidate,
+    candidate: {
+      ...candidate.candidate,
+      educations: [
+        {
+          origin: 'RESUME',
+          source_quote: '乙大学 计算机科学 学士',
+          school: '乙大学',
+          major: '计算机科学',
+          degree: '学士',
+          start_date: null,
+          end_date: null,
+        },
+      ],
+    },
+  }
 }
 
 /** 带两条技能的预览：技能卡相关用例共用，避免每个用例各写一份候选。 */
@@ -83,14 +106,19 @@ async function previewFromModal(wrapper: VueWrapper, body?: string): Promise<voi
 }
 
 /**
- * 走完写入前的二次确认：点「确认」按钮，再在弹窗里确认一次。
- *
- * 两步刻意分开：按钮只表达"我要写入"的意图，真正写库的是弹窗里那一下。
+ * 上传后进入已填充表单弹窗；确认按钮直接写入。
  */
 async function confirmFromDialog(wrapper: VueWrapper): Promise<void> {
   await wrapper.find('[data-testid="confirm-import"]').trigger('click')
-  await wrapper.find('[data-testid="confirm-import-dialog-ok"]').trigger('click')
   await flushPromises()
+}
+
+/** 技能卡点击名称才进入输入态，导入模式的修改仍只是内存候选。 */
+async function editSkill(wrapper: VueWrapper, index: number, value: string): Promise<void> {
+  await wrapper.find(`[data-testid="fact-skills-${index}-name"]`).trigger('click')
+  const input = wrapper.find(`[data-testid="fact-skills-${index}-name-input"]`)
+  await input.setValue(value)
+  await input.trigger('blur')
 }
 
 it('初始只展示入口按钮，弹窗先告知外发范围；未同意不得调用预览接口', async () => {
@@ -127,68 +155,70 @@ it('初始只展示入口按钮，弹窗先告知外发范围；未同意不得�
   })
 
   expect(previewProfileImportStream).toHaveBeenCalledOnce()
-  // 预览成功后弹窗关闭，候选在面板里核对。
+  // 上传弹窗关闭，已填充表单在核对弹窗中展示。
   expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(false)
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
   expect(wrapper.text()).toContain('姓名原文：张三')
-  // 有候选即可点「确认」：它只打开二次确认弹窗，本身不写库。
+  // 有候选即可在核对弹窗确认；到此还未写库。
   expect(wrapper.find('[data-testid="confirm-import"]').attributes('disabled')).toBeUndefined()
   expect(confirmProfileImport).not.toHaveBeenCalled()
 })
 
-it('被页面按钮驱动时不重复提供入口按钮，只展示候选区', () => {
+it('被页面标题按钮驱动时不重复提供入口按钮，也不占据页面空间', () => {
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false, showEntry: false } })
 
   // 页面已有同名按钮：展开区里不能再出现第二个入口（否则用户会以为点错了地方）。
   expect(wrapper.find('[data-testid="open-import-modal"]').exists()).toBe(false)
   expect(wrapper.find('.import-entry').exists()).toBe(false)
-  // 还没有候选时给出下一步提示，而不是留一片空白。
-  expect(wrapper.text()).toContain('还没有待核对候选')
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
 })
 
-it('写入必须经过二次确认弹窗：按钮只打开弹窗，弹窗里确认才落库', async () => {
+it('上传后已填充表单在核对弹窗中，确认才落库并关闭弹窗', async () => {
   const onChanged = vi.fn()
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false }, attrs: { onChanged } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  expect(wrapper.find('[data-testid="confirm-import"]').text()).toContain('确认使用候选并创建个人档案')
-  expect(wrapper.find('[data-testid="import-back-to-manual"]').exists()).toBe(true)
-  // 常驻勾选框已移除：确认一律在弹窗里重新询问，不存在"勾过一次就一直有效"。
+  expect(wrapper.find('[data-testid="confirm-import"]').text()).toContain('确认保存导入内容')
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
   expect(wrapper.find('[data-testid="profile-import-reviewed"]').exists()).toBe(false)
-  expect(wrapper.find('[data-testid="confirm-import-dialog"]').exists()).toBe(false)
   expect(confirmProfileImport).not.toHaveBeenCalled()
-
+  expect(wrapper.find('[data-testid="profile-import-preview"]').text()).toContain('不代表已独立核实')
   await wrapper.find('[data-testid="confirm-import"]').trigger('click')
-  const dialog = wrapper.find('[data-testid="confirm-import-dialog"]')
-  expect(dialog.exists()).toBe(true)
-  // 弹窗保留需求规定的那句确认文案，且不写成"已证明全部验证"。
-  expect(dialog.text()).toContain('我已核对，这些内容可以加入个人档案并用于匹配和简历候选')
-  expect(dialog.text()).toContain('不代表已独立核实')
-  expect(dialog.find('input[type="checkbox"]').exists()).toBe(false)
-  // 弹窗只是询问：这一步还不能写。
-  expect(confirmProfileImport).not.toHaveBeenCalled()
-
-  await wrapper.find('[data-testid="confirm-import-dialog-ok"]').trigger('click')
   await flushPromises()
 
   expect(confirmProfileImport).toHaveBeenCalledOnce()
   expect(onChanged).toHaveBeenCalledTimes(1)
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
 })
 
-it('取消二次确认不写入，且下次仍会重新询问', async () => {
+it('取消核对弹窗不写入，重新打开仍保留草稿', async () => {
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  await wrapper.find('[data-testid="confirm-import"]').trigger('click')
-  await wrapper.find('[data-testid="confirm-import-dialog-cancel"]').trigger('click')
-  expect(wrapper.find('[data-testid="confirm-import-dialog"]').exists()).toBe(false)
+  await wrapper.find('[data-testid="candidate-basics-full_name"]').setValue('张三（改）')
+  await wrapper.find('[data-testid="cancel-review"]').trigger('click')
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
   expect(confirmProfileImport).not.toHaveBeenCalled()
 
-  // 取消后再改一条候选重新确认：仍然要重新询问一遍，取消了不等于"已确认"。
-  await wrapper.find('[data-testid="candidate-basics-full_name"]').setValue('张三（改）')
-  await wrapper.find('[data-testid="confirm-import"]').trigger('click')
-  expect(wrapper.find('[data-testid="confirm-import-dialog"]').exists()).toBe(true)
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+  expect((wrapper.find('[data-testid="candidate-basics-full_name"]').element as HTMLInputElement).value).toBe('张三（改）')
+  expect(confirmProfileImport).not.toHaveBeenCalled()
+})
+
+it('从核对弹窗返回换文件但取消选择时，旧候选仍可恢复', async () => {
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+  await previewFromModal(wrapper)
+  await wrapper.find('[data-testid="candidate-basics-full_name"]').setValue('张三（已核对）')
+
+  await wrapper.find('[data-testid="choose-another-resume"]').trigger('click')
+  expect(wrapper.find('[data-testid="import-modal"]').exists()).toBe(true)
+  await wrapper.find('[data-testid="cancel-import"]').trigger('click')
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+
+  expect((wrapper.find('[data-testid="candidate-basics-full_name"]').element as HTMLInputElement).value).toBe('张三（已核对）')
   expect(confirmProfileImport).not.toHaveBeenCalled()
 })
 
@@ -212,18 +242,13 @@ it('候选按卡片渲染项目经历，可修正字段并提交修正后的内�
 
   // 项目经历区块按候选渲染成卡片；技能与项目名都可以在预览里改。
   // 选择器限定为文本输入（`input.ant-input`）：条目内还有复选框的 input 与 textarea，取第一个会命错元素。
-  expect(wrapper.text()).toContain('项目经历（1）')
-  await wrapper.find('[data-testid="skill-name-0"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-0"]').exists()).toBe(true)
-  })
-  await wrapper.find('[data-testid="skill-name-input-0"]').setValue('Python 3')
-  await wrapper.find('[data-testid="skill-name-input-0"]').trigger('blur')
-  await wrapper.find('[data-testid="candidate-item-projects-0"] input.ant-input').setValue('订单系统重构（自研）')
+  expect(wrapper.find('[data-testid="form-item-projects-0"]').exists()).toBe(true)
+  await editSkill(wrapper, 0, 'Python 3')
+  await wrapper.find('[data-testid="fact-projects-0-name"]').setValue('订单系统重构（自研）')
 
   // 改到摘录之外后，界面上当场把来源标成「本人填写」，并保留原文摘录供对照（不再作为来源）。
-  expect(wrapper.find('[data-testid="origin-projects-0"]').text()).toContain('本人填写')
-  expect(wrapper.find('[data-testid="quote-projects-0"]').text()).toContain('订单系统重构')
+  expect(wrapper.find('[data-testid="form-item-projects-0"]').text()).toContain('本人填写')
+  expect(wrapper.find('[data-testid="form-item-projects-0"]').text()).toContain('订单系统重构')
 
   await confirmFromDialog(wrapper)
 
@@ -288,23 +313,17 @@ it('候选页可新增各类条目，新增条目按「本人填写」提交且�
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  // 技能：点击「新增技能」后直接改名（技能卡点击即编辑）。
+  // 新增条目直接使用与手动填写相同的输入控件。
   await wrapper.find('[data-testid="add-item-skills"]').trigger('click')
-  await wrapper.find('[data-testid="skill-name-1"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-1"]').exists()).toBe(true)
-  })
-  await wrapper.find('[data-testid="skill-name-input-1"]').setValue('Kubernetes')
-  await wrapper.find('[data-testid="skill-name-input-1"]').trigger('blur')
+  await editSkill(wrapper, 1, 'Kubernetes')
 
   // 项目：新增卡片后填名称（其余字段留空，本来就没有可填的内容）。
   await wrapper.find('[data-testid="add-item-projects"]').trigger('click')
-  await wrapper.find('[data-testid="candidate-item-projects-0"] input.ant-input').setValue('个人博客系统')
+  await wrapper.find('[data-testid="fact-projects-0-name"]').setValue('个人博客系统')
 
   // 界面上如实标注来源：本人填写，不需要编造原文摘录。
-  expect(wrapper.find('[data-testid="origin-skills-1"]').text()).toContain('本人填写')
-  expect(wrapper.find('[data-testid="origin-projects-0"]').text()).toContain('本人填写')
-  expect(wrapper.find('[data-testid="quote-projects-0"]').text()).toContain('无原文摘录')
+  expect(wrapper.find('[data-testid="form-item-skills-1"]').text()).toContain('本人填写')
+  expect(wrapper.find('[data-testid="form-item-projects-0"]').text()).toContain('本人填写')
 
   await confirmFromDialog(wrapper)
 
@@ -323,15 +342,22 @@ it('候选页可新增各类条目，新增条目按「本人填写」提交且�
 })
 
 it('新增条目缺少必填字段时本地拦下并指出具体条目', async () => {
-  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
-  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
-  await previewFromModal(wrapper)
+  const warning = vi.spyOn(notification, 'warning').mockImplementation(() => undefined)
+  try {
+    const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false }, attachTo: document.body })
+    await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+    await previewFromModal(wrapper)
 
-  await wrapper.find('[data-testid="add-item-experiences"]').trigger('click')
-  await confirmFromDialog(wrapper)
+    await wrapper.find('[data-testid="add-item-experiences"]').trigger('click')
+    await confirmFromDialog(wrapper)
 
-  expect(confirmProfileImport).not.toHaveBeenCalled()
-  expect(wrapper.text()).toContain('工作经历第 1 条缺少必填的「公司」')
+    expect(confirmProfileImport).not.toHaveBeenCalled()
+    expect(wrapper.text()).toContain('工作经历第 1 条缺少必填的「公司」')
+    expect(warning).toHaveBeenCalledWith(expect.objectContaining({ class: 'ja-form-notice ja-form-notice--warning' }))
+    expect(document.activeElement).toBe(wrapper.find('[data-testid="fact-experiences-0-company"]').element)
+  } finally {
+    warning.mockRestore()
+  }
 })
 
 it('删除候选项后重建提交下标，避免把剩下的条目错位提交', async () => {
@@ -364,57 +390,35 @@ it('删除候选项后重建提交下标，避免把剩下的条目错位提交'
   expect(payload.candidate.projects.map((item) => item.name)).toEqual(['订单系统重构'])
 })
 
-it('技能卡只保留名称、原文出处与删除，并按网格一行多条排列', async () => {
+it('技能卡双列排列且只显示名称、来源、删除，点击名称可编辑', async () => {
   vi.mocked(previewProfileImportStream).mockResolvedValue(skillPreview())
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  // 紧凑网格：多条技能放在同一容器里，而不是每条独占一整行。
-  expect(wrapper.find('.skill-grid').exists()).toBe(true)
-  expect(wrapper.findAll('.skill-card')).toHaveLength(2)
-  const card = wrapper.find('[data-testid="candidate-item-skills-0"]')
-  // 不再有"技能名称"字段标签，也没有勾选框：只保留名称、出处与删除。
+  expect(wrapper.findAll('[data-testid^="form-item-skills-"]')).toHaveLength(2)
+  expect(wrapper.find('[data-testid="skill-grid"]').exists()).toBe(true)
+  const card = wrapper.find('[data-testid="form-item-skills-0"]')
   expect(card.find('.ant-form-item-label').exists()).toBe(false)
   expect(card.find('input[type="checkbox"]').exists()).toBe(false)
-  expect(wrapper.find('[data-testid="skill-name-0"]').text()).toBe('Python')
-  expect(wrapper.find('[data-testid="skill-quote-0"]').text()).toContain('熟悉 Python')
-  // 删除是图标按钮：不带文字，但必须保留可访问名称。
-  const removeButton = wrapper.find('[data-testid="remove-skill-0"]')
-  expect(removeButton.exists()).toBe(true)
-  expect(removeButton.text()).toBe('')
-  expect(removeButton.attributes('aria-label')).toBe('删除该技能')
+  expect(card.find('[data-testid="fact-skills-0-name"]').text()).toBe('Python')
+  expect(card.find('[data-testid="fact-skills-0-name-input"]').exists()).toBe(false)
+  expect(card.find('.skill-source').text()).toContain('来源：本条来自简历原文：熟悉 Python')
+  expect(wrapper.find('[data-testid="remove-item-skills-0"]').exists()).toBe(true)
+  await card.find('[data-testid="fact-skills-0-name"]').trigger('click')
+  expect(card.find('[data-testid="fact-skills-0-name-input"]').exists()).toBe(true)
 })
 
-it('点击技能名进入编辑态，回车与失焦都算编辑完成', async () => {
+it('导入模式编辑字段只修改草稿，点击核对弹窗确认前不写库', async () => {
   vi.mocked(previewProfileImportStream).mockResolvedValue(skillPreview())
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  // 点击名称进入编辑态：出现输入框而不是常驻表单字段。
-  await wrapper.find('[data-testid="skill-name-0"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-0"]').exists()).toBe(true)
-  })
-  await wrapper.find('[data-testid="skill-name-input-0"]').setValue('Python 3')
-  await wrapper.find('[data-testid="skill-name-input-0"]').trigger('keydown', { key: 'Enter' })
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-0"]').exists()).toBe(false)
-  })
-  expect(wrapper.find('[data-testid="skill-name-0"]').text()).toBe('Python 3')
-
-  // 失焦同样算编辑完成。
-  await wrapper.find('[data-testid="skill-name-1"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-1"]').exists()).toBe(true)
-  })
-  await wrapper.find('[data-testid="skill-name-input-1"]').setValue('PostgreSQL 16')
-  await wrapper.find('[data-testid="skill-name-input-1"]').trigger('blur')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-1"]').exists()).toBe(false)
-  })
-  expect(wrapper.find('[data-testid="skill-name-1"]').text()).toBe('PostgreSQL 16')
+  await editSkill(wrapper, 0, 'Python 3')
+  expect(confirmProfileImport).not.toHaveBeenCalled()
+  expect(confirmProfileImport).not.toHaveBeenCalled()
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
 })
 
 it('删除技能会从候选中移除该条并重建提交下标', async () => {
@@ -423,11 +427,11 @@ it('删除技能会从候选中移除该条并重建提交下标', async () => {
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  await wrapper.find('[data-testid="remove-skill-0"]').trigger('click')
+  await wrapper.find('[data-testid="remove-item-skills-0"]').trigger('click')
   await flushPromises()
 
-  expect(wrapper.findAll('.skill-card')).toHaveLength(1)
-  expect(wrapper.find('[data-testid="skill-name-0"]').text()).toBe('PostgreSQL')
+  expect(wrapper.findAll('[data-testid^="form-item-skills-"]')).toHaveLength(1)
+  expect(wrapper.find('[data-testid="fact-skills-0-name"]').text()).toBe('PostgreSQL')
 
   await confirmFromDialog(wrapper)
 
@@ -475,7 +479,7 @@ it('候选基本信息复用创建档案的字段顺序与标签，长文本字�
   expect(labels).toEqual([...IMPORT_BASIC_FIELDS.map((field) => field.label), '公开链接'])
 
   // 长文本字段（项目说明）独占一行，不跟普通字段挤在同一行。
-  const wideItem = wrapper.find('[data-testid="candidate-item-projects-0"] .profile-field-grid__wide')
+  const wideItem = wrapper.find('[data-testid="form-item-projects-0"] .profile-field-grid__wide')
   expect(wideItem.exists()).toBe(true)
   expect(wideItem.find('textarea.ant-input').exists()).toBe(true)
 })
@@ -486,29 +490,51 @@ it('勾选的条目缺少必填字段时本地拦截，不发确认请求', asyn
   await previewFromModal(wrapper)
 
   // 把技能名清空：候选允许留空显示，但提交时必须先补齐或删除该条。
-  await wrapper.find('[data-testid="skill-name-0"]').trigger('click')
-  await vi.waitFor(() => {
-    expect(wrapper.find('[data-testid="skill-name-input-0"]').exists()).toBe(true)
-  })
-  await wrapper.find('[data-testid="skill-name-input-0"]').setValue('')
-  await wrapper.find('[data-testid="skill-name-input-0"]').trigger('blur')
+  await editSkill(wrapper, 0, '')
   await confirmFromDialog(wrapper)
 
   expect(confirmProfileImport).not.toHaveBeenCalled()
   expect(wrapper.find('[data-testid="profile-import-error"]').text()).toContain('技能名称')
 })
 
-it('返回手动创建时只发出返回事件，不调用确认接口', async () => {
-  const onBack = vi.fn()
-  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false }, attrs: { onBack } })
+it('教育经历的学历是下拉选择：列表外的抽取结果原样保留，改选后按所选值提交', async () => {
+  vi.mocked(previewProfileImportStream).mockResolvedValue(educationPreview())
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   await previewFromModal(wrapper)
 
-  await wrapper.find('[data-testid="import-back-to-manual"]').trigger('click')
+  // 抽取到的“学士”不在预设学历里：必须仍能回显与提交，不能被下拉吞掉。
+  const manual = wrapper.find('[data-testid="fact-educations-0-degree-manual"]')
+  expect(manual.exists()).toBe(true)
+  expect((manual.element as HTMLInputElement).value).toBe('学士')
 
-  expect(onBack).toHaveBeenCalledTimes(1)
+  // 改选列表内的学历：值写入候选；因为改到摘录之外，该条当场转为「本人填写」。
+  const education = wrapper.find('[data-testid="form-item-educations-0"]')
+  await education.find('.ant-select-selector').trigger('mousedown')
+  await education.find('.ant-select-selector').trigger('click')
+  await nextTick()
+  const option = Array.from(document.querySelectorAll('.ant-select-item-option')).find(
+    (node) => node.textContent?.trim() === '硕士',
+  )
+  option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await nextTick()
+  await confirmFromDialog(wrapper)
+
+  const payload = vi.mocked(confirmProfileImport).mock.calls[0][0]
+  expect(payload.candidate.educations[0]?.degree).toBe('硕士')
+  expect(payload.candidate.educations[0]?.origin).toBe('MANUAL')
+})
+
+it('关闭核对弹窗后草稿仍在，重新打开可继续核对', async () => {
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+  await previewFromModal(wrapper)
+
+  await wrapper.find('[data-testid="cancel-review"]').trigger('click')
+
   expect(confirmProfileImport).not.toHaveBeenCalled()
-  // 返回后候选仍在内存里，便于再次进入核对。
+  expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(false)
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
   expect(wrapper.find('[data-testid="profile-import-preview"]').exists()).toBe(true)
 })
 

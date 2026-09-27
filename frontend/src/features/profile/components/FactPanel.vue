@@ -15,9 +15,10 @@
  * 出现两套规则逐渐不一致；这里只做必填检查，其余交给后端返回 422 并定位到字段。
  */
 
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 
 import type { EditableResource } from '@/shared/api/types'
+import { focusFormTarget, notifyFormIssue } from '@/shared/feedback/formNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import type { FactDescriptor, FieldDescriptor, FieldValues } from '../types'
@@ -43,6 +44,12 @@ const formValues = ref<FieldValues>({})
 const fieldErrors = ref<Record<string, string>>({})
 const panelError = ref<ParsedServerError | null>(null)
 const submitting = ref(false)
+const advancedOpen = ref<string[]>([])
+
+function factTarget(name: string): HTMLElement | null {
+  if (!props.descriptor.fields.some((field) => field.name === name)) return null
+  return document.querySelector<HTMLElement>(`[data-testid="panel-${props.descriptor.key}"] [data-testid="fact-field-${name}"]`)
+}
 
 const removeLabel = computed(() => props.descriptor.removeLabel ?? '删除')
 
@@ -161,6 +168,16 @@ async function submit(): Promise<void> {
       errors[field.name] = '该项为必填。'
     }
     fieldErrors.value = errors
+    const first = missing[0]
+    if (first) {
+      if (first.advanced) advancedOpen.value = ['source']
+      await nextTick()
+      focusFormTarget(factTarget(first.name))
+      notifyFormIssue({
+        kind: 'warning', title: `请补全${props.descriptor.title}`, detail: `「${first.label}」是必填项。`,
+        key: `fact-${props.descriptor.key}-required`,
+      })
+    }
     return
   }
 
@@ -204,6 +221,14 @@ function handleWriteError(error: unknown): void {
   const parsed = parseServerError(error)
   fieldErrors.value = parsed.fields
   panelError.value = parsed
+  const firstName = Object.keys(parsed.fields)[0]
+  if (props.descriptor.fields.some((field) => field.name === firstName && field.advanced)) advancedOpen.value = ['source']
+  const target = firstName ? () => factTarget(firstName) : undefined
+  notifyFormIssue({
+    kind: 'error', title: `${props.descriptor.title}操作失败`, detail: parsed.message,
+    key: `fact-${props.descriptor.key}-error`,
+  })
+  if (target) void nextTick().then(() => focusFormTarget(target()))
 
   if (parsed.code === 'CONFLICT' && parsed.fields['version'] !== undefined) {
     closeModal()
@@ -258,15 +283,7 @@ function cellText(columnKey: string, item: TItem): string {
 
     <p class="panel-description">{{ descriptor.description }}</p>
 
-    <a-alert
-      v-if="panelError && !modalOpen"
-      type="error"
-      show-icon
-      class="panel-alert"
-      :message="panelError.message"
-      :description="alertDescription"
-      :data-testid="`error-${descriptor.key}`"
-    />
+    <p v-if="panelError && !modalOpen" class="form-error-summary" role="alert" :data-testid="`error-${descriptor.key}`">{{ panelError.message }} {{ alertDescription }}</p>
 
     <a-table
       :data-source="items"
@@ -314,18 +331,12 @@ function cellText(columnKey: string, item: TItem): string {
       @ok="submit"
       @cancel="modalOpen = false"
     >
-      <a-alert
-        v-if="modalError"
-        type="error"
-        show-icon
-        class="modal-alert"
-        :message="modalError.message"
-        :description="alertDescription"
-      />
+      <p v-if="modalError" class="form-error-summary" role="alert">{{ modalError.message }} {{ alertDescription }}</p>
       <a-form layout="vertical" :model="formValues">
         <a-form-item
           v-for="field in primaryFields"
           :key="field.name"
+          :data-testid="`fact-field-${field.name}`"
           :label="field.label"
           :help="fieldErrors[field.name] ?? field.help"
           :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
@@ -344,6 +355,7 @@ function cellText(columnKey: string, item: TItem): string {
         -->
         <a-collapse
           v-if="advancedFields.length > 0"
+          v-model:activeKey="advancedOpen"
           ghost
           class="advanced-fields"
           data-testid="fact-advanced-fields"
@@ -356,6 +368,7 @@ function cellText(columnKey: string, item: TItem): string {
             <a-form-item
               v-for="field in advancedFields"
               :key="field.name"
+              :data-testid="`fact-field-${field.name}`"
               :label="field.label"
               :help="fieldErrors[field.name] ?? field.help"
               :validate-status="fieldErrors[field.name] === undefined ? undefined : 'error'"
@@ -395,10 +408,7 @@ function cellText(columnKey: string, item: TItem): string {
   margin-bottom: 0.75rem;
 }
 
-.panel-alert,
-.modal-alert {
-  margin-bottom: 1rem;
-}
+.form-error-summary { margin-bottom: 1rem; color: var(--ja-color-danger); font-size: 13px; line-height: 1.6; }
 
 .full-width {
   width: 100%;
