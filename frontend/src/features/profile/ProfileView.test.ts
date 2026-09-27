@@ -358,6 +358,14 @@ describe('ProfileView', () => {
       expect(wrapper.find(`[data-testid="form-section-${key}"]`).exists()).toBe(true)
     }
     expect(wrapper.text()).toContain('其他资料与历史记录')
+    // 该折叠区默认收起、内容惰性渲染：先展开再断言里面有什么，否则"没有证据面板"这类
+    // 断言在收起状态下会无条件成立，等于没有检查。
+    await wrapper.find('.ant-collapse-header').trigger('click')
+    await flushPromises()
+    expect(wrapper.find('[data-testid="panel-languages"]').exists()).toBe(true)
+    // 证据不再有独立面板：一块写着"证据／可核验程度／已验证"的表格容易被读成"系统已核实"。
+    // 来源仍可在单条事实的「来源与状态」里查看（由导入与本人填写流程自动记录）。
+    expect(wrapper.find('[data-testid="panel-evidences"]').exists()).toBe(false)
     expect(wrapper.find('[data-testid="panel-preference"]').exists()).toBe(false)
     expect(wrapper.text()).not.toContain('求职策略')
     expect(wrapper.text()).not.toContain('求职偏好')

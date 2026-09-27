@@ -22,7 +22,6 @@ import ProfileManualFacts from './components/ProfileManualFacts.vue'
 import ProfileImportPanel from './components/ProfileImportPanel.vue'
 import RevisionPanel from './components/RevisionPanel.vue'
 import {
-  evidenceDescriptor,
   languageDescriptor,
 } from './descriptors'
 
@@ -40,10 +39,15 @@ function startImport(): void {
   importPanel.value?.open()
 }
 
-/** 可被新事实引用的证据候选；描述符需要它来渲染"来源证据"下拉与证据标题列。 */
+/**
+ * 可被新事实引用的证据候选。
+ *
+ * 证据记录由导入与"本人填写"流程自动创建，档案页不提供独立的证据管理面板：一块写着
+ * "证据／可核验程度／已验证"的表格很容易被读成"系统已经核实了这些能力"，而事实上它只是
+ * 来源记录。这里只把候选喂给需要它的字段，让来源在**单条事实**的上下文里可查看。
+ */
 const evidences = computed(() => profile.value?.evidences ?? [])
 
-const evidencesDescriptor = computed(() => evidenceDescriptor())
 const languagesDescriptor = computed(() => languageDescriptor(evidences.value))
 
 const loadErrorDescription = computed(() => {
@@ -152,12 +156,6 @@ onMounted(() => {
     <template v-if="profile !== null">
       <a-collapse class="advanced-profile">
         <a-collapse-panel key="advanced" header="其他资料与历史记录">
-      <FactPanel
-        :descriptor="evidencesDescriptor"
-        :items="profile.evidences"
-        @changed="reload"
-        @conflict="onConflict"
-      />
       <FactPanel :descriptor="languagesDescriptor" :items="profile.languages" @changed="reload" @conflict="onConflict" />
 
       <RevisionPanel />
