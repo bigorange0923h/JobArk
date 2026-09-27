@@ -154,7 +154,8 @@ const contentBase64 = ref('')
 const preview = ref<ProfileImportPreview | null>(null)
 /** 用户可编辑的候选副本；与 `preview.candidate` 分离，避免改动污染原始预览。 */
 const draft = ref<ProfileImportCandidate | null>(null)
-const reviewed = ref(false)
+/** 二次确认弹窗是否打开；确认动作本身不在这里，见 `confirmAndApply`。 */
+const confirmOpen = ref(false)
 const busyPreview = ref(false)
 const progressStage = ref<ProfileImportStage | 'reading_file'>('reading_file')
 /** 请求体已发送/总字节；只由传输层上报的真实进度驱动，不用它推算模型阶段。 */
@@ -273,7 +274,6 @@ function onFileChange(event: Event): void {
   contentBase64.value = ''
   preview.value = null
   draft.value = null
-  reviewed.value = false
   result.value = ''
   error.value = null
   if (!next) return
@@ -345,7 +345,6 @@ async function generate(): Promise<void> {
       projects: next.candidate.projects.map((_, index) => index),
       educations: next.candidate.educations.map((_, index) => index),
     }
-    reviewed.value = false
     // 候选已生成，弹窗完成使命；核对与确认在面板里进行，避免弹窗内堆叠长表单。
     modalOpen.value = false
   } catch (cause: unknown) {
@@ -360,7 +359,6 @@ async function generate(): Promise<void> {
 function toggle(key: CandidateSectionKey, index: number, checked: boolean): void {
   const current = selected.value[key]
   selected.value[key] = checked ? [...current, index] : current.filter((value) => value !== index)
-  reviewed.value = false
 }
 
 /**
@@ -475,7 +473,6 @@ function markManual(item: CandidateItem): void {
   if (quote !== '') originalQuotes.set(item, quote)
   item['origin'] = 'MANUAL'
   item['source_quote'] = null
-  reviewed.value = false
 }
 
 /** 取出用于摘录比对的两类取值：文字/技术栈取值，以及日期里的年份。 */
@@ -535,7 +532,6 @@ function addItem(key: CandidateSectionKey): void {
   }
   items.push(BLANK_ITEMS[key]())
   selected.value[key] = [...selected.value[key], items.length - 1]
-  reviewed.value = false
 }
 
 /**
@@ -554,7 +550,6 @@ function removeItem(key: CandidateSectionKey, index: number): void {
     .filter((value) => value !== index)
     .map((value) => (value > index ? value - 1 : value))
   if (key === 'skills') editingSkill.value = null
-  reviewed.value = false
 }
 
 /** 取某个分区的候选条目；草稿尚未生成时返回空数组。 */
@@ -626,7 +621,6 @@ function setLinks(next: ProfileLink[]): void {
   if (candidate === null) return
   candidate.links = next
   linksError.value = null
-  reviewed.value = false
 }
 
 /** 写入一个候选字段；空字符串视为清空，与后端"缺失字段留空"的语义一致。 */
@@ -644,7 +638,6 @@ function setValue(key: CandidateSectionKey, index: number, field: CandidateField
   }
   // 改到摘录之外就当场转成「本人填写」：来源变了要在界面上立刻可见，而不是等确认时才暴露。
   refreshOrigin(key, index)
-  reviewed.value = false
 }
 
 /**
@@ -664,7 +657,6 @@ function setBasic(name: BasicFieldName, value: string): void {
   } else {
     candidate[name] = value === '' ? null : value
   }
-  reviewed.value = false
 }
 
 /**
@@ -691,6 +683,27 @@ function firstMissingRequiredField(): string | null {
   return null
 }
 
+/** 打开二次确认弹窗；真正的写入在 `confirmAndApply`，按钮本身不写库。 */
+function openConfirm(): void {
+  error.value = null
+  confirmOpen.value = true
+}
+
+function closeConfirm(): void {
+  confirmOpen.value = false
+}
+
+/**
+ * 在弹窗里二次确认后提交。
+ *
+ * 先关弹窗再提交：本地校验失败（姓名缺失、链接只填一半等）的提示要落在面板里，
+ * 弹窗不开着才不会把它挡在后面。
+ */
+async function confirmAndApply(): Promise<void> {
+  confirmOpen.value = false
+  await apply()
+}
+
 /** 用户确认后一次性提交；已有基本资料绝不从候选覆盖。 */
 async function apply(): Promise<void> {
   // 取局部快照后再提交：确认过程中这些引用不会被其它分支改写，也避免依赖跨 await 的收窄。
@@ -698,7 +711,7 @@ async function apply(): Promise<void> {
   const currentDraft = draft.value
   const currentFile = file.value
   linksError.value = null
-  if (currentPreview === null || currentDraft === null || currentFile === null || !reviewed.value || busy.value) return
+  if (currentPreview === null || currentDraft === null || currentFile === null || busy.value) return
   if (currentDraft.full_name.trim() === '') {
     error.value = createLocalError('候选姓名为空，无法创建档案：请补全姓名，或先返回手动创建。')
     return
@@ -742,7 +755,6 @@ async function apply(): Promise<void> {
     draft.value = null
     file.value = null
     contentBase64.value = ''
-    reviewed.value = false
     modalOpen.value = false
     emit('changed')
   } catch (cause: unknown) {
@@ -854,6 +866,35 @@ function backToManual(): void {
           @click="generate"
         >
           继续
+        </a-button>
+      </template>
+    </a-modal>
+
+    <!--
+      写入前的二次确认弹窗。
+      不用常驻勾选框：候选在按下确认之前会被反复修正，"已经勾过"随时可能已经过期，弹窗则是
+      **每次点击都重新询问**，用户核对的是"这一次要写入的内容"。
+      与上面那个弹窗同样不用传送门，测试可直接在组件树里断言。
+    -->
+    <a-modal
+      v-if="confirmOpen"
+      :open="true"
+      :get-container="false"
+      :width="420"
+      :mask-closable="false"
+      title="确认导入候选"
+      @cancel="closeConfirm"
+    >
+      <div data-testid="confirm-import-dialog">
+        <p class="confirm-notice">
+          我已核对，这些内容可以加入个人档案并用于匹配和简历候选（均为“未验证”，不代表已独立核实）。
+        </p>
+        <p class="confirm-hint">写入后仍可在档案页继续修改；未勾选的条目不会被写入。</p>
+      </div>
+      <template #footer>
+        <a-button data-testid="confirm-import-dialog-cancel" @click="closeConfirm">取消</a-button>
+        <a-button type="primary" data-testid="confirm-import-dialog-ok" @click="confirmAndApply">
+          {{ confirmLabel }}
         </a-button>
       </template>
     </a-modal>
@@ -1109,11 +1150,12 @@ function backToManual(): void {
         </a-button>
       </section>
 
-      <a-checkbox v-model:checked="reviewed" data-testid="profile-import-reviewed">
-        我已核对，这些内容可以加入个人档案并用于匹配和简历候选（均为“未验证”，不代表已独立核实）
-      </a-checkbox>
       <div class="import-actions">
-        <a-button type="primary" :loading="busyConfirm" :disabled="!reviewed || busy" data-testid="confirm-import" @click="apply">
+        <!--
+          按钮本身即"我要写入"的意图；真正的确认由点击后的弹窗完成（见 `confirmAndApply`）。
+          不再用常驻勾选框：候选在确认前会被反复修改，"已经勾过"随时可能已经过期。
+        -->
+        <a-button type="primary" :loading="busyConfirm" :disabled="busy" data-testid="confirm-import" @click="openConfirm">
           {{ confirmLabel }}
         </a-button>
         <a-button
@@ -1141,6 +1183,9 @@ function backToManual(): void {
 .file-input { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
 .file-name { color: var(--ja-color-muted); font-size: 13px; overflow-wrap: anywhere; }
 .import-actions, .import-notice { margin-top: 16px; }
+/* 二次确认弹窗：正文是必须被读到的那句声明，提示行弱化。 */
+.confirm-notice { margin: 0; line-height: 1.65; }
+.confirm-hint { margin: 8px 0 0; color: var(--ja-color-muted); font-size: 13px; line-height: 1.6; }
 .import-actions { display: flex; gap: 8px; flex-wrap: wrap; }
 .import-progress { display: flex; align-items: center; gap: 10px; margin-top: 16px; color: var(--ja-color-muted); }
 .upload-row { display: flex; align-items: center; gap: 10px; width: 100%; }

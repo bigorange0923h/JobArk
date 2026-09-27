@@ -23,6 +23,8 @@ const props = withDefaults(
 
 const emit = defineEmits<{
   updateLinks: [links: ProfileLink[]]
+  /** 链接行失焦；档案页据此自动保存，候选核对页不处理（候选要等确认才落库）。 */
+  fieldBlur: []
 }>()
 
 /** 复制一份再改：父组件持有的数组不被就地修改，避免两份视图同时写同一份数据。 */
@@ -64,6 +66,7 @@ function remove(index: number): void {
         placeholder="名称（如 GitHub）"
         :data-testid="`link-label-${index}`"
         @update:value="(value: unknown) => replace(index, { label: typeof value === 'string' ? value : '' })"
+        @blur="emit('fieldBlur')"
       />
       <a-input
         :value="link.url"
@@ -72,6 +75,7 @@ function remove(index: number): void {
         placeholder="https://…"
         :data-testid="`link-url-${index}`"
         @update:value="(value: unknown) => replace(index, { url: typeof value === 'string' ? value : '' })"
+        @blur="emit('fieldBlur')"
       />
       <a-button type="link" danger :disabled="disabled" :data-testid="`remove-link-${index}`" @click="remove(index)">
         移除

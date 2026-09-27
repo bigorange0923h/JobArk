@@ -8,6 +8,11 @@ it('默认入口和导航首项均指向概览，个人资料保留独立入口'
   expect(router.resolve('/profile').name).toBe('profile')
 })
 
+it('求职策略有独立侧栏入口与页面路由', () => {
+  expect(router.resolve('/strategy').name).toBe('strategy')
+  expect(navItems.some(item => item.name === 'strategy' && item.icon === 'strategy')).toBe(true)
+})
+
 it('AI 模型配置有实际路由与侧栏入口', () => {
   expect(router.resolve('/ai-models').name).toBe('ai-models')
   expect(navItems.some(item => item.name === 'ai-models' && item.icon === 'ai')).toBe(true)

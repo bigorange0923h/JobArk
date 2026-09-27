@@ -25,6 +25,7 @@ class ErrorCode(StrEnum):
     ROUTE_NOT_FOUND = "ROUTE_NOT_FOUND"
     METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
     CONFLICT = "CONFLICT"
+    DUPLICATE_APPLICATION = "DUPLICATE_APPLICATION"
     RATE_LIMITED = "RATE_LIMITED"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
@@ -101,6 +102,13 @@ class ConflictError(AppError):
     code = ErrorCode.CONFLICT
     status_code = 409
     default_message = "当前状态与该操作冲突。"
+
+
+class DuplicateApplicationError(ConflictError):
+    """职位已有申请记录（409），供前端发起二次确认而非误处理其他冲突。"""
+
+    code = ErrorCode.DUPLICATE_APPLICATION
+    default_message = "已有申请记录，请确认是否创建新的申请尝试。"
 
 
 class RateLimitedError(AppError):

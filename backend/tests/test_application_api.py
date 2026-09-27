@@ -58,7 +58,9 @@ def test_repeat_requires_confirmation_and_keeps_previous(db_client: TestClient) 
     """重复申请产生新尝试，旧快照引用和事件完整保留。"""
     payload = application_payload(db_client)
     first = db_client.post("/api/v1/applications", json=payload).json()["data"]
-    assert db_client.post("/api/v1/applications", json=payload).status_code == 409
+    duplicate = db_client.post("/api/v1/applications", json=payload)
+    assert duplicate.status_code == 409
+    assert duplicate.json()["error"]["code"] == "DUPLICATE_APPLICATION"
     repeated = db_client.post("/api/v1/applications", json={**payload, "confirm_repeat": True})
     assert repeated.status_code == 201
     assert repeated.json()["data"]["attempt_no"] == 2

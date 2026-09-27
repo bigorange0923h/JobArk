@@ -10,6 +10,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 
 const ProfileView = () => import('@/features/profile/ProfileView.vue')
+const StrategyView = () => import('@/features/profile/StrategyView.vue')
 const JobListView = () => import('@/features/job/JobListView.vue')
 const ResumeDetailView = () => import('@/features/resume/ResumeDetailView.vue')
 const ResumeEditorView = () => import('@/features/resume/ResumeEditorView.vue')
@@ -29,7 +30,7 @@ export interface NavItem {
 }
 
 /** 只列当前工作台实际存在的导航语义。 */
-export type NavIconName = 'dashboard' | 'profile' | 'resume' | 'job' | 'application' | 'matching' | 'ai'
+export type NavIconName = 'dashboard' | 'profile' | 'strategy' | 'resume' | 'job' | 'application' | 'matching' | 'ai'
 
 /**
  * 导航项清单。
@@ -40,6 +41,7 @@ export type NavIconName = 'dashboard' | 'profile' | 'resume' | 'job' | 'applicat
 export const navItems: readonly NavItem[] = [
   { name: 'dashboard', label: '概览', icon: 'dashboard' },
   { name: 'profile', label: '个人资料', icon: 'profile' },
+  { name: 'strategy', label: '求职策略', icon: 'strategy' },
   { name: 'resumes', label: '简历', icon: 'resume' },
   { name: 'jobs', label: '职位', icon: 'job' },
   { name: 'applications', label: '申请', icon: 'application' },
@@ -56,6 +58,7 @@ export const router = createRouter({
     // 首页先呈现求职进展；个人资料仍可从侧栏进入，不改变事实录入流程。
     { path: '/', redirect: { name: 'dashboard' } },
     { path: '/profile', name: 'profile', component: ProfileView },
+    { path: '/strategy', name: 'strategy', component: StrategyView },
     { path: '/jobs', name: 'jobs', component: JobListView },
     { path: '/jobs/:jobId', name: 'job-detail', component: () => import('@/features/job/JobDetailView.vue'), props: true },
     { path: '/applications', name: 'applications', component: () => import('@/features/application/ApplicationView.vue') },

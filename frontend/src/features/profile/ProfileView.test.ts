@@ -282,8 +282,9 @@ describe('ProfileView', () => {
 
     await wrapper.find('[data-testid="start-resume-import"]').trigger('click')
     await generateImportPreview(wrapper)
-    await wrapper.find('[data-testid="profile-import-reviewed"]').setValue(true)
+    // 写入前必须经过二次确认弹窗：按钮只表达意图，弹窗里那一下才写入。
     await wrapper.find('[data-testid="confirm-import"]').trigger('click')
+    await wrapper.find('[data-testid="confirm-import-dialog-ok"]').trigger('click')
     await flushPromises()
 
     expect(confirmProfileImport).toHaveBeenCalledOnce()
@@ -374,7 +375,6 @@ describe('ProfileView', () => {
     expect(wrapper.find('[data-testid="open-import-modal"]').exists()).toBe(true)
     for (const key of [
       'basics',
-      'preference',
       'evidences',
       'skills',
       'experiences',
@@ -385,6 +385,9 @@ describe('ProfileView', () => {
     ]) {
       expect(wrapper.find(`[data-testid="panel-${key}"]`).exists()).toBe(true)
     }
+    expect(wrapper.find('[data-testid="panel-preference"]').exists()).toBe(false)
+    expect(wrapper.text()).not.toContain('求职策略')
+    expect(wrapper.text()).not.toContain('求职偏好')
   })
 
   it('版本过期时提示冲突并重新加载聚合，使用户能基于最新数据重试', async () => {
@@ -400,7 +403,10 @@ describe('ProfileView', () => {
     await flushPromises()
     expect(fetchProfile).toHaveBeenCalledTimes(1)
 
-    await wrapper.find('[data-testid="save-basics"]').trigger('click')
+    // 基本信息改为失焦自动保存：改动后离开输入框即触发 PATCH（不再有保存按钮）。
+    const fullName = wrapper.find('[data-testid="panel-basics"] input')
+    await fullName.setValue('张伟（改）')
+    await fullName.trigger('blur')
     await flushPromises()
 
     expect(saveProfileBasics).toHaveBeenCalledTimes(1)

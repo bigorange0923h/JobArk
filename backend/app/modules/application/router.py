@@ -30,7 +30,10 @@ async def list_applications(session: SessionDep) -> ApiResponse[list[Application
 @router.post(
     "",
     summary="创建申请记录",
-    description="固定 JD 与简历版本；重复尝试需 confirm_repeat，引用无效返回 404/422，未确认返回 409。",
+    description=(
+        "固定 JD 与简历版本；已有申请返回 409 + DUPLICATE_APPLICATION，"
+        "用户确认后携带 confirm_repeat 创建新尝试；引用无效返回 404/422。"
+    ),
     response_model=ApiResponse[ApplicationDetail],
     status_code=201,
 )

@@ -160,7 +160,7 @@ async function submit(): Promise<void> {
       </a-form-item>
 
       <a-row :gutter="16">
-        <a-col :span="8">
+        <a-col :xs="24" :md="8">
           <a-form-item
             label="薪资下限（月）"
             :help="fieldErrors['salary_min']"
@@ -169,7 +169,7 @@ async function submit(): Promise<void> {
             <a-input-number :value="salaryMin" class="full-width" @update:value="(value: unknown) => (salaryMin = typeof value === 'number' ? value : null)" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :xs="24" :md="8">
           <a-form-item
             label="薪资上限（月）"
             :help="fieldErrors['salary_max']"
@@ -178,7 +178,7 @@ async function submit(): Promise<void> {
             <a-input-number :value="salaryMax" class="full-width" @update:value="(value: unknown) => (salaryMax = typeof value === 'number' ? value : null)" />
           </a-form-item>
         </a-col>
-        <a-col :span="8">
+        <a-col :xs="24" :md="8">
           <a-form-item
             label="币种"
             :help="fieldErrors['salary_currency'] ?? 'ISO 4217，例如 CNY。'"

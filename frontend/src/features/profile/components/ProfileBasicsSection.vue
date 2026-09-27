@@ -16,6 +16,7 @@
  */
 
 import type { BasicField, BasicFieldName } from '../basicsFields'
+import ProfileCityField from './ProfileCityField.vue'
 
 const props = withDefaults(
   defineProps<{
@@ -43,6 +44,13 @@ const props = withDefaults(
 const emit = defineEmits<{
   /** 字段值变化；空值以空字符串上报，由持有者决定写 null 还是保留。 */
   updateField: [name: BasicFieldName, value: string]
+  /**
+   * 字段失焦。
+   *
+   * 档案页据此自动保存（离开输入框即落库）；候选核对页不处理它——候选要等用户确认后才写入，
+   * 这一点由持有者决定，组件只负责如实上报"这个字段失焦了"。
+   */
+  fieldBlur: [name: BasicFieldName]
 }>()
 
 /** 读取字段文本；缺失或非字符串都按“未填写”处理。 */
@@ -74,8 +82,17 @@ function onUpdate(name: BasicFieldName, value: unknown): void {
         :help="errors[field.name] ?? field.help"
         :validate-status="errors[field.name] === undefined ? undefined : 'error'"
       >
+        <ProfileCityField
+          v-if="field.kind === 'city'"
+          :value="textOf(field.name)"
+          :disabled="disabledFields.includes(field.name)"
+          :max-length="field.maxLength"
+          :testid="testidOf(field.name)"
+          @update-value="(value: string) => onUpdate(field.name, value)"
+          @blur="emit('fieldBlur', field.name)"
+        />
         <a-textarea
-          v-if="field.kind === 'textarea'"
+          v-else-if="field.kind === 'textarea'"
           :value="textOf(field.name)"
           :rows="3"
           :maxlength="field.maxLength"
@@ -84,6 +101,7 @@ function onUpdate(name: BasicFieldName, value: unknown): void {
           :data-testid="testidOf(field.name)"
           allow-clear
           @update:value="(value: unknown) => onUpdate(field.name, value)"
+          @blur="emit('fieldBlur', field.name)"
         />
         <a-input
           v-else
@@ -94,6 +112,7 @@ function onUpdate(name: BasicFieldName, value: unknown): void {
           :data-testid="testidOf(field.name)"
           allow-clear
           @update:value="(value: unknown) => onUpdate(field.name, value)"
+          @blur="emit('fieldBlur', field.name)"
         />
       </a-form-item>
 

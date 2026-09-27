@@ -6,7 +6,7 @@ from uuid import UUID
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ResourceNotFoundError, ValidationFailedError
+from app.core.errors import ConflictError, DuplicateApplicationError, ResourceNotFoundError, ValidationFailedError
 from app.core.versioning import apply_versioned_update
 from app.modules.job.models import JobOpportunity, JobPosting, JobSnapshot
 from app.modules.resume.models import ResumeVersion
@@ -72,7 +72,7 @@ async def create(session: AsyncSession, payload: ApplicationCreate) -> Applicati
         select(func.max(Application.attempt_no)).where(Application.job_opportunity_id == job.id)
     )
     if previous and not payload.confirm_repeat:
-        raise ConflictError("已有申请记录，请确认是否创建新的申请尝试。")
+        raise DuplicateApplicationError()
     entity = Application(
         job_opportunity_id=job.id,
         job_snapshot_id=snapshot.id,

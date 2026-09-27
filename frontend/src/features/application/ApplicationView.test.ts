@@ -43,7 +43,7 @@ beforeEach(() => {
   vi.mocked(fetchVersion).mockResolvedValue({id:'v1', resume_id:'r1', version_no:1} as ResumeVersion)
 })
 
-it('已投递需要显式确认；绑定历史版本可回看', async () => {
+it('已投递需要在二次弹窗显式确认；绑定历史版本可回看', async () => {
   // 必须注入真实 router：`RouterLink` 在未安装 router 时无法解析，会渲染成注释节点，
   // 断言 `a[href=...]` 会退化成"永远为 false"的假失败。
   const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
@@ -52,11 +52,13 @@ it('已投递需要显式确认；绑定历史版本可回看', async () => {
   await flushPromises()
   expect(wrapper.find('a[href="/resumes/r1/preview?version=v1"]').exists()).toBe(true)
   await chooseApplied(wrapper)
-  expect(wrapper.find('[data-testid="save-transition"]').attributes('disabled')).toBeDefined()
-  await wrapper.find('input[type="checkbox"]').setValue(true)
+  expect(wrapper.find('[data-testid="save-transition"]').attributes('disabled')).toBeUndefined()
+  await wrapper.find('[data-testid="save-transition"]').trigger('click')
   await flushPromises()
+  expect(document.querySelector('[data-testid="confirm-applied-dialog"]')).toBeTruthy()
+  expect(transitionApplication).not.toHaveBeenCalled()
   vi.mocked(transitionApplication).mockResolvedValue({...detail, version:2, current_status:'APPLIED'})
-  await wrapper.find('form').trigger('submit')
+  await wrapper.findComponent({ name: 'AModal' }).vm.$emit('ok')
   await flushPromises()
   expect(transitionApplication).toHaveBeenCalledWith('a1', {version:1, status:'APPLIED', confirm_applied:true, notes:null})
 }, 15_000)
@@ -67,11 +69,11 @@ it('冲突时保留备注并显示错误，不伪造时间线', async () => {
   await wrapper.find('tbody button').trigger('click')
   await flushPromises()
   await chooseApplied(wrapper)
-  await wrapper.find('input[type="checkbox"]').setValue(true)
+  await wrapper.find('[data-testid="save-transition"]').trigger('click')
   await flushPromises()
   await wrapper.find('textarea').setValue('测试备注')
   vi.mocked(transitionApplication).mockRejectedValue(new ApiError({code:'CONFLICT', message:'版本已过期', status:409}))
-  await wrapper.find('form').trigger('submit')
+  await wrapper.findComponent({ name: 'AModal' }).vm.$emit('ok')
   await flushPromises()
   expect(wrapper.find('[role=alert]').text()).toContain('版本已过期')
   expect((wrapper.find('textarea').element as HTMLTextAreaElement).value).toBe('测试备注')

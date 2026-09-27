@@ -10,7 +10,7 @@
  */
 
 /** 基本信息字段的控件类型。 */
-export type BasicFieldKind = 'text' | 'textarea'
+export type BasicFieldKind = 'text' | 'textarea' | 'city'
 
 /** 基本信息字段名，与后端请求体字段名一致。 */
 export type BasicFieldName = 'full_name' | 'headline' | 'summary' | 'email' | 'phone' | 'city'
@@ -38,7 +38,7 @@ export const BASIC_FIELDS: readonly BasicField[] = [
   { name: 'summary', label: '个人简介', kind: 'textarea', wide: true, placeholder: '概述你的经验方向，供简历与匹配参考' },
   { name: 'email', label: '邮箱', kind: 'text', maxLength: 320 },
   { name: 'phone', label: '手机', kind: 'text', maxLength: 50 },
-  { name: 'city', label: '所在城市', kind: 'text', maxLength: 100 },
+  { name: 'city', label: '所在城市', kind: 'city', maxLength: 100, placeholder: '请选择省份和城市' },
 ]
 
 /**

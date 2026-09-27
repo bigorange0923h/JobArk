@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /**
- * 个人资料页：档案根信息、六类事实、求职偏好与资料修订的汇总入口。
+ * 个人资料页：档案根信息、六类事实与资料修订的汇总入口。
  *
  * 状态模型刻意保持简单——页面只有四种状态：加载中、加载失败、尚未创建、可就绪展示。
  * "尚未创建"是其中一等状态：后端对未创建的档案返回 404，这不是错误，而是引导用户创建，
@@ -17,7 +17,6 @@ import { fetchProfile, type Profile } from '@/shared/api/profile'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import FactPanel from './components/FactPanel.vue'
-import PreferencePanel from './components/PreferencePanel.vue'
 import ProfileBasicsPanel from './components/ProfileBasicsPanel.vue'
 import ProfileImportPanel from './components/ProfileImportPanel.vue'
 import RevisionPanel from './components/RevisionPanel.vue'
@@ -204,8 +203,6 @@ onMounted(() => {
     <template v-else-if="profile !== null">
       <ProfileImportPanel :has-profile="true" @changed="reload" />
       <ProfileBasicsPanel :profile="profile" @changed="reload" @conflict="onConflict" />
-      <PreferencePanel :preference="profile.preference" @changed="reload" @conflict="onConflict" />
-
       <FactPanel
         :descriptor="evidencesDescriptor"
         :items="profile.evidences"

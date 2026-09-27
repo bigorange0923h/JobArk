@@ -29,6 +29,12 @@ defineProps<{ name: NavIconName }>()
       <circle cx="12" cy="8" r="3.5" />
       <path d="M5 20v-1.5a7 7 0 0 1 14 0V20" />
     </template>
+    <template v-else-if="name === 'strategy'">
+      <path d="M4 6h16M4 12h16M4 18h16" />
+      <circle cx="9" cy="6" r="2" fill="var(--ja-color-surface)" />
+      <circle cx="16" cy="12" r="2" fill="var(--ja-color-surface)" />
+      <circle cx="11" cy="18" r="2" fill="var(--ja-color-surface)" />
+    </template>
     <template v-else-if="name === 'resume'">
       <path d="M6 3.5h8l4 4V20a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4.5a1 1 0 0 1 1-1Z" />
       <path d="M14 3.5V8h4M8 12h7M8 16h7" />

@@ -17,7 +17,7 @@ class ApplicationCreate(BaseModel):
     job_opportunity_id: UUID = Field(description="职位机会。")
     job_snapshot_id: UUID = Field(description="属于该职位的不可变 JD 快照。")
     resume_version_id: UUID = Field(description="申请使用的不可变简历版本。")
-    confirm_repeat: bool = Field(default=False, description="明确同意创建新的申请尝试。")
+    confirm_repeat: bool = Field(default=False, description="收到 DUPLICATE_APPLICATION 后，明确同意创建新的申请尝试。")
 
 
 class ApplicationTransition(BaseModel):
