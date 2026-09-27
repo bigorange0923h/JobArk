@@ -48,10 +48,10 @@ MAX_TEXT_CHARS = 40_000
 MAX_PREVIEW_AI_ATTEMPTS = 2
 PREVIEW_RETRY_DELAY_SECONDS = 1.0
 logger = logging.getLogger(__name__)
-# TODO(临时联调): 在 local 环境强制使用内置 mock 抽取结果，验证"上传简历 → 抽取 → 填充"时
-# 无需配置服务商与凭据。恢复真实调用只需把这里改成 None；此后仍可用
-# JOBARK_PROFILE_IMPORT_FIXTURE 在 local/test 单独开启 mock。
-_FORCE_MOCK_EXTRACTION_IN: AppEnv | None = AppEnv.LOCAL
+# 临时强制 mock 的开关：保持 None 表示走真实大模型服务（2026-09-27 已从 local 强制 mock 改回）。
+# 需要离线联调、不配置服务商与凭据时，可临时把它设成 AppEnv.LOCAL，或用下面的
+# JOBARK_PROFILE_IMPORT_FIXTURE 在 local/test 开启内置夹具。
+_FORCE_MOCK_EXTRACTION_IN: AppEnv | None = None
 
 
 def _mock_extraction_enabled() -> bool:
