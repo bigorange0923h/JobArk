@@ -696,8 +696,9 @@ def test_preview_and_confirm_import(db_client: TestClient, monkeypatch: pytest.M
     assert len(profile["projects"]) == 1
     assert profile["projects"][0]["name"] == "订单系统重构"
     assert profile["projects"][0]["tech_stack"] == ["Spring Boot"]
-    # 项目的职责与成果合并进项目说明：Profile 的项目事实只有 description 一列。
-    assert profile["projects"][0]["description"] == "主导订单链路拆分\n性能提升 30%"
+    # 项目的职责并入项目说明；成果进独立列（与工作经历同名）。
+    assert profile["projects"][0]["description"] == "主导订单链路拆分"
+    assert profile["projects"][0]["achievements"] == "性能提升 30%"
     assert profile["skills"][0]["claim_status"] == "UNVERIFIED"
     assert profile["evidences"][0]["verification_status"] == "UNVERIFIED"
     assert profile["evidences"][0]["source_hash"] == preview.json()["data"]["source_hash"]
@@ -1004,9 +1005,12 @@ def test_fixture_preview_fills_candidate_without_configured_model(
     candidate = data["candidate"]
     assert candidate["full_name"] == "李雷"
     assert [skill["name"] for skill in candidate["skills"]] == ["Python", "PostgreSQL"]
+    assert [skill["category"] for skill in candidate["skills"]] == ["编程语言", "数据库"]
     assert candidate["experiences"][0]["company"] == "甲公司"
     assert candidate["projects"][0]["name"] == "订单系统重构"
     assert candidate["educations"][0]["school"] == "乙大学"
+    # 分类是建议，用户在核对时可改；改分类不改变技能名的原文来源。
+    candidate["skills"][0]["category"] = "AI 应用"
 
     saved = db_client.post(
         f"{API}/import-confirm",
@@ -1026,6 +1030,7 @@ def test_fixture_preview_fills_candidate_without_configured_model(
     profile = db_client.get(API).json()["data"]
     assert profile["full_name"] == "李雷"
     assert len(profile["skills"]) == 2
+    assert [skill["category"] for skill in profile["skills"]] == ["AI 应用", "数据库"]
     assert profile["projects"][0]["name"] == "订单系统重构"
 
 
@@ -1066,6 +1071,7 @@ def test_model_schema_excludes_origin_but_client_contract_requires_it() -> None:
         item = model_schema["$defs"][name]
         assert "origin" not in item["properties"], name
         assert "origin" not in item.get("required", []), name
+    assert "category" not in model_schema["$defs"]["SourcedSkill"]["properties"]
 
     with pytest.raises(ValidationError):
         ImportCandidate.model_validate(

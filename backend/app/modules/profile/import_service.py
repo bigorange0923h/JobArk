@@ -40,6 +40,7 @@ from .models import (
 )
 from .schemas import ProfileLink
 from .service import normalize_skill_name
+from .skill_categories import suggest_skill_category
 
 MAX_FILE_BYTES = 3 * 1024 * 1024
 MAX_PDF_PAGES = 10
@@ -126,6 +127,7 @@ class SourcedSkill(SourcedItemBase):
     """技能候选，不代表已验证能力。"""
 
     name: str = Field(min_length=1, max_length=100)
+    category: str | None = Field(default=None, max_length=64, description="系统建议或用户选择的分类；不是原文事实。")
 
 
 class SourcedExperience(SourcedItemBase):
@@ -148,8 +150,9 @@ class SourcedProject(SourcedItemBase):
     注意:
         除 `description`（项目说明）外，这里还接受 `responsibilities` 与 `achievements`：
         模型提取项目时习惯沿用工作经历的字段命名，而简历里的项目也确实常把职责与成果分开写。
-        这三个字段在写入时按段落合并进 `ProfileProject.description`（见 `_project_description`），
-        Profile 的项目事实没有单独的职责/成果列；合并只做拼接，不产生原文之外的内容。
+        写入时成果进 `ProfileProject.achievements`（与工作经历同名列），职责按段落合并进
+        `ProfileProject.description`（见 `_project_description`）；合并只做拼接，
+        不产生原文之外的内容。
     """
 
     name: str = Field(min_length=1, max_length=200)
@@ -804,9 +807,12 @@ def _model_candidate_schema() -> dict[str, Any]:
         properties = item.get("properties")
         if isinstance(properties, dict):
             cast("dict[str, Any]", properties).pop("origin", None)
+            if name == "SourcedSkill":
+                # 分类由服务端的保守映射提供，模型只提取确实出现在原文中的技能名。
+                cast("dict[str, Any]", properties).pop("category", None)
         required = item.get("required")
         if isinstance(required, list):
-            item["required"] = [field for field in cast("list[str]", required) if field != "origin"]
+            item["required"] = [field for field in cast("list[str]", required) if field not in {"origin", "category"}]
     return schema
 
 
@@ -872,6 +878,9 @@ def _parse_preview_candidate(
                 _log_candidate_invalid(group_names[collection], index, "schema_item_invalid_key")
                 continue
             raw_mapping = cast("dict[str, Any]", raw_object)
+            if collection == "skills":
+                # 即使模型越过 Schema 返回分类，也不能用它替代可解释的本地建议。
+                raw_mapping = {key: value for key, value in raw_mapping.items() if key != "category"}
             if collection == "projects":
                 # 归一化只修字段形态，不放松证据要求；发生归一化时对用户可见，避免静默改写。
                 raw_mapping, alias_fields = _normalize_project_item(raw_mapping)
@@ -991,6 +1000,8 @@ def _parse_preview_candidate(
                     )
                 )
                 continue
+            if isinstance(item, SourcedSkill):
+                item.category = suggest_skill_category(item.name)
             accepted[collection].append(item)
 
     parsed_links, dropped_link_count = _parse_links(root.links)
@@ -1254,19 +1265,19 @@ def _manual_item_summary(item: SourcedSkill | SourcedExperience | SourcedProject
 
 
 def _project_description(item: SourcedProject) -> str | None:
-    """把项目的说明、职责与成果合并成 Profile 侧的项目说明。
+    """把项目的说明与职责合并成 Profile 侧的项目说明。
 
     参数:
         item: 项目候选。
 
     返回:
-        str | None: 按段落拼接后的文本；三者都为空时返回 None。
+        str | None: 按段落拼接后的文本；两者都为空时返回 None。
 
     注意:
-        Profile 的项目事实只有 `description` 一列，而简历里的项目常把职责与成果分开写；
-        这里只做拼接，不生成任何原文之外的内容——三个字段各自都已通过逐字校验。
+        成果有自己的列（`achievements`），不再并进说明；这里只合并说明与职责，且只做拼接，
+        不生成任何原文之外的内容——各字段都已通过逐字校验。
     """
-    parts = [part.strip() for part in (item.description, item.responsibilities, item.achievements) if part]
+    parts = [part.strip() for part in (item.description, item.responsibilities) if part]
     return "\n".join(parts) if parts else None
 
 
@@ -1416,6 +1427,7 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 profile_id=profile.id,
                 name=item.name,
                 name_normalized=key,
+                category=item.category,
                 source_evidence_id=source_evidence("skill", index),
                 claim_status=ClaimStatus.UNVERIFIED,
                 sort_order=counts["skills"],
@@ -1457,6 +1469,7 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 name=item.name,
                 role=item.role,
                 description=_project_description(item),
+                achievements=item.achievements,
                 tech_stack=item.tech_stack,
                 url=item.url,
                 start_date=item.start_date,

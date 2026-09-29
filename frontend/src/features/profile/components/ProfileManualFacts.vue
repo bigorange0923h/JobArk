@@ -1,6 +1,6 @@
 <script setup lang="ts">
 /** 手动档案事实：使用导入候选相同的字段区，失焦后按条目自动保存。 */
-import { ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   educationsApi, experiencesApi, projectsApi, skillsApi,
   type EducationInput, type ExperienceInput, type FactApi, type Profile, type ProjectInput, type SkillInput,
@@ -18,6 +18,20 @@ const statuses = ref<Record<string, string>>({})
 const errors = ref<Record<string, string>>({})
 const saved = new WeakMap<FactItem, string>()
 const busy = new WeakSet<FactItem>()
+
+/**
+ * 「所属工作经历」下拉的选项。
+ *
+ * 标签带上月份区间：同一家公司可能有多段任职，只给公司名会让用户选错。时间口径与字段一致（只到月）。
+ */
+const experienceOptions = computed(() =>
+  (props.profile?.experiences ?? []).map((item) => ({
+    value: item.id,
+    label: item.end_date === null
+      ? `${item.company} · ${item.title}（${item.start_date.slice(0, 7)} 至今）`
+      : `${item.company} · ${item.title}（${item.start_date.slice(0, 7)} — ${item.end_date.slice(0, 7)}）`,
+  })),
+)
 
 /** 从服务端回填已保存项，同时保留尚未落库或在请求期间继续编辑的草稿。 */
 watch(() => props.profile, (profile) => {
@@ -85,6 +99,7 @@ function payloadFor(key: ProfileFactKey, item: FactItem): SkillInput | Experienc
   }
   if (key === 'projects') return {
     name: text(item, 'name'), role: optional(item, 'role'), description: optional(item, 'description'),
+    achievements: optional(item, 'achievements'), experience_id: optional(item, 'experience_id'),
     tech_stack: Array.isArray(item['tech_stack']) ? item['tech_stack'] as string[] : [],
     url: optional(item, 'url'), start_date: optional(item, 'start_date'), end_date: optional(item, 'end_date'),
     source_evidence_id: optional(item, 'source_evidence_id'),
@@ -179,5 +194,5 @@ async function removeItem(key: ProfileFactKey, index: number): Promise<void> {
 </script>
 
 <template>
-  <ProfileFactSections :items="rows" mode="manual" :source-titles="Object.fromEntries((profile?.evidences ?? []).map((evidence) => [evidence.id, evidence.title]))" :statuses="statuses" :errors="errors" @update-field="updateField" @field-blur="onBlur" @add-item="addItem" @remove-item="removeItem" />
+  <ProfileFactSections :items="rows" mode="manual" :source-titles="Object.fromEntries((profile?.evidences ?? []).map((evidence) => [evidence.id, evidence.title]))" :statuses="statuses" :errors="errors" :experience-options="experienceOptions" @update-field="updateField" @field-blur="onBlur" @add-item="addItem" @remove-item="removeItem" />
 </template>

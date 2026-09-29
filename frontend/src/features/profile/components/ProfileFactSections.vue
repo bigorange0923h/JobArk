@@ -1,17 +1,20 @@
 <script setup lang="ts">
 /** 核心事实字段区：手填与导入共用字段、控件、排版和来源说明位置。 */
-import { nextTick, ref } from 'vue'
-import { PROFILE_FACT_SECTIONS, projectDescription, type ProfileFactField, type ProfileFactKey } from '../profileFormFields'
+import { computed, nextTick, ref } from 'vue'
+import { skillCategoryOptions as buildSkillCategoryOptions } from '@/shared/skillCategories'
+import { PROFILE_FACT_SECTIONS, projectDescription, type ProfileFactField, type ProfileFactKey, type ProfileFactSection } from '../profileFormFields'
 import DegreeField from './DegreeField.vue'
 
 type FactItem = Record<string, unknown>
-withDefaults(defineProps<{
+const props = withDefaults(defineProps<{
   items: Record<ProfileFactKey, FactItem[]>
   mode: 'manual' | 'import'
   sourceTitles?: Record<string, string>
   statuses?: Record<string, string>
   errors?: Record<string, string>
-}>(), { sourceTitles: () => ({}), statuses: () => ({}), errors: () => ({}) })
+  /** 「所属工作经历」下拉的选项；只在档案页传入（导入候选还没有可关联的 id）。 */
+  experienceOptions?: { value: string; label: string }[]
+}>(), { sourceTitles: () => ({}), statuses: () => ({}), errors: () => ({}), experienceOptions: () => [] })
 const emit = defineEmits<{
   updateField: [key: ProfileFactKey, index: number, field: ProfileFactField, value: unknown]
   fieldBlur: [key: ProfileFactKey, index: number]
@@ -23,6 +26,16 @@ function valueOf(key: ProfileFactKey, item: FactItem, field: ProfileFactField): 
   if (key === 'projects' && field.name === 'description') return projectDescription(item)
   const value = item[field.name]
   return typeof value === 'string' ? value : ''
+}
+
+/**
+ * 当前模式下要渲染的字段。
+ *
+ * 「所属工作经历」只在档案页出现：导入候选里的工作经历还没有 id，没有任何东西可关联；
+ * 这里直接不渲染而不是禁用——它在候选阶段根本不是一个可做的选择。
+ */
+function fieldsOf(section: ProfileFactSection, mode: 'manual' | 'import'): readonly ProfileFactField[] {
+  return mode === 'manual' ? section.fields : section.fields.filter((field) => field.kind !== 'experience')
 }
 
 function tagsOf(item: FactItem, field: ProfileFactField): string[] {
@@ -41,6 +54,10 @@ function quoteOf(item: FactItem): string {
 
 const editingSkill = ref<number | null>(null)
 const skillNameField = PROFILE_FACT_SECTIONS[0]?.fields[0]
+const skillCategoryField = PROFILE_FACT_SECTIONS[0]?.fields.find((field) => field.name === 'category')
+const skillCategoryOptions = computed(() => buildSkillCategoryOptions(props.items.skills.map((item) =>
+  typeof item['category'] === 'string' ? item['category'] : null,
+)))
 
 /** 已保存技能只有关联证据 ID；展示证据标题，不臆测为某段简历原文。 */
 function skillSource(item: FactItem, mode: 'manual' | 'import', sourceTitles: Record<string, string>): string {
@@ -66,6 +83,13 @@ function finishSkillEdit(index: number): void {
 
 function updateSkill(index: number, value: unknown): void {
   if (skillNameField) emit('updateField', 'skills', index, skillNameField, value)
+}
+
+/** 分类是建议而非原文事实；日常编辑立即保存，导入核对只修改候选草稿。 */
+function updateSkillCategory(index: number, value: unknown): void {
+  if (!skillCategoryField) return
+  emit('updateField', 'skills', index, skillCategoryField, value)
+  if (props.mode === 'manual') emit('fieldBlur', 'skills', index)
 }
 
 function removeSkill(index: number): void {
@@ -97,6 +121,18 @@ function statusKey(key: ProfileFactKey, index: number): string {
           <button v-else type="button" class="skill-name" :data-testid="`fact-skills-${index}-name`" :aria-label="`编辑技能 ${valueOf('skills', item, skillNameField!) || '未填写'}`" @click="startSkillEdit(index, $event)">
             {{ valueOf('skills', item, skillNameField!) || '点击填写技能名称' }}
           </button>
+          <a-form layout="vertical" class="skill-category-form"><a-form-item :label="mode === 'import' ? '建议分类（可调整）' : '技能分类'" class="skill-category-field">
+            <a-select
+              :value="typeof item['category'] === 'string' && item['category'] !== '' ? item['category'] : undefined"
+              :options="skillCategoryOptions"
+              allow-clear
+              show-search
+              option-filter-prop="label"
+              placeholder="未分类"
+              :data-testid="`fact-skills-${index}-category`"
+              @change="(value: unknown) => updateSkillCategory(index, value)"
+            />
+          </a-form-item></a-form>
           <p class="skill-source" :title="skillSource(item, mode, sourceTitles)">{{ skillSource(item, mode, sourceTitles) }}<span v-if="mode === 'manual' && statuses[statusKey('skills', index)]"> · {{ statuses[statusKey('skills', index)] }}</span><span v-if="errors[`skills-${index}-name`]"> · {{ errors[`skills-${index}-name`] }}</span></p>
         </div>
         <a-popconfirm v-if="mode === 'manual' && item['id']" title="确认删除这项技能？" ok-text="删除" cancel-text="取消" @confirm="removeSkill(index)">
@@ -114,11 +150,13 @@ function statusKey(key: ProfileFactKey, index: number): string {
         <a-button v-else type="link" danger size="small" :data-testid="`remove-item-${section.key}-${index}`" @click="emit('removeItem', section.key, index)">移除</a-button>
       </template>
       <a-form layout="vertical" class="profile-field-grid">
-        <a-form-item v-for="field in section.fields" :key="field.name" :label="field.label" :required="field.required" :class="{ 'profile-field-grid__wide': field.wide }" :help="errors[`${section.key}-${index}-${field.name}`]" :validate-status="errors[`${section.key}-${index}-${field.name}`] ? 'error' : undefined">
+        <a-form-item v-for="field in fieldsOf(section, mode)" :key="field.name" :label="field.label" :required="field.required" :class="{ 'profile-field-grid__wide': field.wide }" :help="errors[`${section.key}-${index}-${field.name}`]" :validate-status="errors[`${section.key}-${index}-${field.name}`] ? 'error' : undefined">
           <a-input v-if="field.kind === 'text'" :value="valueOf(section.key, item, field)" allow-clear :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @blur="emit('fieldBlur', section.key, index)" />
-          <a-textarea v-else-if="field.kind === 'textarea'" :value="valueOf(section.key, item, field)" :rows="3" allow-clear :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @blur="emit('fieldBlur', section.key, index)" />
+          <a-textarea v-else-if="field.kind === 'textarea'" :value="valueOf(section.key, item, field)" :rows="5" allow-clear :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @blur="emit('fieldBlur', section.key, index)" />
           <a-date-picker v-else-if="field.kind === 'date'" :value="valueOf(section.key, item, field) || null" value-format="YYYY-MM-DD" class="full-width" allow-clear :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @change="emit('fieldBlur', section.key, index)" />
+          <a-date-picker v-else-if="field.kind === 'month'" :value="valueOf(section.key, item, field) || null" picker="month" format="YYYY-MM" value-format="YYYY-MM-DD" class="full-width" allow-clear :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @change="emit('fieldBlur', section.key, index)" />
           <DegreeField v-else-if="field.kind === 'degree'" :value="valueOf(section.key, item, field)" :testid="`fact-${section.key}-${index}-${field.name}`" @update-value="(value: string) => emit('updateField', section.key, index, field, value)" @blur="emit('fieldBlur', section.key, index)" />
+          <a-select v-else-if="field.kind === 'experience'" :value="valueOf(section.key, item, field) || undefined" :options="experienceOptions" allow-clear show-search option-filter-prop="label" placeholder="不关联（个人项目）" :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @change="emit('fieldBlur', section.key, index)" />
           <a-select v-else :value="tagsOf(item, field)" mode="tags" :token-separators="[',']" :data-testid="`fact-${section.key}-${index}-${field.name}`" @update:value="(value: unknown) => emit('updateField', section.key, index, field, value)" @blur="emit('fieldBlur', section.key, index)" />
         </a-form-item>
       </a-form>
@@ -137,6 +175,9 @@ function statusKey(key: ProfileFactKey, index: number): string {
 .skill-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; margin-bottom: 12px; }
 .skill-card { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: start; gap: 8px; min-width: 0; padding: 12px; border: 1px solid var(--ja-color-border); border-radius: var(--ja-radius); background: var(--ja-color-surface); }
 .skill-content { min-width: 0; }
+.skill-category-field { margin: 8px 0 0; }
+.skill-category-field :deep(.ant-form-item-label) { padding-bottom: 4px; }
+.skill-category-field :deep(.ant-select) { width: 100%; }
 .skill-name { display: block; width: 100%; padding: 2px 0; border: 0; background: transparent; color: var(--ja-color-text); font: inherit; font-weight: 600; text-align: left; overflow-wrap: anywhere; cursor: text; }
 .skill-name:focus-visible { outline: 2px solid var(--ja-color-primary); outline-offset: 2px; border-radius: 2px; }
 .skill-source { margin: 5px 0 0; color: var(--ja-color-muted); font-size: 12px; line-height: 1.5; overflow-wrap: anywhere; }

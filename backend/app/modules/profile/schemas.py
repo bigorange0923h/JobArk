@@ -208,10 +208,12 @@ class ProjectCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200)
     role: str | None = Field(default=None, max_length=100, description="本人角色。")
     description: str | None = None
+    achievements: str | None = Field(default=None, description="成果描述，鼓励量化。")
     tech_stack: list[str] = Field(default_factory=list[str], description="技术栈标签。")
     url: str | None = Field(default=None, max_length=2048)
     start_date: date | None = None
     end_date: date | None = None
+    experience_id: UUID | None = Field(default=None, description="可选：所属工作经历；个人项目留空。")
     source_evidence_id: UUID | None = None
     sort_order: int = Field(default=0, ge=0)
 
@@ -237,10 +239,12 @@ class ProjectUpdate(BaseModel):
     name: str | None = Field(default=None, min_length=1, max_length=200)
     role: str | None = Field(default=None, max_length=100)
     description: str | None = None
+    achievements: str | None = None
     tech_stack: list[str] | None = None
     url: str | None = Field(default=None, max_length=2048)
     start_date: date | None = None
     end_date: date | None = None
+    experience_id: UUID | None = None
     source_evidence_id: UUID | None = None
     sort_order: int | None = Field(default=None, ge=0)
 
@@ -251,10 +255,12 @@ class ProjectRead(EditableRead):
     name: str
     role: str | None
     description: str | None
+    achievements: str | None
     tech_stack: list[str]
     url: str | None
     start_date: date | None
     end_date: date | None
+    experience_id: UUID | None
     source_evidence_id: UUID | None
     sort_order: int
 

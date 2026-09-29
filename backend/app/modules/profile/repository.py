@@ -253,6 +253,23 @@ async def next_revision_no(session: AsyncSession, profile_id: uuid.UUID) -> int:
     return (current or 0) + 1
 
 
+async def find_projects_by_experience(
+    session: AsyncSession,
+    experience_id: uuid.UUID,
+) -> Sequence[ProfileProject]:
+    """查找关联到某段工作经历的项目。
+
+    参数:
+        session: 当前会话。
+        experience_id: 工作经历主键。
+
+    返回:
+        Sequence[ProfileProject]: 关联到该经历的项目；删除经历前用它给出可理解的 409 而不是外键报错。
+    """
+    result = await session.scalars(select(ProfileProject).where(ProfileProject.experience_id == experience_id))
+    return result.all()
+
+
 async def find_revisions_referencing(
     session: AsyncSession,
     snapshot_key: str,

@@ -237,7 +237,8 @@ class ProfileExperience(UuidPrimaryKeyMixin, EditableMixin, Base):
 class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, Base):
     """项目经历。
 
-    工作项目与个人项目都记录在此，不强制绑定到某段工作经历：个人项目同样可以成为匹配证据。
+    工作项目与个人项目都记录在此。可选地关联到某段工作经历（`experience_id`）：关联后就能看清
+    "这段工作里做了什么"；个人项目留空即可，同样是匹配证据。
     """
 
     __tablename__ = "profile_projects"
@@ -257,6 +258,7 @@ class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     role: Mapped[str | None] = mapped_column(String(100), comment="本人角色。")
     description: Mapped[str | None] = mapped_column(Text)
+    achievements: Mapped[str | None] = mapped_column(Text, comment="成果描述，鼓励量化；与工作经历同名同义。")
     tech_stack: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,
@@ -266,6 +268,12 @@ class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, Base):
     url: Mapped[str | None] = mapped_column(String(2048))
     start_date: Mapped[date | None] = mapped_column(Date)
     end_date: Mapped[date | None] = mapped_column(Date)
+    experience_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True),
+        ForeignKey("profile_experiences.id", ondelete="RESTRICT"),
+        index=True,
+        comment="可选：所属工作经历；个人项目为空。",
+    )
     source_evidence_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("profile_evidences.id", ondelete="RESTRICT"),

@@ -390,7 +390,7 @@ it('删除候选项后重建提交下标，避免把剩下的条目错位提交'
   expect(payload.candidate.projects.map((item) => item.name)).toEqual(['订单系统重构'])
 })
 
-it('技能卡双列排列且只显示名称、来源、删除，点击名称可编辑', async () => {
+it('技能卡双列排列并显示建议分类、来源和删除，点击名称可编辑', async () => {
   vi.mocked(previewProfileImportStream).mockResolvedValue(skillPreview())
   const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
   await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
@@ -399,7 +399,7 @@ it('技能卡双列排列且只显示名称、来源、删除，点击名称可�
   expect(wrapper.findAll('[data-testid^="form-item-skills-"]')).toHaveLength(2)
   expect(wrapper.find('[data-testid="skill-grid"]').exists()).toBe(true)
   const card = wrapper.find('[data-testid="form-item-skills-0"]')
-  expect(card.find('.ant-form-item-label').exists()).toBe(false)
+  expect(card.find('.ant-form-item-label').text()).toContain('建议分类')
   expect(card.find('input[type="checkbox"]').exists()).toBe(false)
   expect(card.find('[data-testid="fact-skills-0-name"]').text()).toBe('Python')
   expect(card.find('[data-testid="fact-skills-0-name-input"]').exists()).toBe(false)
@@ -407,6 +407,33 @@ it('技能卡双列排列且只显示名称、来源、删除，点击名称可�
   expect(wrapper.find('[data-testid="remove-item-skills-0"]').exists()).toBe(true)
   await card.find('[data-testid="fact-skills-0-name"]').trigger('click')
   expect(card.find('[data-testid="fact-skills-0-name-input"]').exists()).toBe(true)
+})
+
+it('核对时可修改建议分类，不改变技能名的简历来源', async () => {
+  vi.mocked(previewProfileImportStream).mockResolvedValue({
+    ...candidate,
+    candidate: { ...candidate.candidate, skills: [{ origin: 'RESUME', name: 'Python', category: '编程语言', source_quote: '熟悉 Python' }] },
+  })
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+  await previewFromModal(wrapper)
+
+  const selector = '[data-testid="fact-skills-0-category"] .ant-select-selector'
+  await wrapper.find(selector).trigger('mousedown')
+  await wrapper.find(selector).trigger('click')
+  await nextTick()
+  const option = Array.from(document.querySelectorAll('.ant-select-item-option')).find((node) =>
+    node.textContent?.includes('AI 应用'),
+  )
+  expect(option).toBeDefined()
+  option?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+  await flushPromises()
+  await confirmFromDialog(wrapper)
+
+  const skill = vi.mocked(confirmProfileImport).mock.calls[0]?.[0].candidate.skills[0]
+  expect(skill?.category).toBe('AI 应用')
+  expect(skill?.origin).toBe('RESUME')
+  expect(skill?.source_quote).toBe('熟悉 Python')
 })
 
 it('导入模式编辑字段只修改草稿，点击核对弹窗确认前不写库', async () => {
@@ -523,6 +550,30 @@ it('教育经历的学历是下拉选择：列表外的抽取结果原样保留�
   const payload = vi.mocked(confirmProfileImport).mock.calls[0][0]
   expect(payload.candidate.educations[0]?.degree).toBe('硕士')
   expect(payload.candidate.educations[0]?.origin).toBe('MANUAL')
+})
+
+it('候选里的项目不显示「所属工作经历」，但成果可以填写', async () => {
+  vi.mocked(previewProfileImportStream).mockResolvedValue({
+    ...candidate,
+    candidate: {
+      ...candidate.candidate,
+      projects: [
+        {
+          origin: 'RESUME', name: '订单系统重构', role: null, description: null, responsibilities: null,
+          achievements: null, tech_stack: [], url: null, start_date: null, end_date: null,
+          source_quote: '订单系统重构',
+        },
+      ],
+    },
+  })
+  const wrapper = mount(ProfileImportPanel, { props: { hasProfile: false } })
+  await wrapper.find('[data-testid="open-import-modal"]').trigger('click')
+  await previewFromModal(wrapper)
+
+  // 候选阶段的工作经历还没有 id，没有任何东西可关联；候选契约也不接受这个字段。
+  expect(wrapper.find('[data-testid="fact-projects-0-experience_id"]').exists()).toBe(false)
+  // 成果本来就是候选拥有的字段（模型会分开给职责与成果），必须可编辑。
+  expect(wrapper.find('[data-testid="fact-projects-0-achievements"]').exists()).toBe(true)
 })
 
 it('关闭核对弹窗后草稿仍在，重新打开可继续核对', async () => {

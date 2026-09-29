@@ -80,7 +80,7 @@ CONTENT_FIELDS_BY_MODEL: dict[type[Base], tuple[str, ...]] = {
         "responsibilities",
         "achievements",
     ),
-    ProfileProject: ("name", "role", "description", "tech_stack", "url", "start_date", "end_date"),
+    ProfileProject: ("name", "role", "description", "achievements", "tech_stack", "url", "start_date", "end_date"),
     ProfileEducation: ("school", "major", "degree", "start_date", "end_date"),
     ProfileLanguage: ("language", "level", "note"),
 }
@@ -166,6 +166,7 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "name": item.name,
                 "role": item.role,
                 "description": item.description,
+                "achievements": item.achievements,
                 "tech_stack": item.tech_stack,
                 "url": item.url,
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
@@ -316,6 +317,59 @@ async def _reattribute_edited_fact(
     if current is None or current.source_type is not EvidenceSourceType.RESUME_DOCUMENT:
         return
     updates["source_evidence_id"] = await _manual_edit_evidence(session, fact.profile_id)
+
+
+async def _ensure_experience_usable(
+    session: AsyncSession,
+    profile_id: uuid.UUID,
+    experience_id: uuid.UUID | None,
+) -> None:
+    """校验被关联的工作经历存在且属于当前档案。
+
+    参数:
+        session: 当前会话。
+        profile_id: 当前档案主键。
+        experience_id: 工作经历主键；为 None 时直接通过。
+
+    异常:
+        ValidationFailedError: 经历不存在或不属于本档案时抛出 422，并指出出错字段。
+
+    注意:
+        外键只保证"记录存在"，不保证"属于同一份档案"。显式校验让这种情况得到可理解的
+        字段级 422，而不是等数据库抛完整性错误变成 500。
+    """
+    if experience_id is None:
+        return
+    experience = await repo.get_by_id(session, ProfileExperience, experience_id)
+    if experience is None or experience.profile_id != profile_id:
+        raise ValidationFailedError(
+            "关联的工作经历不存在。",
+            details=[ErrorDetail(field="experience_id", reason="请选择本档案中已有的工作经历。")],
+        )
+
+
+async def _ensure_experience_unlinked(session: AsyncSession, experience: ProfileExperience) -> None:
+    """校验工作经历没有被任何项目关联。
+
+    参数:
+        session: 当前会话。
+        experience: 待删除的工作经历。
+
+    异常:
+        ConflictError: 仍被项目关联时抛出 409，并列出项目名。
+
+    注意:
+        关联是用户建立的关系，直接删掉经历会让那些项目静默失去归属；这里明确阻止，
+        与"被资料修订引用不可删除"是同一条原则：宁可让用户多做一步，也不静默丢信息。
+    """
+    linked = await repo.find_projects_by_experience(session, experience.id)
+    if not linked:
+        return
+    names = "、".join(project.name for project in linked)
+    raise ConflictError(
+        "该工作经历已被项目经历关联，不能删除。",
+        details=[ErrorDetail(field=None, reason=f"关联的项目：{names}。请先取消关联或删除这些项目。")],
+    )
 
 
 async def _ensure_fact_not_referenced(session: AsyncSession, model: type[Base], fact_id: uuid.UUID) -> None:
@@ -809,6 +863,7 @@ async def delete_experience(session: AsyncSession, experience_id: uuid.UUID) -> 
     experience = await _require_fact(session, ProfileExperience, experience_id)
     _ensure_owned(experience.profile_id, profile.id)
     await _ensure_fact_not_referenced(session, ProfileExperience, experience.id)
+    await _ensure_experience_unlinked(session, experience)
     await repo.remove(session, experience)
     await session.commit()
 
@@ -830,15 +885,18 @@ async def create_project(session: AsyncSession, payload: ProjectCreate) -> Profi
     """
     profile = await require_profile(session)
     await _ensure_evidence_usable(session, payload.source_evidence_id)
+    await _ensure_experience_usable(session, profile.id, payload.experience_id)
     project = ProfileProject(
         profile_id=profile.id,
         name=payload.name,
         role=payload.role,
         description=payload.description,
+        achievements=payload.achievements,
         tech_stack=payload.tech_stack,
         url=payload.url,
         start_date=payload.start_date,
         end_date=payload.end_date,
+        experience_id=payload.experience_id,
         source_evidence_id=payload.source_evidence_id,
         sort_order=payload.sort_order,
     )
@@ -870,6 +928,8 @@ async def update_project(session: AsyncSession, project_id: uuid.UUID, payload: 
     updates = collect_updates(payload)
     if "source_evidence_id" in updates:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
+    if "experience_id" in updates:
+        await _ensure_experience_usable(session, profile.id, cast(uuid.UUID | None, updates["experience_id"]))
 
     start_date = cast(date | None, updates.get("start_date", project.start_date))
     end_date = cast(date | None, updates.get("end_date", project.end_date))

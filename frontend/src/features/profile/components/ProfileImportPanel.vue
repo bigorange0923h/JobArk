@@ -303,7 +303,7 @@ const COLLECTION_LIMITS: Record<CandidateSectionKey, number> = {
 
 /** 用户新增条目的初始形态：来源为本人填写，字段留空由用户补全，不伪造任何取值。 */
 const BLANK_ITEMS: Record<CandidateSectionKey, () => CandidateItem> = {
-  skills: () => ({ origin: 'MANUAL', source_quote: null, name: '' }),
+  skills: () => ({ origin: 'MANUAL', source_quote: null, name: '', category: null }),
   experiences: () => ({
     origin: 'MANUAL',
     source_quote: null,
@@ -365,6 +365,7 @@ function quoteCheckInputs(
   const values: string[] = []
   const years: string[] = []
   for (const field of section.fields) {
+    if (section.key === 'skills' && field.name === 'category') continue
     if (field.kind === 'tags') {
       values.push(...tagsOf(item, field.name))
     } else if (field.kind === 'date') {

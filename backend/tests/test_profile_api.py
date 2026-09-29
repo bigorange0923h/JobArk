@@ -333,6 +333,79 @@ def test_revision_snapshot_excludes_contact_details(db_client: TestClient) -> No
     assert "AWS 解决方案架构师认证" in serialized
 
 
+def test_project_supports_achievements_and_experience_link(db_client: TestClient) -> None:
+    """项目可单独记录成果，并可关联到某段工作经历；关联也能取消（改回个人项目）。"""
+    _create_profile(db_client)
+    experience = _data(
+        db_client.post(
+            f"{API}/profile/experiences",
+            json={"company": "某公司", "title": "后端工程师", "start_date": "2022-03-01"},
+        )
+    )
+
+    created = db_client.post(
+        f"{API}/profile/projects",
+        json={
+            "name": "订单系统重构",
+            "achievements": "把下单耗时降低 30%",
+            "experience_id": experience["id"],
+            "start_date": "2022-05-01",
+            "end_date": "2022-09-01",
+        },
+    )
+
+    assert created.status_code == 201, created.text
+    project = _data(created)
+    assert project["achievements"] == "把下单耗时降低 30%"
+    assert project["experience_id"] == experience["id"]
+
+    cleared = db_client.patch(
+        f"{API}/profile/projects/{project['id']}",
+        json={"version": project["version"], "experience_id": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert _data(cleared)["experience_id"] is None
+
+
+def test_project_rejects_unknown_experience(db_client: TestClient) -> None:
+    """关联到不存在的工作经历时给字段级 422，而不是等外键报错变成 500。"""
+    _create_profile(db_client)
+
+    response = db_client.post(
+        f"{API}/profile/projects",
+        json={"name": "订单系统重构", "experience_id": str(uuid.uuid4())},
+    )
+
+    assert response.status_code == 422
+    error = _error(response)
+    assert error["code"] == "VALIDATION_ERROR"
+    assert "experience_id" in _detail_fields(error)
+
+
+def test_experience_linked_to_project_cannot_be_deleted(db_client: TestClient) -> None:
+    """被项目关联的工作经历不能删除，错误里要点出关联的项目名。
+
+    关联是用户建立的关系；直接删掉经历会让那些项目静默失去归属，因此这里明确阻止。
+    """
+    _create_profile(db_client)
+    experience = _data(
+        db_client.post(
+            f"{API}/profile/experiences",
+            json={"company": "某公司", "title": "后端工程师", "start_date": "2022-03-01"},
+        )
+    )
+    db_client.post(f"{API}/profile/projects", json={"name": "订单系统重构", "experience_id": experience["id"]})
+
+    response = db_client.delete(f"{API}/profile/experiences/{experience['id']}")
+
+    assert response.status_code == 409
+    error = _error(response)
+    assert error["code"] == "CONFLICT"
+    assert "订单系统重构" in error["details"][0]["reason"]
+    # 删除失败后记录必须仍然存在，避免"报错但数据已变"。
+    assert [item["id"] for item in _data(db_client.get(f"{API}/profile"))["experiences"]] == [experience["id"]]
+
+
 def _create_facts(
     client: TestClient,
     endpoint: str,

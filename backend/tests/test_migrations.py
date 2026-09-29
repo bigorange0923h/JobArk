@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0008"
+EXPECTED_HEAD = "0009"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -167,6 +167,7 @@ _EXPECTED_FOREIGN_KEYS = {
     "fk_profile_languages_profile_id_personal_profiles",
     "fk_profile_languages_source_evidence_id_profile_evidences",
     "fk_profile_projects_profile_id_personal_profiles",
+    "fk_profile_projects_experience_id_profile_experiences",
     "fk_profile_projects_source_evidence_id_profile_evidences",
     "fk_profile_skills_profile_id_personal_profiles",
     "fk_profile_skills_source_evidence_id_profile_evidences",

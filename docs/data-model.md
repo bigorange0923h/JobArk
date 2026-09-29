@@ -66,7 +66,7 @@ AiProvider ──< AiModel
 | --- | --- | --- |
 | `profile_skills` | `profile_id`、`name`、`category`、`proficiency`、`years_of_experience`、`source_evidence_id`、`claim_status` | 同一 Profile 的同一规范化技能名唯一；无证据时必须标记为 `UNVERIFIED`。 |
 | `profile_experiences` | 公司、职位、地点、开始/结束日期、职责、成果、`source_evidence_id` | 结束日期不得早于开始日期；当前经历结束日期为空。 |
-| `profile_projects` | 名称、角色、描述、技术栈、链接、开始/结束日期、`source_evidence_id` | 工作项目与个人项目都允许，不强制绑定工作经历。 |
+| `profile_projects` | 名称、角色、描述、成果、技术栈、链接、开始/结束日期、`experience_id`、`source_evidence_id` | 工作项目与个人项目都允许；`experience_id` 可选地指向某段工作经历（个人项目留空），`RESTRICT` 外键：删除被项目关联的经历由服务层返回 409 并列出项目名。 |
 | `profile_educations` | 学校、专业、学位、开始/结束日期、`source_evidence_id` | 学历信息只能由用户或可信证据确认。 |
 | `profile_languages` | 语言、水平、说明、`source_evidence_id` | 语言水平不得被 AI 推断为已验证事实。 |
 | `profile_preferences` | `profile_id`、目标地点、职位类型、薪资下限/上限/币种、远程偏好、排除条件 | `profile_id` 唯一；偏好是可变规则，不属于履历事实。 |

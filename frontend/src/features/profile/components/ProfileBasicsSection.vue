@@ -94,7 +94,7 @@ function onUpdate(name: BasicFieldName, value: unknown): void {
         <a-textarea
           v-else-if="field.kind === 'textarea'"
           :value="textOf(field.name)"
-          :rows="3"
+          :rows="5"
           :maxlength="field.maxLength"
           :placeholder="field.placeholder"
           :disabled="disabledFields.includes(field.name)"

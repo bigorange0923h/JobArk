@@ -88,10 +88,13 @@ export interface Project extends EditableResource {
   name: string
   role: string | null
   description: string | null
+  achievements: string | null
   tech_stack: string[]
   url: string | null
   start_date: string | null
   end_date: string | null
+  /** 可选：所属工作经历；个人项目为 null。 */
+  experience_id: string | null
   source_evidence_id: string | null
 }
 
@@ -167,6 +170,8 @@ export interface SourcedSkill {
   origin: ItemOrigin
   source_quote: string | null
   name: string
+  /** 导入时系统建议、核对时用户可改；不代表原文证据。 */
+  category?: string | null
 }
 export interface SourcedExperience {
   origin: ItemOrigin
@@ -324,10 +329,12 @@ export interface ProjectInput {
   name: string
   role?: string | null
   description?: string | null
+  achievements?: string | null
   tech_stack?: string[]
   url?: string | null
   start_date?: string | null
   end_date?: string | null
+  experience_id?: string | null
   source_evidence_id?: string | null
 }
 
