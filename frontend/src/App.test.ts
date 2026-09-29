@@ -10,6 +10,7 @@
 
 import { mount } from '@vue/test-utils'
 import { expect, it } from 'vitest'
+import { nextTick } from 'vue'
 
 import App from './App.vue'
 import { navItems, router } from './app/router'
@@ -39,4 +40,36 @@ it('侧栏以语义图标和文字导航，不显示数字序号', async () => {
     expect(labels).toContain(entry.label)
   }
   expect(wrapper.find('.app-nav').text()).toContain('概览')
+})
+
+it('进入简历编辑器自动折叠桌面导航，可临时展开，离开后恢复', async () => {
+  await router.push({ name: 'dashboard' })
+  const wrapper = mount(App, {
+    global: {
+      plugins: [router],
+      stubs: { AConfigProvider: { template: '<div><slot /></div>' }, RouterView: true },
+    },
+  })
+  try {
+    expect(wrapper.find('.app-shell').classes()).not.toContain('app-shell--collapsed')
+    await router.push({ name: 'resume-draft-edit', params: { resumeId: 'r1', draftId: 'd1' } })
+    await nextTick()
+    const shell = wrapper.find('.app-shell')
+    expect(shell.classes()).toContain('app-shell--collapsed')
+    expect(shell.classes()).toContain('app-shell--resume-editor')
+    expect(wrapper.find('.app-sidebar [data-testid="sidebar-toggle"]').exists()).toBe(true)
+    expect(wrapper.find('.sidebar-head [data-testid="sidebar-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('.topbar [data-testid="sidebar-toggle"]').exists()).toBe(false)
+    expect(wrapper.find('[data-testid="sidebar-toggle"]').attributes('aria-label')).toBe('展开导航')
+    expect(wrapper.find('.app-nav a').attributes('aria-label')).toBe('概览')
+    await wrapper.find('[data-testid="sidebar-toggle"]').trigger('click')
+    expect(shell.classes()).not.toContain('app-shell--collapsed')
+    await router.push({ name: 'resumes' })
+    await nextTick()
+    expect(shell.classes()).not.toContain('app-shell--collapsed')
+    expect(shell.classes()).not.toContain('app-shell--resume-editor')
+    expect(wrapper.find('[data-testid="sidebar-toggle"]').exists()).toBe(false)
+  } finally {
+    wrapper.unmount()
+  }
 })
