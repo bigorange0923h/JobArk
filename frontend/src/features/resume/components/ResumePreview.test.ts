@@ -59,6 +59,17 @@ function sectionIds(wrapper: ReturnType<typeof mountPreview>): (string | undefin
 }
 
 describe('ResumePreview', () => {
+  it('仅在版本文档有头像时显示右上角头像，旧文档保持居中头部', () => {
+    const withoutPhoto = mountPreview()
+    expect(withoutPhoto.find('[data-testid="preview-photo"]').exists()).toBe(false)
+    expect(withoutPhoto.find('.preview-header').classes()).not.toContain('has-photo')
+
+    const withPhoto = mountPreview(previewDocument({ contact: {
+      email: null, phone: null, photo_data_url: 'data:image/png;base64,iVBORw0KGgo=',
+    } }))
+    expect(withPhoto.find('[data-testid="preview-photo"]').attributes('src')).toContain('data:image/png;base64,')
+    expect(withPhoto.find('.preview-header').classes()).toContain('has-photo')
+  })
   it('只输出有内容的模块，空模块连标题都不出现', () => {
     const wrapper = mountPreview()
 
@@ -82,6 +93,21 @@ describe('ResumePreview', () => {
     })
 
     expect(sectionIds(wrapper)[0]).toBe('SKILLS')
+  })
+
+  it('模块与经历条目使用明确的标题层级', () => {
+    const wrapper = mountPreview(previewDocument({
+      projects: [{ source_fact_id: null, name: '订单平台', role: '负责人', description: null, tech_stack: [], url: null }],
+      educations: [{ source_fact_id: null, school: '某大学', major: '计算机', degree: '本科', start_date: null, end_date: null }],
+    }))
+
+    expect(wrapper.find('[data-testid="preview-name"]').element.tagName).toBe('H1')
+    expect(wrapper.findAll('.preview-section > h2').map((heading) => heading.text())).toEqual([
+      '个人简介', '工作经历', '项目经历', '技能', '教育经历',
+    ])
+    expect(wrapper.find('[data-testid="preview-experience-0"] .preview-entry-title strong').text()).toBe('某公司')
+    expect(wrapper.find('[data-testid="preview-section-PROJECTS"] .preview-entry-title strong').text()).toBe('订单平台')
+    expect(wrapper.find('[data-testid="preview-section-EDUCATIONS"] .preview-entry-title strong').text()).toBe('某大学')
   })
 
   it('渲染姓名、头衔、城市与链接', () => {
@@ -112,6 +138,57 @@ describe('ResumePreview', () => {
     const items = wrapper.findAll('[data-testid="preview-experience-0"] [data-testid="preview-highlight"]')
 
     expect(items.map((item) => item.text())).toEqual(['负责订单系统重构', '把下单耗时降低 30%'])
+    expect(items.every((item) => item.element.tagName === 'P')).toBe(true)
+  })
+
+  it('技能按相邻分类成行，但不打乱原条目顺序或虚构空分类', () => {
+    const wrapper = mountPreview(previewDocument({ skills: [
+      { source_fact_id: null, name: 'Java', category: '后端', proficiency: null },
+      { source_fact_id: null, name: 'Spring', category: '后端', proficiency: '熟练' },
+      { source_fact_id: null, name: 'Python', category: 'AI 应用', proficiency: null },
+      { source_fact_id: null, name: 'Redis', category: '后端', proficiency: null },
+      { source_fact_id: null, name: 'Git', category: null, proficiency: null },
+    ] }))
+    const rows = wrapper.findAll('.preview-skill-row')
+    expect(rows.map((row) => row.text())).toEqual([
+      '后端：Java、Spring（熟练）', 'AI 应用：Python', '后端：Redis', 'Git',
+    ])
+  })
+
+  it('项目说明和技术栈使用已有字段展示，不补造参考简历中的业绩', () => {
+    const wrapper = mountPreview(previewDocument({ projects: [{
+      source_fact_id: null, name: '订单平台', role: '开发', description: '负责订单服务。',
+      tech_stack: ['Java', 'Redis'], url: null,
+    }] }))
+    const project = wrapper.find('[data-testid="preview-section-PROJECTS"]')
+    expect(project.text()).toContain('内容：负责订单服务。')
+    expect(project.text()).toContain('技术栈：Java、Redis')
+    expect(project.text()).not.toContain('业绩：')
+  })
+
+  it('工作经历的时间只显示到月，教育经历不受影响', () => {
+    const wrapper = mountPreview(
+      previewDocument({
+        educations: [
+          {
+            source_fact_id: null,
+            school: '某大学',
+            major: '计算机',
+            degree: '本科',
+            start_date: '2016-09-01',
+            end_date: '2020-06-30',
+          },
+        ],
+      }),
+    )
+
+    // 档案里存的是完整日期（日固定为 1），但工作经历只到月：直接写出来会像精确到了某一天。
+    const experiences = wrapper.find('[data-testid="preview-section-EXPERIENCES"]')
+    expect(experiences.text()).toContain('2022.03 – 至今')
+    expect(experiences.text()).not.toContain('2022-03-01')
+
+    // 教育经历本次不调整，仍按完整日期展示。
+    expect(wrapper.find('[data-testid="preview-section-EDUCATIONS"]').text()).toContain('2016-09-01 – 2020-06-30')
   })
 
   it('简介为空白时该模块不输出', () => {

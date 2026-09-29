@@ -45,6 +45,8 @@ export interface ResumeLink {
 export interface ResumeContact {
   email: string | null
   phone: string | null
+  /** 用户主动上传的头像；旧版本没有该字段。 */
+  photo_data_url?: string | null
 }
 
 /** 简历头部信息。 */

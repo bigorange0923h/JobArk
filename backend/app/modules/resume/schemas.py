@@ -14,6 +14,9 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
+import re
 from datetime import date, datetime
 from typing import Any, Literal
 from uuid import UUID
@@ -67,6 +70,32 @@ class ResumeContact(BaseModel):
 
     email: str | None = Field(default=None, max_length=320)
     phone: str | None = Field(default=None, max_length=50)
+    photo_data_url: str | None = Field(
+        default=None, max_length=350000, description="用户主动上传的头像 data URL；不进入 AI 输入。"
+    )
+
+    @model_validator(mode="after")
+    def _check_photo(self) -> ResumeContact:
+        """限制头像的编码、真实文件头和大小，避免任意 data URL 混入版本文档。"""
+        if self.photo_data_url is None:
+            return self
+        match = re.fullmatch(r"data:image/(png|jpeg|webp);base64,([A-Za-z0-9+/]+={0,2})", self.photo_data_url)
+        if match is None:
+            raise ValueError("头像仅支持 PNG、JPEG 或 WebP。")
+        try:
+            content = base64.b64decode(match.group(2), validate=True)
+        except binascii.Error as exc:
+            raise ValueError("头像编码无效。") from exc
+        if len(content) > 256 * 1024:
+            raise ValueError("头像不能超过 256 KiB。")
+        signatures = {
+            "png": content.startswith(b"\x89PNG\r\n\x1a\n"),
+            "jpeg": content.startswith(b"\xff\xd8\xff"),
+            "webp": content.startswith(b"RIFF") and content[8:12] == b"WEBP",
+        }
+        if not signatures[match.group(1)]:
+            raise ValueError("头像文件内容与格式不符。")
+        return self
 
 
 class ResumeBasics(BaseModel):

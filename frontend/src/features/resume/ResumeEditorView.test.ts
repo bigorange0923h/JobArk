@@ -12,7 +12,8 @@
  */
 
 import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/test-utils'
-import { notification } from 'ant-design-vue'
+import { Select, Upload, notification } from 'ant-design-vue'
+import { onBeforeRouteLeave } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
@@ -29,7 +30,7 @@ const DRAFT_ID = 'draft-1'
 
 const { push } = vi.hoisted(() => ({ push: vi.fn() }))
 
-vi.mock('vue-router', () => ({ useRouter: () => ({ push }) }))
+vi.mock('vue-router', () => ({ useRouter: () => ({ push }), onBeforeRouteLeave: vi.fn() }))
 
 vi.mock('@/shared/api/resume', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/shared/api/resume')>()
@@ -139,7 +140,10 @@ beforeEach(() => {
   vi.clearAllMocks()
   noticeSpy.mockImplementation(() => undefined)
   vi.mocked(fetchDraft).mockResolvedValue(draftFixture())
-  vi.mocked(updateDraft).mockResolvedValue(draftFixture({ version: 2 }))
+  vi.mocked(updateDraft).mockImplementation(async (_resumeId, _draftId, payload) => draftFixture({
+    version: payload.version + 1,
+    document_json: payload.document,
+  }))
   vi.mocked(fetchProfile).mockResolvedValue(profileFixture())
 })
 
@@ -169,11 +173,106 @@ describe('ResumeEditorView', () => {
     expect((wrapper.find('[data-testid="skill-0-name"]').element as HTMLInputElement).value).toBe('Python')
   })
 
-  it('没有改动时不能保存，避免无意义的往返与版本自增', async () => {
+  it('头部短字段和经历条目按双列分组，邮箱与电话各有独立标签', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    expect(wrapper.find('[data-testid="save-draft"]').attributes('disabled')).toBeDefined()
+    const basics = wrapper.find('.basics-fields')
+    expect(basics.exists()).toBe(true)
+    expect(basics.text()).toContain('姓名')
+    expect(basics.text()).toContain('城市')
+    expect(basics.text()).toContain('邮箱')
+    expect(basics.text()).toContain('电话')
+    expect(wrapper.find('[data-testid="entry-experiences-0"] .entry-fields').exists()).toBe(true)
+
+    await wrapper.find('[data-testid="add-project"]').trigger('click')
+    expect(wrapper.find('[data-testid="entry-projects-0"] .entry-fields').exists()).toBe(true)
+  })
+
+  it('各模块输入框都有持续可见的中文标签', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('[data-testid="add-project"]').trigger('click')
+    await wrapper.find('[data-testid="add-education"]').trigger('click')
+    await wrapper.find('[data-testid="add-language"]').trigger('click')
+
+    const labels = (selector: string) => wrapper.find(selector).findAll('.ant-form-item-label').map((label) => label.text())
+    expect(labels('[data-testid="entry-experiences-0"]')).toEqual([
+      '公司', '职位', '地点', '开始时间', '结束时间', '来源经历', '工作要点',
+    ])
+    expect(labels('[data-testid="entry-projects-0"]')).toEqual([
+      '项目名称', '担任角色', '技术栈', '项目链接', '来源项目', '项目说明',
+    ])
+    expect(labels('[data-testid="entry-skills-0"]')).toEqual([
+      '技能名称', '技能分类', '展示分级', '来源技能',
+    ])
+    expect(labels('[data-testid="entry-educations-0"]')).toEqual([
+      '学校', '专业', '学历', '开始时间', '结束时间', '来源教育经历',
+    ])
+    expect(labels('[data-testid="entry-languages-0"]')).toEqual([
+      '语言', '水平', '来源语言能力',
+    ])
+    for (const section of ['summary', 'experiences', 'projects', 'skills', 'educations', 'languages']) {
+      expect(wrapper.find(`[data-testid="panel-${section}"] .ant-form-vertical`).exists()).toBe(true)
+    }
+  })
+
+  it('技能分类下拉保留既有值，选择和清空后自动保存', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const category = wrapper.findAllComponents(Select).find((select) => select.attributes('data-testid') === 'skill-0-category')
+    expect(category).toBeDefined()
+    expect(category?.props('value')).toBe('编程语言')
+    expect(category?.props('options')).toContainEqual({ value: '编程语言', label: '编程语言' })
+    expect(category?.props('options')).toContainEqual({ value: '数据库', label: '数据库' })
+
+    category?.vm.$emit('change', '数据库')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[0]?.[2]?.document.skills[0]?.category).toBe('数据库')
+
+    category?.vm.$emit('change', undefined)
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[1]?.[2]?.document.skills[0]?.category).toBeNull()
+  })
+
+  it('上传头像后进入实时预览和自动保存，并可移除', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const upload = wrapper.findComponent(Upload)
+    expect(upload.props('listType')).toBe('picture-card')
+    expect(wrapper.find('[data-testid="photo-upload"]').text()).toContain('上传头像')
+    const file = new File([new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10])], 'avatar.png', { type: 'image/png' })
+    expect((upload.props('beforeUpload') as (file: File) => boolean)(file)).toBe(false)
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="preview-photo"]').exists()).toBe(true))
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[0]?.[2]?.document.contact?.photo_data_url).toMatch(/^data:image\/png;base64,/)
+
+    await wrapper.find('[data-testid="photo-remove"]').trigger('click')
+    await vi.waitFor(() => expect(wrapper.find('[data-testid="preview-photo"]').exists()).toBe(false))
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[1]?.[2]?.document.contact?.photo_data_url).toBeNull()
+  })
+
+  it('过大的头像只显示错误，不改变简历', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    const upload = wrapper.findComponent(Upload)
+    const file = new File([new Uint8Array(256 * 1024 + 1)], 'avatar.png', { type: 'image/png' })
+    expect((upload.props('beforeUpload') as (file: File) => boolean)(file)).toBe(false)
+    await wrapper.vm.$nextTick()
+    expect(wrapper.find('[data-testid="photo-error"]').text()).toContain('256 KiB')
+    expect(wrapper.find('[data-testid="preview-photo"]').exists()).toBe(false)
+    expect(updateDraft).not.toHaveBeenCalled()
+  })
+
+  it('没有改动时不发保存请求，左右两栏均可见', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="save-status"]').text()).toBe('已自动保存')
+    expect(wrapper.find('[data-testid="resume-form-pane"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="resume-preview-pane"]').exists()).toBe(true)
+    expect(updateDraft).not.toHaveBeenCalled()
   })
 
   it('保存提交整份文档与当前版本号', async () => {
@@ -181,8 +280,7 @@ describe('ResumeEditorView', () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="basics-headline"]').setValue('资深后端工程师')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
-    await flushPromises()
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
 
     const call = vi.mocked(updateDraft).mock.calls[0]
     expect(call?.[0]).toBe(RESUME_ID)
@@ -199,27 +297,119 @@ describe('ResumeEditorView', () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="basics-headline"]').setValue('第一次修改')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
     await flushPromises()
     await wrapper.find('[data-testid="basics-headline"]').setValue('第二次修改')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
-    await flushPromises()
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
 
     expect(vi.mocked(updateDraft).mock.calls[1]?.[2]?.version).toBe(2)
+  })
+
+  it('保存请求未结束时继续输入，不被旧响应覆盖并接着保存新内容', async () => {
+    let finishFirst!: (value: ResumeDraft) => void
+    vi.mocked(updateDraft).mockImplementationOnce(() => new Promise((resolve) => { finishFirst = resolve }))
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="basics-headline"]').setValue('第一次修改')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    await wrapper.find('[data-testid="basics-headline"]').setValue('第二次修改')
+    const firstDocument = vi.mocked(updateDraft).mock.calls[0]?.[2]?.document
+    expect(firstDocument?.basics.headline).toBe('第一次修改')
+    finishFirst(draftFixture({ version: 2, document_json: firstDocument! }))
+    await flushPromises()
+
+    expect((wrapper.find('[data-testid="basics-headline"]').element as HTMLInputElement).value).toBe('第二次修改')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[1]?.[2]).toMatchObject({
+      version: 2, document: { basics: { headline: '第二次修改' } },
+    })
+  })
+
+  it('等待防抖期间离开页面会先保存，不会丢失改动', async () => {
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('[data-testid="basics-headline"]').setValue('离开前修改')
+    const guard = vi.mocked(onBeforeRouteLeave).mock.calls.at(-1)?.[0]
+    expect(guard).toBeTypeOf('function')
+    if (typeof guard !== 'function') return
+    expect(await (guard as unknown as () => Promise<boolean>)()).toBe(true)
+    expect(updateDraft).toHaveBeenCalledTimes(1)
+    expect(vi.mocked(updateDraft).mock.calls[0]?.[2]?.document.basics.headline).toBe('离开前修改')
   })
 
   it('模块设置面板的改动会随保存一起提交', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await wrapper.find('[data-testid="section-up-EXPERIENCES"]').trigger('click')
-    await wrapper.find('[data-testid="section-visibility-SKILLS"]').trigger('click')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await wrapper.find('[data-testid="template-management"]').trigger('click')
+    await flushPromises()
+    const row = await vi.waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-testid="section-row-EXPERIENCES"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    row.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true, cancelable: true }))
+    await flushPromises()
+    document.querySelector<HTMLElement>('[data-testid="section-visibility-SKILLS"]')?.click()
+    await flushPromises()
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+
+    const savedDoc = vi.mocked(updateDraft).mock.calls[0]?.[2]?.document
+    expect(savedDoc?.section_order.slice(0, 2)).toEqual(['EXPERIENCES', 'SUMMARY'])
+    expect(savedDoc?.hidden_sections).toEqual(['SKILLS'])
+  })
+
+  it('编辑区的模板管理可拖动模块，并立即同步预览及自动保存', async () => {
+    const wrapper = mountView()
     await flushPromises()
 
-    const document = vi.mocked(updateDraft).mock.calls[0]?.[2]?.document
-    expect(document?.section_order.slice(0, 2)).toEqual(['EXPERIENCES', 'SUMMARY'])
-    expect(document?.hidden_sections).toEqual(['SKILLS'])
+    expect(wrapper.find('[data-testid="panel-basics"] [data-testid="template-management"]').exists()).toBe(true)
+    await wrapper.find('[data-testid="template-management"]').trigger('click')
+    await flushPromises()
+    const source = await vi.waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-testid="section-row-SKILLS"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    const target = document.querySelector<HTMLElement>('[data-testid="section-row-SUMMARY"]')
+    expect(target).not.toBeNull()
+    source.dispatchEvent(new Event('dragstart', { bubbles: true }))
+    target?.dispatchEvent(new Event('drop', { bubbles: true, cancelable: true }))
+    await flushPromises()
+
+    const previewOrder = wrapper.findAll('[data-testid^="preview-section-"]').map((section) => section.attributes('data-testid'))
+    expect(previewOrder.slice(0, 2)).toEqual(['preview-section-SKILLS', 'preview-section-SUMMARY'])
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[0]?.[2]?.document.section_order[0]).toBe('SKILLS')
+  })
+
+  it('恢复默认排版后预览和自动保存同步更新，正文不变', async () => {
+    const original = documentFixture()
+    vi.mocked(fetchDraft).mockResolvedValueOnce(draftFixture({
+      document_json: {
+        ...original,
+        section_order: ['SKILLS', ...original.section_order.filter((section) => section !== 'SKILLS')],
+        hidden_sections: ['SUMMARY'],
+      },
+    }))
+    const wrapper = mountView()
+    await flushPromises()
+    await wrapper.find('[data-testid="template-management"]').trigger('click')
+    const reset = await vi.waitFor(() => {
+      const element = document.querySelector<HTMLElement>('[data-testid="restore-default-layout"]')
+      expect(element).not.toBeNull()
+      return element!
+    })
+    reset.click()
+    await flushPromises()
+
+    expect(wrapper.find('[data-testid="preview-section-SUMMARY"]').exists()).toBe(true)
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    const saved = vi.mocked(updateDraft).mock.calls[0]?.[2]?.document
+    expect(saved?.section_order).toEqual(original.section_order)
+    expect(saved?.hidden_sections).toEqual([])
+    expect(saved?.summary).toEqual(original.summary)
   })
 
   it('字段级错误定位到具体条目，而不是只提示"文档非法"', async () => {
@@ -235,7 +425,7 @@ describe('ResumeEditorView', () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="basics-headline"]').setValue('触发保存')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
     await flushPromises()
 
     const marked = wrapper.find('[data-testid="field-error-skills-0"]')
@@ -257,12 +447,12 @@ describe('ResumeEditorView', () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="basics-headline"]').setValue('触发保存')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
     await flushPromises()
 
     const alert = wrapper.find('[data-testid="action-error"]')
     expect(alert.text()).toContain('该候选稿已处理')
-    expect(wrapper.find('[data-testid="reload"]').exists()).toBe(true)
+    expect(wrapper.find('[data-testid="retry-save"]').exists()).toBe(true)
   })
 
   it('网络错误保存失败走全局通知，不在编辑器顶部插入错误块', async () => {
@@ -273,7 +463,7 @@ describe('ResumeEditorView', () => {
     await flushPromises()
 
     await wrapper.find('[data-testid="basics-headline"]').setValue('触发保存')
-    await wrapper.find('[data-testid="save-draft"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
     await flushPromises()
 
     expect(noticeSpy).toHaveBeenCalledTimes(1)

@@ -4,7 +4,7 @@
  *
  * 验证的是"面板只做两件事、且不越界"：
  *
- * - 顺序调整永远是相邻交换，结果仍是六个模块的完整排列；
+ * - 键盘顺序调整是相邻交换，拖动可跨越多个模块；结果仍是六个模块的完整排列；
  * - 显示开关只改 `hidden_sections`，**不**碰 `section_order`；
  * - 面板不因为某个模块暂时为空就替用户隐藏它——它只提示"不会出现在预览中"。
  *
@@ -73,23 +73,71 @@ describe('SectionSettingsPanel', () => {
     expect(ids?.[0]).toBe('section-row-SKILLS')
   })
 
-  it('首项不能上移、末项不能下移', () => {
-    const { wrapper } = mountPanel()
-
-    expect(wrapper.find('[data-testid="section-up-SUMMARY"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-testid="section-down-SUMMARY"]').attributes('disabled')).toBeUndefined()
-    expect(wrapper.find('[data-testid="section-down-LANGUAGES"]').attributes('disabled')).toBeDefined()
-    expect(wrapper.find('[data-testid="section-up-LANGUAGES"]').attributes('disabled')).toBeUndefined()
-  })
-
-  it('上移提交交换后的完整顺序', async () => {
+  it('不展示上下移动按钮，方向键仍能提交完整顺序', async () => {
     const { wrapper, submitted } = mountPanel()
-
-    await wrapper.find('[data-testid="section-up-EXPERIENCES"]').trigger('click')
+    expect(wrapper.text()).not.toContain('上移')
+    expect(wrapper.text()).not.toContain('下移')
+    await wrapper.find('[data-testid="section-row-EXPERIENCES"]').trigger('keydown', { key: 'ArrowUp' })
 
     const value = lastSubmitted(submitted)
     expect(value.section_order.slice(0, 2)).toEqual(['EXPERIENCES', 'SUMMARY'])
     expect([...value.section_order].sort()).toEqual([...SECTION_ORDER_DEFAULT].sort())
+  })
+
+  it('拖动模块调整顺序且不改变显隐', async () => {
+    const { wrapper, submitted } = mountPanel()
+    await wrapper.find('[data-testid="section-row-SKILLS"]').trigger('dragstart')
+    await wrapper.find('[data-testid="section-row-SUMMARY"]').trigger('drop')
+    const value = lastSubmitted(submitted)
+    expect(value.section_order[0]).toBe('SKILLS')
+    expect([...value.section_order].sort()).toEqual([...SECTION_ORDER_DEFAULT].sort())
+    expect(value.hidden_sections).toEqual([])
+  })
+
+  it('拖动到目标行时高亮，离开、放下和取消时清除', async () => {
+    const { wrapper } = mountPanel()
+    const source = wrapper.find('[data-testid="section-row-SKILLS"]')
+    const target = wrapper.find('[data-testid="section-row-SUMMARY"]')
+    await source.trigger('dragstart')
+    await target.trigger('dragover')
+    expect(target.classes()).toContain('section-row--drop-target')
+    expect(source.classes()).not.toContain('section-row--drop-target')
+
+    await target.trigger('dragleave')
+    expect(target.classes()).not.toContain('section-row--drop-target')
+    await target.trigger('dragover')
+    await target.trigger('drop')
+    expect(target.classes()).not.toContain('section-row--drop-target')
+
+    await source.trigger('dragstart')
+    await target.trigger('dragover')
+    await source.trigger('dragend')
+    expect(target.classes()).not.toContain('section-row--drop-target')
+  })
+
+  it('恢复默认排版只重置顺序和显隐，保留所有内容', async () => {
+    const original = documentWithContent()
+    const changed: ResumeDocument = {
+      ...original,
+      section_order: ['SKILLS', ...original.section_order.filter((section) => section !== 'SKILLS')],
+      hidden_sections: ['SUMMARY'],
+    }
+    const { wrapper, submitted } = mountPanel(changed)
+    await wrapper.find('[data-testid="restore-default-layout"]').trigger('click')
+
+    const restored = lastSubmitted(submitted)
+    expect(restored.section_order).toEqual([...SECTION_ORDER_DEFAULT])
+    expect(restored.hidden_sections).toEqual([])
+    expect(restored.summary).toEqual(original.summary)
+    expect(restored.skills).toEqual(original.skills)
+    expect(restored.basics).toEqual(original.basics)
+  })
+
+  it('已经是默认排版时不重复提交', async () => {
+    const { wrapper, submitted } = mountPanel()
+    expect(wrapper.find('[data-testid="restore-default-layout"]').attributes('disabled')).toBeDefined()
+    await wrapper.find('[data-testid="restore-default-layout"]').trigger('click')
+    expect(submitted).toEqual([])
   })
 
   it('关闭显示只改 hidden_sections，不动顺序', async () => {

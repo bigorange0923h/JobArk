@@ -15,9 +15,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { archiveResume, createResume, listResumes, type Resume, type ResumeStatus } from '@/shared/api/resume'
+import { fetchProfile } from '@/shared/api/profile'
+import { archiveResume, createDraft, createResume, listDrafts, listResumes, type Resume, type ResumeStatus } from '@/shared/api/resume'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
+import { createDocumentFromProfile } from './document'
 
 const router = useRouter()
 
@@ -25,6 +27,7 @@ const resumes = ref<Resume[]>([])
 const includeArchived = ref(false)
 const loading = ref(false)
 const submitting = ref(false)
+const openingId = ref<string | null>(null)
 const loadError = ref<ParsedServerError | null>(null)
 /** 写入失败：重名与校验原因留在操作提示里，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
@@ -40,6 +43,7 @@ const STATUS_LABEL: Record<ResumeStatus, string> = {
 const columns = [
   { key: 'name', title: '名称', dataIndex: 'name' },
   { key: 'target_direction', title: '目标方向', dataIndex: 'target_direction' },
+  { key: 'created_at', title: '创建时间', dataIndex: 'created_at' },
   { key: 'status', title: '状态', dataIndex: 'status' },
   { key: 'actions', title: '操作' },
 ]
@@ -126,9 +130,34 @@ async function archive(resume: Resume): Promise<void> {
   }
 }
 
-/** 打开某份简历的详情页。 */
-function open(resume: Resume): void {
+/** 优先打开现有候选稿；没有可编辑草稿时，从当前档案生成一份而不修改历史版本。 */
+async function open(resume: Resume): Promise<void> {
+  openingId.value = resume.id
+  actionError.value = null
+  try {
+    const drafts = await listDrafts(resume.id, 'DRAFT')
+    let draft = drafts[0]
+    if (!draft) {
+      const profile = await fetchProfile()
+      draft = await createDraft(resume.id, { document: createDocumentFromProfile(profile) })
+    }
+    await router.push({ name: 'resume-draft-edit', params: { resumeId: resume.id, draftId: draft.id } })
+  } catch (error: unknown) {
+    actionError.value = resolveActionFailure(error, '打开简历编辑器')
+  } finally {
+    openingId.value = null
+  }
+}
+
+/** 历史版本、确认和归档仍在详情页管理，不混入自动保存流程。 */
+function openHistory(resume: Resume): void {
   void router.push({ name: 'resume-detail', params: { resumeId: resume.id } })
+}
+
+/** 使用本地时区展示日期，不把 UTC 字符串原样作为界面文案。 */
+function formatCreatedAt(value: string): string {
+  const date = new Date(value)
+  return Number.isNaN(date.getTime()) ? value : date.toLocaleString('zh-CN', { year: 'numeric', month: '2-digit', day: '2-digit' })
 }
 
 onMounted(() => {
@@ -139,7 +168,7 @@ onMounted(() => {
 <template>
   <section class="resume-list-view">
     <header class="page-header">
-      <div><p class="page-eyebrow">RESUMES</p><h1>简历</h1><p class="page-subtitle">按目标方向管理候选稿与不可变版本。</p></div>
+      <div><p class="page-eyebrow">RESUMES</p><h1>简历</h1><p class="page-subtitle">选择一份简历继续编辑；已确认版本保留在历史记录中。</p></div>
       <a-space>
         <a-checkbox v-model:checked="includeArchived" data-testid="include-archived" @change="load">包含已归档</a-checkbox>
         <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
@@ -205,16 +234,19 @@ onMounted(() => {
     >
       <template #bodyCell="{ column, record }">
         <template v-if="column.key === 'status'">{{ STATUS_LABEL[(record as Resume).status] }}</template>
+        <template v-else-if="column.key === 'created_at'">{{ formatCreatedAt((record as Resume).created_at) }}</template>
         <template v-else-if="column.key === 'actions'">
           <a-space>
             <a-button
               type="link"
               size="small"
+              :loading="openingId === (record as Resume).id"
               :data-testid="`open-${(record as Resume).id}`"
               @click="open(record as Resume)"
             >
-              打开
+              编辑
             </a-button>
+            <a-button type="link" size="small" :data-testid="`history-${(record as Resume).id}`" @click="openHistory(record as Resume)">版本记录</a-button>
             <a-popconfirm
               title="归档后不再出现在默认列表，历史版本仍可查看。"
               ok-text="归档"

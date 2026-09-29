@@ -14,7 +14,8 @@ import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/t
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
-import { archiveResume, createResume, listResumes, type Resume } from '@/shared/api/resume'
+import { fetchProfile, type Profile } from '@/shared/api/profile'
+import { archiveResume, createDraft, createResume, listDrafts, listResumes, type Resume, type ResumeDraft } from '@/shared/api/resume'
 
 import ResumeListView from './ResumeListView.vue'
 
@@ -30,7 +31,14 @@ vi.mock('@/shared/api/resume', async (importOriginal) => {
     listResumes: vi.fn(),
     createResume: vi.fn(),
     archiveResume: vi.fn(),
+    listDrafts: vi.fn(),
+    createDraft: vi.fn(),
   }
+})
+
+vi.mock('@/shared/api/profile', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@/shared/api/profile')>()
+  return { ...actual, fetchProfile: vi.fn() }
 })
 
 /** 一份简历方向。 */
@@ -56,6 +64,7 @@ beforeEach(() => {
   vi.mocked(listResumes).mockResolvedValue([resumeFixture()])
   vi.mocked(createResume).mockResolvedValue(resumeFixture({ id: 'resume-2', name: 'AI 应用' }))
   vi.mocked(archiveResume).mockResolvedValue(resumeFixture({ status: 'ARCHIVED' }))
+  vi.mocked(listDrafts).mockResolvedValue([{ id: 'draft-1' } as ResumeDraft])
 })
 
 enableAutoUnmount(afterEach)
@@ -79,12 +88,13 @@ describe('ResumeListView', () => {
     expect(alert.text()).toContain('req-resume')
   })
 
-  it('加载成功后列出方向名称与目标方向', async () => {
+  it('加载成功后列出名称、目标方向和创建时间', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     expect(wrapper.text()).toContain('Java 后端')
     expect(wrapper.text()).toContain('后端')
+    expect(wrapper.text()).toContain('2026/01/01')
     expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
   })
 
@@ -138,12 +148,39 @@ describe('ResumeListView', () => {
     expect(listResumes).toHaveBeenCalledTimes(2)
   })
 
-  it('点击打开会按主键跳转到详情页', async () => {
+  it('点击编辑直达现有候选稿，历史版本另有入口', async () => {
     const wrapper = mountView()
     await flushPromises()
 
     await wrapper.find('[data-testid="open-resume-1"]').trigger('click')
+    await flushPromises()
 
+    expect(listDrafts).toHaveBeenCalledWith('resume-1', 'DRAFT')
+    expect(fetchProfile).not.toHaveBeenCalled()
+    expect(createDraft).not.toHaveBeenCalled()
+    expect(push).toHaveBeenCalledWith({ name: 'resume-draft-edit', params: { resumeId: 'resume-1', draftId: 'draft-1' } })
+    await wrapper.find('[data-testid="history-resume-1"]').trigger('click')
     expect(push).toHaveBeenCalledWith({ name: 'resume-detail', params: { resumeId: 'resume-1' } })
+  })
+
+  it('没有待编辑草稿时从档案创建草稿再进入编辑器', async () => {
+    vi.mocked(listDrafts).mockResolvedValueOnce([])
+    vi.mocked(fetchProfile).mockResolvedValueOnce({
+      id: 'profile-1', full_name: '张伟', headline: null, city: null, summary: null,
+      email: null, phone: null, links: [], experiences: [], projects: [], skills: [], educations: [], languages: [],
+      singleton_key: 'default', evidences: [], preference: null,
+      created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1,
+    } as Profile)
+    vi.mocked(createDraft).mockResolvedValueOnce({ id: 'new-draft' } as ResumeDraft)
+    const wrapper = mountView()
+    await flushPromises()
+
+    await wrapper.find('[data-testid="open-resume-1"]').trigger('click')
+    await flushPromises()
+
+    expect(createDraft).toHaveBeenCalledWith('resume-1', expect.objectContaining({
+      document: expect.objectContaining({ basics: expect.objectContaining({ full_name: '张伟' }) }),
+    }))
+    expect(push).toHaveBeenCalledWith({ name: 'resume-draft-edit', params: { resumeId: 'resume-1', draftId: 'new-draft' } })
   })
 })
