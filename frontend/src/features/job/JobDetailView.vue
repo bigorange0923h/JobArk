@@ -8,6 +8,7 @@ import { createApplication } from '@/shared/api/application'
 import { ApiError, requestV1 } from '@/shared/api/client'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
+import JobExclusionPanel from './JobExclusionPanel.vue'
 const props = defineProps<{ jobId: string }>()
 const router = useRouter()
 const job = ref<JobOpportunity | null>(null)
@@ -107,6 +108,7 @@ onMounted(load)
     <template v-if="job">
       <div class="detail-grid">
         <div class="primary-column">
+          <JobExclusionPanel :job-id="jobId" />
           <a-card title="职位信息" class="section-gap">
             <a-form layout="vertical" @submit.prevent="action('save')">
               <div class="form-grid"><a-form-item label="职位" required><a-input v-model:value="job.title" :maxlength="200" /></a-form-item><a-form-item label="地点"><a-input v-model:value="job.location" :maxlength="200" /></a-form-item></div>

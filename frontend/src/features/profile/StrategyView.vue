@@ -9,6 +9,7 @@ import { fetchProfile, type Profile } from '@/shared/api/profile'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 import PreferencePanel from './components/PreferencePanel.vue'
+import ExclusionRulesPanel from './components/ExclusionRulesPanel.vue'
 
 const profile = ref<Profile | null>(null)
 const notCreated = ref(false)
@@ -50,7 +51,7 @@ onMounted(() => { void load() })
       <div>
         <p class="page-eyebrow">STRATEGY</p>
         <h1>求职策略</h1>
-        <p class="page-subtitle">管理目标地点、职位类型、薪资和远程偏好。</p>
+        <p class="page-subtitle">管理求职偏好和当前职位的排除规则。</p>
       </div>
       <a-button size="small" :loading="loading" data-testid="reload-strategy" @click="load">刷新</a-button>
     </header>
@@ -59,7 +60,7 @@ onMounted(() => { void load() })
       type="info"
       show-icon
       class="strategy-notice"
-      message="当前配置仅被保存，尚未自动用于职位匹配或筛选。"
+      message="目标地点、薪资等偏好尚未用于职位匹配；下方结构化排除规则用于当前职位筛选。"
       data-testid="strategy-scope-notice"
     />
     <a-alert
@@ -97,6 +98,7 @@ onMounted(() => { void load() })
       @changed="load"
       @conflict="onConflict"
     />
+    <ExclusionRulesPanel v-if="profile" />
   </section>
 </template>
 

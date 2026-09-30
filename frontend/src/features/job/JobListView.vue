@@ -8,11 +8,15 @@
 
 import { computed, onMounted, ref } from 'vue'
 
-import { createManualJob, listJobs, type JobListItem, type ManualJobCreate } from '@/shared/api/job'
+import { createManualJob, listJobs, previewExclusion, type ExclusionEvaluation, type JobListItem, type ManualJobCreate } from '@/shared/api/job'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
 const jobs = ref<JobListItem[]>([])
+const filter = ref<'ALL' | 'ELIGIBLE' | 'REVIEW' | 'EXCLUDED'>('ALL')
+const evaluations = ref<Record<string, ExclusionEvaluation | null>>({})
+const evaluationErrors = ref<Record<string, string>>({})
+const visibleJobs = computed(() => jobs.value.filter(job => filter.value === 'ALL' || (evaluations.value[job.id]?.decision.verdict ?? 'REVIEW') === filter.value))
 const loading = ref(false)
 const submitting = ref(false)
 /** 页面初始加载失败：保留页面内提示与重试入口。 */
@@ -30,6 +34,7 @@ const columns = [
   { key: 'location', title: '地点', dataIndex: 'location' },
   { key: 'employment_type', title: '类型', dataIndex: 'employment_type' },
   { key: 'status', title: '状态', dataIndex: 'status' },
+  { key: 'exclusion', title: '策略判定' },
   { key: 'latest_captured_at', title: '最近 JD', dataIndex: 'latest_captured_at' },
 ]
 
@@ -88,6 +93,13 @@ async function load(): Promise<void> {
   loadError.value = null
   try {
     jobs.value = await listJobs()
+    const outcomes = await Promise.allSettled(jobs.value.map(job => previewExclusion(job.id)))
+    evaluations.value = {}; evaluationErrors.value = {}
+    outcomes.forEach((outcome, index) => {
+      const id = jobs.value[index]!.id
+      if (outcome.status === 'fulfilled') evaluations.value[id] = outcome.value
+      else { evaluations.value[id] = null; evaluationErrors.value[id] = parseServerError(outcome.reason).message }
+    })
   } catch (error: unknown) {
     loadError.value = parseServerError(error)
   } finally {
@@ -159,10 +171,21 @@ onMounted(() => void load())
     </a-card>
 
     <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="errorDescription" class="load-error" data-testid="load-error" />
-    <a-table v-else :columns="columns" :data-source="jobs" :loading="loading" :pagination="false" row-key="id" class="job-table">
+    <a-radio-group v-model:value="filter" class="job-filters">
+      <a-radio-button value="ALL">全部</a-radio-button><a-radio-button value="ELIGIBLE">可考虑</a-radio-button>
+      <a-radio-button value="REVIEW">待核对</a-radio-button><a-radio-button value="EXCLUDED">已排除</a-radio-button>
+    </a-radio-group>
+    <a-table v-if="!loadError" :columns="columns" :data-source="visibleJobs" :loading="loading" :pagination="false" row-key="id" class="job-table">
       <template #bodyCell="{ column, record }">
         <RouterLink v-if="column.key === 'title'" :to="`/jobs/${record.id}`">{{ record.title }}</RouterLink>
         <template v-else-if="column.key === 'status'">{{ statusLabel(record.status) }}</template>
+        <template v-else-if="column.key === 'exclusion'">
+          <a-tag :color="evaluations[record.id]?.decision.verdict === 'EXCLUDED' ? 'red' : evaluations[record.id]?.decision.verdict === 'ELIGIBLE' ? 'green' : 'orange'">
+            {{ evaluations[record.id]?.decision.verdict === 'EXCLUDED' ? '已排除' : evaluations[record.id]?.decision.verdict === 'ELIGIBLE' ? '可考虑' : '待核对' }}
+          </a-tag>
+          <div v-if="evaluationErrors[record.id]">评估失败：{{ evaluationErrors[record.id] }}</div>
+          <div v-for="(reason, index) in evaluations[record.id]?.decision.reasons ?? []" :key="index">{{ reason.text }}<span v-if="reason.snippet">：{{ reason.snippet }}</span></div>
+        </template>
         <template v-else-if="column.key === 'latest_captured_at'">{{ formatTime(record.latest_captured_at) }}</template>
         <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
       </template>
@@ -173,4 +196,5 @@ onMounted(() => void load())
 <style scoped>
 .form-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr)); gap: 0 1rem; }
 .action-error, .load-error, .job-table { margin-top: 1rem; }
+.job-filters { margin-top: 1rem; }
 </style>

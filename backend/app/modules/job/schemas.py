@@ -89,6 +89,8 @@ class CompanyRead(EditableRead):
     name_normalized: str
     website_url: str | None
     industry: str | None
+    nature_code: str | None
+    industry_code: str | None
     location: str | None
 
 
@@ -128,6 +130,7 @@ class JobOpportunityRead(EditableRead):
     employment_type: str | None
     status: OpportunityStatus
     notes: str | None
+    outsourcing_arrangement: str | None
     postings: list[JobPostingRead]
     latest_snapshot: JobSnapshotRead | None
 

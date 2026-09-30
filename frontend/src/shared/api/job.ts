@@ -18,6 +18,8 @@ export interface JobCompany extends EditableResource {
   name_normalized: string
   website_url: string | null
   industry: string | null
+  nature_code: string | null
+  industry_code: string | null
   location: string | null
 }
 
@@ -61,9 +63,29 @@ export interface JobOpportunity extends EditableResource {
   employment_type: string | null
   status: OpportunityStatus
   notes: string | null
+  outsourcing_arrangement: string | null
   postings: JobPosting[]
   latest_snapshot: JobSnapshot | null
 }
+
+export type ExclusionKind = 'COMPANY_NATURE' | 'COMPANY_INDUSTRY' | 'COMPANY_NAME' | 'JD_KEYWORD'
+export interface ExclusionRule { id: string; kind: ExclusionKind; value: string; enabled: boolean }
+export interface ExclusionPolicy { version: number; rules: ExclusionRule[] }
+export interface ExclusionEvaluation {
+  opportunity_id: string; snapshot_id: string; policy_version: number; company_version: number; opportunity_version: number
+  decision: { verdict: 'EXCLUDED' | 'REVIEW' | 'ELIGIBLE'; reasons: { kind: string; rule_id: string | null; text: string; snippet: string | null }[] }
+  exception_active: boolean; preparation_allowed: boolean
+}
+/** 读取与整体保存结构化规则；旧标签不在这里自动转换。 */
+export function getExclusionPolicy(): Promise<ExclusionPolicy> { return requestV1('/exclusion-policy') }
+export function saveExclusionPolicy(payload: ExclusionPolicy): Promise<ExclusionPolicy> { return requestV1('/exclusion-policy', { init: { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } }) }
+/** 预览与登记评估；投递准备必须调用登记接口以重新评估。 */
+export function previewExclusion(id: string): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion`) }
+export function recordExclusion(id: string): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion/evaluations`, { init: { method: 'POST' } }) }
+/** 显式确认公司性质、行业或单个岗位安排。 */
+export function confirmExclusionFacts(id: string, payload: { company_version: number; opportunity_version: number; nature_code?: string | null; industry_code?: string | null; outsourcing_arrangement?: string | null; confirm: boolean }): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion-facts`, { init: { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } }) }
+/** 记录当前输入限定的单职位例外，原因和确认必填。 */
+export function grantExclusionException(id: string, evaluation: ExclusionEvaluation, reason: string): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion/exception`, { init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: evaluation.snapshot_id, policy_version: evaluation.policy_version, company_version: evaluation.company_version, opportunity_version: evaluation.opportunity_version, reason, confirm: true }) } }) }
 
 export interface ManualJobCreate {
   company: { name: string; website_url: string | null; industry: string | null; location: string | null }

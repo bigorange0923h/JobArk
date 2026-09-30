@@ -186,6 +186,7 @@ def _read_opportunity(
         employment_type=opportunity.employment_type,
         status=opportunity.status,
         notes=opportunity.notes,
+        outsourcing_arrangement=opportunity.outsourcing_arrangement,
         postings=[JobPostingRead.model_validate(posting) for posting in postings],
         latest_snapshot=JobSnapshotRead.model_validate(latest_snapshot) if latest_snapshot else None,
     )

@@ -54,6 +54,28 @@ def test_application_transitions_and_dashboard(db_client: TestClient) -> None:
     assert stats["versions"][0]["applied"] == 1
 
 
+def test_exclusion_blocks_preparation_but_preserves_manual_applied_history(db_client: TestClient) -> None:
+    """排除规则阻止新的准备状态，却不能抹掉已经发生的外部投递事实。"""
+    payload = application_payload(db_client)
+    assert (
+        db_client.put(
+            "/api/v1/exclusion-policy",
+            json={
+                "version": 0,
+                "rules": [{"id": "company", "kind": "COMPANY_NAME", "value": "测试公司", "enabled": True}],
+            },
+        ).status_code
+        == 200
+    )
+    created = db_client.post("/api/v1/applications", json=payload)
+    assert created.status_code == 201
+    path = f"/api/v1/applications/{created.json()['data']['id']}/events"
+    assert db_client.post(path, json={"version": 1, "status": "PREPARING"}).status_code == 409
+    applied = db_client.post(path, json={"version": 1, "status": "APPLIED", "confirm_applied": True})
+    assert applied.status_code == 200
+    assert applied.json()["data"]["current_status"] == "APPLIED"
+
+
 def test_repeat_requires_confirmation_and_keeps_previous(db_client: TestClient) -> None:
     """重复申请产生新尝试，旧快照引用和事件完整保留。"""
     payload = application_payload(db_client)

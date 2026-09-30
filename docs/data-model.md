@@ -69,9 +69,11 @@ AiProvider ──< AiModel
 | `profile_projects` | 名称、角色、描述、成果、技术栈、链接、开始/结束日期、`experience_id`、`source_evidence_id` | 工作项目与个人项目都允许；`experience_id` 可选地指向某段工作经历（个人项目留空），`RESTRICT` 外键：删除被项目关联的经历由服务层返回 409 并列出项目名。 |
 | `profile_educations` | 学校、专业、学位、开始/结束日期、`source_evidence_id` | 学历信息只能由用户或可信证据确认。 |
 | `profile_languages` | 语言、水平、说明、`source_evidence_id` | 语言水平不得被 AI 推断为已验证事实。 |
-| `profile_preferences` | `profile_id`、目标地点、职位类型、薪资下限/上限/币种、远程偏好、排除条件 | `profile_id` 唯一；偏好是可变规则，不属于履历事实。 |
+| `profile_preferences` | `profile_id`、目标地点、职位类型、薪资下限/上限/币种、远程偏好、旧 `exclusions` | `profile_id` 唯一；旧排除标签原样保留，仅供查看，不自动执行。 |
 
 技术栈、目标地点和排除条件可使用小型 `JSONB` 数组，因为 V1 不需要跨用户统计；薪资范围、日期、状态等需要比较的字段必须使用普通列。
+
+结构化排除策略另存 `exclusion_policies` 单人行：`rules JSONB` 中每条含稳定 ID、四类之一、原始取值与启用状态，`version` 用于乐观锁及审计引用。该数组只有 100 条上限且不需要逐条跨用户检索；`profile_preferences.exclusions` 不迁移、不自动归类。`exclusion_evaluations` 保存职位、JD 快照、规则版本、公司版本、岗位版本、结论与依据；`exclusion_exceptions` 保存同一输入版本及明确确认的原因。输入任一版本变化后旧例外失效。
 
 ### 3.4 `profile_revisions`
 
@@ -101,8 +103,8 @@ UNIQUE(profile_id, revision_no)
 
 | 表 | 核心字段 | 关键约束 |
 | --- | --- | --- |
-| `companies` | 名称、规范化名称、官网、行业、地点 | 不对规范化名称做全局唯一，避免同名公司被错误合并。 |
-| `job_opportunities` | `company_id`、职位标题、地点、雇佣类型、机会状态、人工备注、去重键 | 表示一个真实职位机会，不等于招聘 URL；去重结论必须可人工纠正。 |
+| `companies` | 名称、规范化名称、官网、历史行业文本、已确认性质代码、已确认两级行业代码、地点 | 不对规范化名称做全局唯一；历史行业文本不能自行映射为代码。外部候选不写入已确认字段。 |
+| `job_opportunities` | `company_id`、职位标题、地点、雇佣类型、已确认岗位外包安排、机会状态、人工备注、去重键 | 岗位安排独立于公司性质；一个外包岗位不能改变该公司的其他岗位。 |
 | `job_postings` | `opportunity_id`、`source`、`external_id`、`canonical_url`、首次/最后发现时间、页面状态 | 优先唯一 `(source, external_id)`；缺少外部 ID 时使用规范化 URL。 |
 | `job_snapshots` | `posting_id`、`content_hash`、抓取时间、原始 JD、`parsed_json`、解析状态、解析器版本、安全错误码 | 不可变；`UNIQUE(posting_id, content_hash)`。解析失败仍保留原始 JD，且不写入伪造结构化字段。 |
 | `job_parse_results` | `job_snapshot_id`、`parser_version`、`status`、`result_json`、`failure_code` | 后续解析的独立不可变产物；PARSED 保存验证后的结果，FAILED 只保存安全错误码，不更新快照。 |

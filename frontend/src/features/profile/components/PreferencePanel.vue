@@ -206,17 +206,9 @@ async function submit(): Promise<void> {
         />
       </a-form-item>
 
-      <a-form-item
-        label="排除条件"
-        :help="fieldErrors['exclusions'] ?? '不接受的方向，例如 外包、某行业。'"
-        :validate-status="fieldErrors['exclusions'] === undefined ? undefined : 'error'"
-      >
-        <a-select
-          :value="exclusions"
-          mode="tags"
-          :token-separators="[',']"
-          @update:value="(value: unknown) => (exclusions = Array.isArray(value) ? (value as string[]) : [])"
-        />
+      <a-form-item label="历史排除标签" extra="原样保留供查看，不参与自动判定；请在下方分类添加正式规则。">
+        <a-tag v-for="(label, index) in exclusions" :key="index">{{ label }}</a-tag>
+        <span v-if="exclusions.length === 0">暂无历史标签</span>
       </a-form-item>
 
       <a-button type="primary" :loading="saving" data-testid="save-preference" @click="submit">

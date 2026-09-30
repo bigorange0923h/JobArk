@@ -10,7 +10,7 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import DateTime, ForeignKey, String, Text, UniqueConstraint, text
+from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -36,6 +36,8 @@ class Company(UuidPrimaryKeyMixin, EditableMixin, Base):
     )
     website_url: Mapped[str | None] = mapped_column(String(2048), comment="公司官网；不用于自动判定公司唯一性。")
     industry: Mapped[str | None] = mapped_column(String(120), comment="行业描述。")
+    nature_code: Mapped[str | None] = mapped_column(String(40), comment="用户确认的公司性质代码。")
+    industry_code: Mapped[str | None] = mapped_column(String(80), comment="用户确认的两级行业代码。")
     location: Mapped[str | None] = mapped_column(String(200), comment="公司所在地或主要办公地。")
 
 
@@ -54,6 +56,9 @@ class JobOpportunity(UuidPrimaryKeyMixin, EditableMixin, Base):
         enum_column_type(OpportunityStatus, "opportunity_status"), nullable=False, server_default=text("'ACTIVE'")
     )
     notes: Mapped[str | None] = mapped_column(Text, comment="用户手工备注；不承载页面原始内容。")
+    outsourcing_arrangement: Mapped[str | None] = mapped_column(
+        String(32), comment="用户确认的岗位安排：OUTSOURCING、DIRECT 或未知。"
+    )
     dedupe_key: Mapped[str | None] = mapped_column(
         String(256), index=True, comment="供后续人工去重辅助使用的键，不作为唯一约束。"
     )
@@ -120,3 +125,44 @@ class JobParseResult(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     status: Mapped[str] = mapped_column(String(32))
     result_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
     failure_code: Mapped[str | None] = mapped_column(String(64))
+
+
+class ExclusionPolicy(UuidPrimaryKeyMixin, EditableMixin, Base):
+    """单人结构化排除策略；旧偏好标签保持独立且不执行。"""
+
+    __tablename__ = "exclusion_policies"
+    __table_args__ = (CheckConstraint("singleton_key = 'default'", name="singleton_default"),)
+    singleton_key: Mapped[str] = mapped_column(
+        String(16), unique=True, nullable=False, server_default=text("'default'")
+    )
+    rules: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+
+
+class ExclusionEvaluation(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
+    """一次输入版本固定的评估审计记录，重新评估产生新行。"""
+
+    __tablename__ = "exclusion_evaluations"
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("job_opportunities.id", ondelete="RESTRICT"), index=True
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job_snapshots.id", ondelete="RESTRICT"))
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    company_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    opportunity_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    verdict: Mapped[str] = mapped_column(String(16), nullable=False)
+    reasons: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False)
+
+
+class ExclusionException(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
+    """用户明确确认的单职位临时例外；输入任一版本变化便失效。"""
+
+    __tablename__ = "exclusion_exceptions"
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("job_opportunities.id", ondelete="RESTRICT"), index=True
+    )
+    snapshot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job_snapshots.id", ondelete="RESTRICT"))
+    policy_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    company_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    opportunity_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    reason: Mapped[str] = mapped_column(String(1000), nullable=False)
+    confirmed: Mapped[bool] = mapped_column(Boolean, nullable=False)

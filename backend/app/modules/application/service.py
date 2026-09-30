@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.errors import ConflictError, DuplicateApplicationError, ResourceNotFoundError, ValidationFailedError
 from app.core.versioning import apply_versioned_update
 from app.modules.job.models import JobOpportunity, JobPosting, JobSnapshot
+from app.modules.job.strategy import current as current_exclusion
 from app.modules.resume.models import ResumeVersion
 
 from .models import Application, ApplicationEvent
@@ -106,6 +107,10 @@ async def transition(session: AsyncSession, application_id: UUID, payload: Appli
         raise ConflictError("当前阶段不允许此状态变更。")
     if payload.status == S.APPLIED and not payload.confirm_applied:
         raise ValidationFailedError("请确认已在外部平台完成投递。")
+    if payload.status in (S.PREPARING, S.READY_TO_APPLY):
+        exclusion = await current_exclusion(session, entity.job_opportunity_id, entity.job_snapshot_id)
+        if not exclusion.preparation_allowed:
+            raise ConflictError("当前排除策略要求先核对或登记本职位例外，不能进入投递准备。")
     await apply_versioned_update(session, entity, payload.version, {"current_status": payload.status})
     session.add(
         ApplicationEvent(

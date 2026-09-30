@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0009"
+EXPECTED_HEAD = "0010"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -183,6 +183,10 @@ _EXPECTED_FOREIGN_KEYS = {
     "fk_job_opportunities_company_id_companies",
     "fk_job_postings_opportunity_id_job_opportunities",
     "fk_job_snapshots_posting_id_job_postings",
+    "fk_exclusion_evaluations_opportunity_id_job_opportunities",
+    "fk_exclusion_evaluations_snapshot_id_job_snapshots",
+    "fk_exclusion_exceptions_opportunity_id_job_opportunities",
+    "fk_exclusion_exceptions_snapshot_id_job_snapshots",
     # AI 配置：模型必须挂在服务商下，服务商删除时级联清理其模型。
     "fk_ai_models_provider_id_ai_providers",
 }

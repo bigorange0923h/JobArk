@@ -47,7 +47,7 @@ it('独立页面回填既有偏好，保存沿用版本号并重新读取', asyn
   await flushPromises()
 
   expect(wrapper.find('[data-testid="panel-preference"]').exists()).toBe(true)
-  expect(wrapper.find('[data-testid="strategy-scope-notice"]').text()).toContain('尚未自动用于职位匹配')
+  expect(wrapper.find('[data-testid="strategy-scope-notice"]').text()).toContain('结构化排除规则用于当前职位筛选')
   await wrapper.find('[data-testid="save-preference"]').trigger('click')
   await flushPromises()
 
