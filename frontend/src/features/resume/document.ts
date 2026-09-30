@@ -12,7 +12,7 @@
  *   而不是等用户事后补——补录的引用最容易变成"看着像有依据"。
  */
 
-import type { Profile } from '@/shared/api/profile'
+import type { Education, Experience, Language, Profile, Project, Skill } from '@/shared/api/profile'
 import type {
   ResumeDocument,
   ResumeEducationItem,
@@ -240,55 +240,61 @@ export function createDocumentFromProfile(profile: Profile): ResumeDocument {
     contact: { email: profile.email, phone: profile.phone },
     // 简介的依据是档案本身：档案主键也出现在修订快照里，因此这是后端认可的合法溯源。
     summary: summary === undefined || summary === '' ? null : { text: summary, source_fact_id: profile.id },
-    experiences: profile.experiences.map(
-      (item): ResumeExperienceItem => ({
-        source_fact_id: item.id,
-        company: item.company,
-        title: item.title,
-        location: item.location,
-        start_date: item.start_date,
-        end_date: item.end_date,
-        highlights: toHighlights(item.responsibilities, item.achievements),
-      }),
-    ),
-    projects: profile.projects.map(
-      (item): ResumeProjectItem => ({
-        source_fact_id: item.id,
-        name: item.name,
-        role: item.role,
-        description: item.description,
-        tech_stack: [...item.tech_stack],
-        url: item.url,
-      }),
-    ),
-    skills: profile.skills.map(
-      (item): ResumeSkillItem => ({
-        source_fact_id: item.id,
-        name: item.name,
-        category: item.category,
-        proficiency: item.proficiency,
-      }),
-    ),
-    educations: profile.educations.map(
-      (item): ResumeEducationItem => ({
-        source_fact_id: item.id,
-        school: item.school,
-        major: item.major,
-        degree: item.degree,
-        start_date: item.start_date,
-        end_date: item.end_date,
-      }),
-    ),
+    experiences: profile.experiences.map(resumeExperienceFromProfile),
+    projects: profile.projects.map(resumeProjectFromProfile),
+    skills: profile.skills.map(resumeSkillFromProfile),
+    educations: profile.educations.map(resumeEducationFromProfile),
     // 档案里的语言备注（note）在简历文档中没有对应字段：简历上只列语言与水平，
     // 备注属于"补充说明"，放进简历会让版式不可控。不为了不丢字段而给它硬造位置。
-    languages: profile.languages.map(
-      (item): ResumeLanguageItem => ({
-        source_fact_id: item.id,
-        language: item.language,
-        level: item.level,
-      }),
-    ),
+    languages: profile.languages.map(resumeLanguageFromProfile),
   }
+}
+
+/** 把已保存的工作经历复制到候选稿；后续文字编辑只影响简历表达，不回写档案。 */
+export function resumeExperienceFromProfile(item: Experience): ResumeExperienceItem {
+  return {
+    source_fact_id: item.id,
+    company: item.company,
+    title: item.title,
+    location: item.location,
+    start_date: item.start_date,
+    end_date: item.end_date,
+    highlights: toHighlights(item.responsibilities, item.achievements),
+  }
+}
+
+/** 把已保存的项目复制到候选稿；文档暂未建模的成果不被混入项目说明。 */
+export function resumeProjectFromProfile(item: Project): ResumeProjectItem {
+  return {
+    source_fact_id: item.id,
+    name: item.name,
+    role: item.role,
+    description: item.description,
+    tech_stack: [...item.tech_stack],
+    url: item.url,
+  }
+}
+
+/** 把技能事实复制到候选稿，并保留分类与熟练度。 */
+export function resumeSkillFromProfile(item: Skill): ResumeSkillItem {
+  return { source_fact_id: item.id, name: item.name, category: item.category, proficiency: item.proficiency }
+}
+
+/** 把教育事实复制到候选稿。 */
+export function resumeEducationFromProfile(item: Education): ResumeEducationItem {
+  return {
+    source_fact_id: item.id,
+    school: item.school,
+    major: item.major,
+    degree: item.degree,
+    start_date: item.start_date,
+    end_date: item.end_date,
+  }
+}
+
+/** 把语言事实复制到候选稿；档案备注不属于当前简历字段。 */
+export function resumeLanguageFromProfile(item: Language): ResumeLanguageItem {
+  return { source_fact_id: item.id, language: item.language, level: item.level }
 }
 
 /**

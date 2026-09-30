@@ -54,6 +54,21 @@ describe('JobListView', () => {
     expect((wrapper.find('[data-testid="company-name"]').element as HTMLInputElement).value).toBe('')
   })
 
+  it('雇佣类型优先给出常见和历史选项，也允许手动填写其他类型', async () => {
+    vi.mocked(listJobs).mockResolvedValueOnce([{ ...listItem(), employment_type: '学徒制' }])
+    const wrapper = mount(JobListView)
+    await flushPromises()
+    const employment = wrapper.findComponent({ name: 'AAutoComplete' })
+    expect(employment.props('options')).toContainEqual({ value: '全职', label: '全职' })
+    expect(employment.props('options')).toContainEqual({ value: '学徒制', label: '学徒制' })
+    employment.vm.$emit('update:value', '灵活用工')
+    await wrapper.find('[data-testid="company-name"]').setValue('示例科技')
+    await wrapper.find('[data-testid="job-title"]').setValue('后端工程师')
+    await wrapper.find('[data-testid="raw-jd"]').setValue('真实 JD')
+    await wrapper.find('[data-testid="create-job"]').trigger('click')
+    expect(createManualJob).toHaveBeenCalledWith(expect.objectContaining({ employment_type: '灵活用工' }))
+  })
+
   it('服务端拒绝时保留输入并显示原因', async () => {
     vi.mocked(createManualJob).mockRejectedValueOnce(new ApiError({ code: 'VALIDATION_ERROR', message: 'JD 无效。', status: 422 }))
     const wrapper = mount(JobListView)

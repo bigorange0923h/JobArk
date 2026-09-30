@@ -20,6 +20,7 @@ import { parseServerError, type ParsedServerError } from '@/shared/forms/serverE
 
 import { REMOTE_PREFERENCE_LABELS } from '../descriptors'
 import type { FieldOption } from '../types'
+import ProfileTargetLocationsField from './ProfileTargetLocationsField.vue'
 
 const props = defineProps<{
   /** 当前偏好；为 null 表示尚未设置。 */
@@ -45,6 +46,8 @@ const panelError = ref<ParsedServerError | null>(null)
 const saving = ref(false)
 
 const remoteOptions: FieldOption[] = Object.entries(REMOTE_PREFERENCE_LABELS).map(([value, label]) => ({ value, label }))
+const jobTypeOptions: FieldOption[] = ['全职', '兼职', '实习', '合同制'].map((value) => ({ value, label: value }))
+const currencyOptions: FieldOption[] = ['CNY', 'USD', 'HKD', 'EUR', 'GBP', 'JPY'].map((value) => ({ value, label: value }))
 
 const isCreate = computed(() => props.preference === null)
 
@@ -134,26 +137,27 @@ async function submit(): Promise<void> {
     <a-form layout="vertical">
       <a-form-item
         label="目标地点"
-        :help="fieldErrors['target_locations'] ?? '输入后回车添加，例如 上海。'"
+        :help="fieldErrors['target_locations'] ?? '按省份选择多个城市；旧称、其他地区或海外城市可手动添加。'"
         :validate-status="fieldErrors['target_locations'] === undefined ? undefined : 'error'"
       >
-        <a-select
+        <ProfileTargetLocationsField
           :value="targetLocations"
-          mode="tags"
-          :token-separators="[',']"
-          placeholder="上海"
-          @update:value="(value: unknown) => (targetLocations = Array.isArray(value) ? (value as string[]) : [])"
+          :disabled="saving"
+          @update-value="(value: string[]) => (targetLocations = value)"
         />
       </a-form-item>
 
       <a-form-item
         label="职位类型"
-        :help="fieldErrors['job_types'] ?? '输入后回车添加，例如 全职。'"
+        :help="fieldErrors['job_types'] ?? '优先选择常见类型；列表外的职位类型仍可输入后回车添加。'"
         :validate-status="fieldErrors['job_types'] === undefined ? undefined : 'error'"
       >
         <a-select
           :value="jobTypes"
           mode="tags"
+          :options="jobTypeOptions"
+          show-search
+          option-filter-prop="label"
           :token-separators="[',']"
           @update:value="(value: unknown) => (jobTypes = Array.isArray(value) ? (value as string[]) : [])"
         />
@@ -181,10 +185,10 @@ async function submit(): Promise<void> {
         <a-col :xs="24" :md="8">
           <a-form-item
             label="币种"
-            :help="fieldErrors['salary_currency'] ?? 'ISO 4217，例如 CNY。'"
+            :help="fieldErrors['salary_currency'] ?? '优先选择常用币种；其他 ISO 4217 代码可手动输入。'"
             :validate-status="fieldErrors['salary_currency'] === undefined ? undefined : 'error'"
           >
-            <a-input :value="salaryCurrency" :maxlength="3" allow-clear @update:value="(value: unknown) => (salaryCurrency = String(value))" />
+            <a-auto-complete :value="salaryCurrency" :options="currencyOptions" :maxlength="3" allow-clear @update:value="(value: string) => (salaryCurrency = value)" />
           </a-form-item>
         </a-col>
       </a-row>

@@ -20,6 +20,9 @@ const loadError = ref<ParsedServerError | null>(null)
 /** 保存失败：字段级原因内联展示，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
 const form = ref<ManualJobCreate>(emptyForm())
+const employmentTypeOptions = computed(() => [
+  ...new Set(['全职', '兼职', '实习', '合同制', ...jobs.value.map((job) => job.employment_type).filter((value): value is string => !!value)]),
+].map((value) => ({ value, label: value })))
 
 const columns = [
   { key: 'company_name', title: '公司', dataIndex: 'company_name' },
@@ -145,7 +148,7 @@ onMounted(() => void load())
           <a-form-item label="公司" required><a-input v-model:value="form.company.name" :maxlength="200" data-testid="company-name" /></a-form-item>
           <a-form-item label="职位" required><a-input v-model:value="form.title" :maxlength="200" data-testid="job-title" /></a-form-item>
           <a-form-item label="职位地点"><a-input v-model:value="form.location" :maxlength="200" /></a-form-item>
-          <a-form-item label="雇佣类型"><a-input v-model:value="form.employment_type" :maxlength="80" placeholder="例如：全职" /></a-form-item>
+          <a-form-item label="雇佣类型" extra="优先选择常见类型；列表外的类型可直接输入。"><a-auto-complete v-model:value="form.employment_type" :options="employmentTypeOptions" :maxlength="80" placeholder="选择或输入雇佣类型" data-testid="job-employment-type" /></a-form-item>
           <a-form-item label="招聘页面 URL"><a-input v-model:value="form.canonical_url" :maxlength="2048" /></a-form-item>
           <a-form-item label="公司官网"><a-input v-model:value="form.company.website_url" :maxlength="2048" /></a-form-item>
         </div>

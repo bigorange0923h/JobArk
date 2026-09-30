@@ -37,7 +37,12 @@ import { skillCategoryOptions as buildSkillCategoryOptions } from '@/shared/skil
 
 import SectionSettingsPanel from './components/SectionSettingsPanel.vue'
 import ResumePreview from './components/ResumePreview.vue'
-import { SECTION_LABEL, createBlankDocument, isSectionEmpty, sectionDocumentKey, toLines } from './document'
+import DegreeField from '../profile/components/DegreeField.vue'
+import {
+  SECTION_LABEL, createBlankDocument, isSectionEmpty,
+  resumeEducationFromProfile, resumeExperienceFromProfile, resumeLanguageFromProfile,
+  resumeProjectFromProfile, resumeSkillFromProfile, sectionDocumentKey, toLines,
+} from './document'
 
 const props = defineProps<{ resumeId: string; draftId: string }>()
 
@@ -84,6 +89,74 @@ const skillCategoryOptions = computed(() => buildSkillCategoryOptions([
   ...document.value.skills.map((item) => item.category),
   ...(profile.value?.skills ?? []).map((item) => item.category),
 ]))
+const skillProficiencyOptions = [
+  { value: 'BASIC', label: '基础（BASIC）' },
+  { value: 'INTERMEDIATE', label: '熟练（INTERMEDIATE）' },
+  { value: 'ADVANCED', label: '进阶（ADVANCED）' },
+  { value: 'EXPERT', label: '专家（EXPERT）' },
+]
+type Choice = { value: string; label: string }
+const selectedSource = ref<Record<ResumeSection, string | undefined>>({
+  SUMMARY: undefined, EXPERIENCES: undefined, PROJECTS: undefined, SKILLS: undefined,
+  EDUCATIONS: undefined, LANGUAGES: undefined,
+})
+const manualAddTestId: Record<ResumeSection, string> = {
+  SUMMARY: '', EXPERIENCES: 'add-experience', PROJECTS: 'add-project',
+  SKILLS: 'add-skill', EDUCATIONS: 'add-education', LANGUAGES: 'add-language',
+}
+
+/** 只列出尚未加入这份简历的档案事实；删除后仍能重新选入。 */
+function availableChoices<T extends { id: string }>(
+  facts: readonly T[] | undefined,
+  included: readonly { source_fact_id: string | null }[],
+  label: (fact: T) => string,
+): Choice[] {
+  const used = new Set(included.map((item) => item.source_fact_id))
+  return (facts ?? []).filter((fact) => !used.has(fact.id)).map((fact) => ({ value: fact.id, label: label(fact) }))
+}
+
+const sourceChoices = computed<Record<ResumeSection, Choice[]>>(() => ({
+  SUMMARY: [],
+  EXPERIENCES: availableChoices(profile.value?.experiences, document.value.experiences, (item) => `${item.company} · ${item.title}`),
+  PROJECTS: availableChoices(profile.value?.projects, document.value.projects, (item) => item.name),
+  SKILLS: availableChoices(profile.value?.skills, document.value.skills, (item) => item.name),
+  EDUCATIONS: availableChoices(profile.value?.educations, document.value.educations, (item) => item.school),
+  LANGUAGES: availableChoices(profile.value?.languages, document.value.languages, (item) => item.language),
+}))
+
+/** 选择档案事实后复制已有字段并建立来源关联，不触碰已有简历条目。 */
+function addSelectedFact(section: ResumeSection): void {
+  if (section === 'SUMMARY') return
+  const id = selectedSource.value[section]
+  const source = profile.value
+  if (!id || !source || !sourceChoices.value[section].some((option) => option.value === id)) return
+  if (section === 'EXPERIENCES') {
+    const fact = source.experiences.find((item) => item.id === id)
+    if (fact) document.value.experiences.push(resumeExperienceFromProfile(fact))
+  } else if (section === 'PROJECTS') {
+    const fact = source.projects.find((item) => item.id === id)
+    if (fact) document.value.projects.push(resumeProjectFromProfile(fact))
+  } else if (section === 'SKILLS') {
+    const fact = source.skills.find((item) => item.id === id)
+    if (fact) document.value.skills.push(resumeSkillFromProfile(fact))
+  } else if (section === 'EDUCATIONS') {
+    const fact = source.educations.find((item) => item.id === id)
+    if (fact) document.value.educations.push(resumeEducationFromProfile(fact))
+  } else {
+    const fact = source.languages.find((item) => item.id === id)
+    if (fact) document.value.languages.push(resumeLanguageFromProfile(fact))
+  }
+  selectedSource.value[section] = undefined
+}
+
+/** 没有可复用事实时保留手动新增；手写条目没有伪造的档案来源。 */
+function addManualFact(section: ResumeSection): void {
+  if (section === 'EXPERIENCES') addExperience()
+  else if (section === 'PROJECTS') addProject()
+  else if (section === 'SKILLS') addSkill()
+  else if (section === 'EDUCATIONS') addEducation()
+  else if (section === 'LANGUAGES') addLanguage()
+}
 
 /** 把事实列表转成下拉选项，并补一项"手写（无来源）"。 */
 function toOptions<TItem extends { id: string }>(
@@ -546,7 +619,7 @@ onMounted(() => {
                 @update:value="(value: string) => (item.end_date = textOrNull(value))"
               />
               </a-form-item>
-              <a-form-item label="来源经历">
+              <a-form-item label="来源经历" extra="仅调整来源关联，不覆盖已编辑内容；填入档案内容请使用下方「从档案添加」。">
               <a-select
                 :value="item.source_fact_id ?? ''"
                 :options="experienceOptions"
@@ -567,7 +640,6 @@ onMounted(() => {
               {{ entryError('EXPERIENCES', index) }}
             </p>
           </div>
-          <a-button size="small" data-testid="add-experience" @click="addExperience">添加工作经历</a-button>
         </template>
 
         <template v-else-if="section === 'PROJECTS'">
@@ -600,7 +672,7 @@ onMounted(() => {
                 @update:value="(value: string) => (item.url = textOrNull(value))"
               />
               </a-form-item>
-              <a-form-item label="来源项目">
+              <a-form-item label="来源项目" extra="仅调整来源关联，不覆盖已编辑内容；填入档案内容请使用下方「从档案添加」。">
               <a-select
                 :value="item.source_fact_id ?? ''"
                 :options="projectOptions"
@@ -620,7 +692,6 @@ onMounted(() => {
               {{ entryError('PROJECTS', index) }}
             </p>
           </div>
-          <a-button size="small" data-testid="add-project" @click="addProject">添加项目</a-button>
         </template>
 
         <template v-else-if="section === 'SKILLS'">
@@ -639,14 +710,15 @@ onMounted(() => {
               />
               </a-form-item>
               <a-form-item label="展示分级">
-              <a-input
+              <a-auto-complete
                 :value="item.proficiency ?? ''"
-                placeholder="例如 ADVANCED"
+                :options="skillProficiencyOptions"
+                placeholder="选择常用分级或输入自定义文本"
                 :maxlength="32"
                 @update:value="(value: string) => (item.proficiency = textOrNull(value))"
               />
               </a-form-item>
-              <a-form-item label="来源技能">
+              <a-form-item label="来源技能" extra="仅调整来源关联，不覆盖已编辑内容；填入档案内容请使用下方「从档案添加」。">
               <a-select
                 :value="item.source_fact_id ?? ''"
                 :options="skillOptions"
@@ -659,7 +731,6 @@ onMounted(() => {
               {{ entryError('SKILLS', index) }}
             </p>
           </div>
-          <a-button size="small" data-testid="add-skill" @click="addSkill">添加技能</a-button>
         </template>
 
         <template v-else-if="section === 'EDUCATIONS'">
@@ -679,10 +750,10 @@ onMounted(() => {
               />
               </a-form-item>
               <a-form-item label="学历">
-              <a-input
+              <DegreeField
                 :value="item.degree ?? ''"
-                :maxlength="64"
-                @update:value="(value: string) => (item.degree = textOrNull(value))"
+                :max-length="64"
+                @update-value="(value: string) => (item.degree = textOrNull(value))"
               />
               </a-form-item>
               <a-form-item label="开始时间">
@@ -699,7 +770,7 @@ onMounted(() => {
                 @update:value="(value: string) => (item.end_date = textOrNull(value))"
               />
               </a-form-item>
-              <a-form-item label="来源教育经历">
+              <a-form-item label="来源教育经历" extra="仅调整来源关联，不覆盖已编辑内容；填入档案内容请使用下方「从档案添加」。">
               <a-select
                 :value="item.source_fact_id ?? ''"
                 :options="educationOptions"
@@ -716,7 +787,6 @@ onMounted(() => {
               {{ entryError('EDUCATIONS', index) }}
             </p>
           </div>
-          <a-button size="small" data-testid="add-education" @click="addEducation">添加教育经历</a-button>
         </template>
 
         <template v-else>
@@ -736,7 +806,7 @@ onMounted(() => {
                 @update:value="(value: string) => (item.level = textOrNull(value))"
               />
               </a-form-item>
-              <a-form-item label="来源语言能力">
+              <a-form-item label="来源语言能力" extra="仅调整来源关联，不覆盖已编辑内容；填入档案内容请使用下方「从档案添加」。">
               <a-select
                 :value="item.source_fact_id ?? ''"
                 :options="languageOptions"
@@ -749,8 +819,22 @@ onMounted(() => {
               {{ entryError('LANGUAGES', index) }}
             </p>
           </div>
-          <a-button size="small" data-testid="add-language" @click="addLanguage">添加语言能力</a-button>
         </template>
+        <div v-if="section !== 'SUMMARY'" class="fact-add-controls">
+          <a-select
+            :value="selectedSource[section]"
+            :options="sourceChoices[section]"
+            :disabled="sourceChoices[section].length === 0"
+            show-search
+            option-filter-prop="label"
+            :placeholder="sourceChoices[section].length ? `选择档案中的${SECTION_LABEL[section]}` : `档案中暂无可添加的${SECTION_LABEL[section]}`"
+            :aria-label="`从档案选择${SECTION_LABEL[section]}`"
+            :data-testid="`source-picker-${section}`"
+            @change="(value: string) => (selectedSource[section] = value)"
+          />
+          <a-button type="primary" size="small" :disabled="!selectedSource[section]" :data-testid="`add-selected-${section}`" @click="addSelectedFact(section)">从档案添加</a-button>
+          <a-button type="link" size="small" :data-testid="manualAddTestId[section]" @click="addManualFact(section)">手动新增</a-button>
+        </div>
         </a-form>
       </a-card>
       </div>
@@ -817,6 +901,8 @@ onMounted(() => {
 .entry-fields :deep(.ant-select-selector) { min-height: 40px; border-radius: var(--ja-radius); align-items: center; }
 .entry-delete { justify-self: end; }
 .entry-description { margin-top: 16px; }
+.fact-add-controls { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.fact-add-controls :deep(.ant-select) { flex: 1 1 210px; min-width: 180px; }
 
 .entry {
   padding: 1rem 0 1.25rem;

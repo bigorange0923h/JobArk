@@ -173,6 +173,64 @@ describe('ResumeEditorView', () => {
     expect((wrapper.find('[data-testid="skill-0-name"]').element as HTMLInputElement).value).toBe('Python')
   })
 
+  it('优先从档案选择工作经历并填充内容，手动新增仍不伪造来源', async () => {
+    const profile = profileFixture()
+    profile.experiences.push({
+      id: 'exp-2', created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1,
+      company: '新公司', title: '架构师', location: '北京', start_date: '2024-01-01', end_date: null,
+      responsibilities: '负责平台架构', achievements: '延迟降低 30%', source_evidence_id: null,
+    })
+    vi.mocked(fetchProfile).mockResolvedValueOnce(profile)
+    const wrapper = mountView()
+    await flushPromises()
+
+    const picker = wrapper.findAllComponents(Select).find((item) => item.attributes('data-testid') === 'source-picker-EXPERIENCES')
+    expect(picker?.props('options')).toContainEqual({ value: 'exp-2', label: '新公司 · 架构师' })
+    picker?.vm.$emit('change', 'exp-2')
+    await wrapper.vm.$nextTick()
+    await wrapper.find('[data-testid="add-selected-EXPERIENCES"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    const saved = vi.mocked(updateDraft).mock.calls[0]?.[2]?.document
+    expect(saved?.experiences[1]).toMatchObject({
+      source_fact_id: 'exp-2', company: '新公司', title: '架构师',
+      highlights: ['负责平台架构', '延迟降低 30%'],
+    })
+    expect(picker?.props('options')).not.toContainEqual({ value: 'exp-2', label: '新公司 · 架构师' })
+
+    await wrapper.find('[data-testid="add-experience"]').trigger('click')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[1]?.[2]?.document.experiences[2]?.source_fact_id).toBeNull()
+  })
+
+  it('项目、技能、教育和语言也从档案选择添加，且保留来源关联', async () => {
+    const profile = profileFixture()
+    const meta = { created_at: '2026-01-01T00:00:00Z', updated_at: '2026-01-01T00:00:00Z', version: 1 }
+    profile.projects.push({ ...meta, id: 'project-2', name: '搜索平台', role: '开发', description: '建设检索服务', achievements: null, tech_stack: ['Python'], url: null, start_date: null, end_date: null, experience_id: null, source_evidence_id: null })
+    profile.skills.push({ ...profile.skills[0]!, id: 'skill-2', name: 'Go', name_normalized: 'go' })
+    profile.educations.push({ ...meta, id: 'education-2', school: '某大学', major: '计算机', degree: '本科', start_date: null, end_date: null, source_evidence_id: null })
+    profile.languages.push({ ...meta, id: 'language-2', language: '英语', level: 'CET-6', note: null, source_evidence_id: null })
+    vi.mocked(fetchProfile).mockResolvedValueOnce(profile)
+    const wrapper = mountView()
+    await flushPromises()
+
+    for (const [section, id] of [
+      ['PROJECTS', 'project-2'], ['SKILLS', 'skill-2'], ['EDUCATIONS', 'education-2'], ['LANGUAGES', 'language-2'],
+    ] as const) {
+      const picker = wrapper.findAllComponents(Select).find((item) => item.attributes('data-testid') === `source-picker-${section}`)
+      expect(picker?.props('options')).toContainEqual(expect.objectContaining({ value: id }))
+      picker?.vm.$emit('change', id)
+      await wrapper.vm.$nextTick()
+      await wrapper.find(`[data-testid="add-selected-${section}"]`).trigger('click')
+    }
+
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalled(), { timeout: 1800 })
+    const saved = vi.mocked(updateDraft).mock.calls.at(-1)?.[2]?.document
+    expect(saved?.projects[0]).toMatchObject({ source_fact_id: 'project-2', name: '搜索平台' })
+    expect(saved?.skills[1]).toMatchObject({ source_fact_id: 'skill-2', name: 'Go' })
+    expect(saved?.educations[0]).toMatchObject({ source_fact_id: 'education-2', school: '某大学' })
+    expect(saved?.languages[0]).toMatchObject({ source_fact_id: 'language-2', language: '英语' })
+  })
+
   it('头部短字段和经历条目按双列分组，邮箱与电话各有独立标签', async () => {
     const wrapper = mountView()
     await flushPromises()
@@ -233,6 +291,21 @@ describe('ResumeEditorView', () => {
     category?.vm.$emit('change', undefined)
     await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(2), { timeout: 1800 })
     expect(vi.mocked(updateDraft).mock.calls[1]?.[2]?.document.skills[0]?.category).toBeNull()
+  })
+
+  it('技能分级提供常用选项，旧学历手写值不因其他字段保存而丢失', async () => {
+    const original = documentFixture()
+    original.educations.push({ source_fact_id: null, school: '某大学', major: null, degree: 'MBA', start_date: null, end_date: null })
+    vi.mocked(fetchDraft).mockResolvedValueOnce(draftFixture({ document_json: original }))
+    const wrapper = mountView()
+    await flushPromises()
+    const proficiency = wrapper.find('[data-testid="entry-skills-0"]').findComponent({ name: 'AAutoComplete' })
+    expect(proficiency.props('options')).toContainEqual({ value: 'ADVANCED', label: '进阶（ADVANCED）' })
+    expect((wrapper.find('[data-testid="entry-educations-0"] input[placeholder^="填写其他学历"]').element as HTMLInputElement).value).toBe('MBA')
+
+    await wrapper.find('[data-testid="basics-headline"]').setValue('更新头衔')
+    await vi.waitFor(() => expect(updateDraft).toHaveBeenCalledTimes(1), { timeout: 1800 })
+    expect(vi.mocked(updateDraft).mock.calls[0]?.[2]?.document.educations[0]?.degree).toBe('MBA')
   })
 
   it('上传头像后进入实时预览和自动保存，并可移除', async () => {
