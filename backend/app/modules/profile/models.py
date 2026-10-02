@@ -24,6 +24,7 @@ from sqlalchemy import (
     Date,
     DateTime,
     ForeignKey,
+    Index,
     Integer,
     Numeric,
     String,
@@ -92,26 +93,31 @@ class PersonalProfile(UuidPrimaryKeyMixin, EditableMixin, Base):
     # 会让"改了排序值但界面没变"这种问题看起来像前端没生效。
     # 排序写在关系上而不是各个查询里：聚合读取、修订快照等所有加载路径才能得到同一次序。
     skills: Mapped[list[ProfileSkill]] = relationship(
+        primaryjoin="and_(PersonalProfile.id == ProfileSkill.profile_id, ProfileSkill.archived_at.is_(None))",
         back_populates="profile",
         lazy="selectin",
         order_by="(ProfileSkill.sort_order, ProfileSkill.created_at)",
     )
     experiences: Mapped[list[ProfileExperience]] = relationship(
+        primaryjoin="and_(PersonalProfile.id == ProfileExperience.profile_id, ProfileExperience.archived_at.is_(None))",
         back_populates="profile",
         lazy="selectin",
         order_by="(ProfileExperience.sort_order, ProfileExperience.created_at)",
     )
     projects: Mapped[list[ProfileProject]] = relationship(
+        primaryjoin="and_(PersonalProfile.id == ProfileProject.profile_id, ProfileProject.archived_at.is_(None))",
         back_populates="profile",
         lazy="selectin",
         order_by="(ProfileProject.sort_order, ProfileProject.created_at)",
     )
     educations: Mapped[list[ProfileEducation]] = relationship(
+        primaryjoin="and_(PersonalProfile.id == ProfileEducation.profile_id, ProfileEducation.archived_at.is_(None))",
         back_populates="profile",
         lazy="selectin",
         order_by="(ProfileEducation.sort_order, ProfileEducation.created_at)",
     )
     languages: Mapped[list[ProfileLanguage]] = relationship(
+        primaryjoin="and_(PersonalProfile.id == ProfileLanguage.profile_id, ProfileLanguage.archived_at.is_(None))",
         back_populates="profile",
         lazy="selectin",
         order_by="(ProfileLanguage.sort_order, ProfileLanguage.created_at)",
@@ -159,7 +165,16 @@ class ProfileEvidence(UuidPrimaryKeyMixin, EditableMixin, Base):
     profile: Mapped[PersonalProfile] = relationship(back_populates="evidences", lazy="raise")
 
 
-class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, Base):
+class ArchivedFactMixin:
+    """事实归档列；保留历史引用，当前档案默认排除归档事实。"""
+
+    archived_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True),
+        comment="日常删除执行归档，不改变历史修订与版本。",
+    )
+
+
+class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, ArchivedFactMixin, Base):
     """技能事实。
 
     `claim_status` 与 `source_evidence_id` 由数据库约束联动：标记为 `VERIFIED` 时必须挂证据，
@@ -168,7 +183,13 @@ class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, Base):
 
     __tablename__ = "profile_skills"
     __table_args__ = (
-        UniqueConstraint("profile_id", "name_normalized", name="uq_profile_skills_profile_id_name_normalized"),
+        Index(
+            "uq_profile_skills_active_name",
+            "profile_id",
+            "name_normalized",
+            unique=True,
+            postgresql_where=text("archived_at IS NULL"),
+        ),
         CheckConstraint(
             "claim_status <> 'VERIFIED' OR source_evidence_id IS NOT NULL",
             name="verified_requires_evidence",
@@ -206,7 +227,7 @@ class ProfileSkill(UuidPrimaryKeyMixin, EditableMixin, Base):
     profile: Mapped[PersonalProfile] = relationship(back_populates="skills", lazy="raise")
 
 
-class ProfileExperience(UuidPrimaryKeyMixin, EditableMixin, Base):
+class ProfileExperience(UuidPrimaryKeyMixin, EditableMixin, ArchivedFactMixin, Base):
     """工作经历。"""
 
     __tablename__ = "profile_experiences"
@@ -234,7 +255,7 @@ class ProfileExperience(UuidPrimaryKeyMixin, EditableMixin, Base):
     profile: Mapped[PersonalProfile] = relationship(back_populates="experiences", lazy="raise")
 
 
-class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, Base):
+class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, ArchivedFactMixin, Base):
     """项目经历。
 
     工作项目与个人项目都记录在此。可选地关联到某段工作经历（`experience_id`）：关联后就能看清
@@ -280,10 +301,20 @@ class ProfileProject(UuidPrimaryKeyMixin, EditableMixin, Base):
     )
     sort_order: Mapped[int] = mapped_column(Integer, nullable=False, server_default=text("0"), default=0)
 
+    experience: Mapped[ProfileExperience | None] = relationship(lazy="selectin", foreign_keys=[experience_id])
+
+    @property
+    def experience_summary(self) -> str | None:
+        """返回已有项目的经历归属摘要，归档不静默解绑。"""
+        if self.experience is None:
+            return None
+        label = f"{self.experience.company} / {self.experience.title}"
+        return label + ("（已归档）" if self.experience.archived_at is not None else "")
+
     profile: Mapped[PersonalProfile] = relationship(back_populates="projects", lazy="raise")
 
 
-class ProfileEducation(UuidPrimaryKeyMixin, EditableMixin, Base):
+class ProfileEducation(UuidPrimaryKeyMixin, EditableMixin, ArchivedFactMixin, Base):
     """教育经历。"""
 
     __tablename__ = "profile_educations"
@@ -314,7 +345,7 @@ class ProfileEducation(UuidPrimaryKeyMixin, EditableMixin, Base):
     profile: Mapped[PersonalProfile] = relationship(back_populates="educations", lazy="raise")
 
 
-class ProfileLanguage(UuidPrimaryKeyMixin, EditableMixin, Base):
+class ProfileLanguage(UuidPrimaryKeyMixin, EditableMixin, ArchivedFactMixin, Base):
     """语言能力。"""
 
     __tablename__ = "profile_languages"

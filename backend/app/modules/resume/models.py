@@ -120,6 +120,12 @@ class ResumeVersionEvidence(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
         nullable=False,
         index=True,
     )
+    source_snapshot_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB,
+        nullable=False,
+        server_default=text("'{\"history_missing\": true}'::jsonb"),
+        comment="当时实际使用的来源冻结内容；旧数据缺失不得由当前来源反推。",
+    )
     evidence_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True),
         ForeignKey("profile_evidences.id", ondelete="RESTRICT"),
@@ -153,6 +159,11 @@ class ResumeDraft(UuidPrimaryKeyMixin, EditableMixin, Base):
         ForeignKey("resumes.id", ondelete="RESTRICT"),
         nullable=False,
         index=True,
+    )
+    source_profile_revision_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("profile_revisions.id", ondelete="RESTRICT"),
+        index=True,
+        comment="候选生成时固定的资料依据；无依据的人工空白稿可空。",
     )
     base_resume_version_id: Mapped[uuid.UUID | None] = mapped_column(
         PGUUID(as_uuid=True),

@@ -3,7 +3,7 @@
 import uuid
 from typing import Any
 
-from sqlalchemy import ForeignKey, String
+from sqlalchemy import CheckConstraint, ForeignKey, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -15,6 +15,13 @@ class MatchResult(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     """一次固定输入的分析；报告内包含条件、证据、缺口和不确定项。"""
 
     __tablename__ = "match_results"
+    __table_args__ = (
+        CheckConstraint(
+            "(match_kind = 'PROFILE' AND resume_version_id IS NULL) OR "
+            "(match_kind = 'RESUME' AND resume_version_id IS NOT NULL)",
+            name="match_kind_requires_version",
+        ),
+    )
     job_snapshot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job_snapshots.id", ondelete="RESTRICT"), index=True)
     profile_revision_id: Mapped[uuid.UUID] = mapped_column(
         ForeignKey("profile_revisions.id", ondelete="RESTRICT"), index=True

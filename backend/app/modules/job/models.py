@@ -10,7 +10,18 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, CheckConstraint, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint, text
+from sqlalchemy import (
+    Boolean,
+    CheckConstraint,
+    DateTime,
+    ForeignKey,
+    ForeignKeyConstraint,
+    Integer,
+    String,
+    Text,
+    UniqueConstraint,
+    text,
+)
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.dialects.postgresql import UUID as PGUUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -71,12 +82,20 @@ class JobPosting(UuidPrimaryKeyMixin, EditableMixin, Base):
     __table_args__ = (
         UniqueConstraint("source", "external_id", name="uq_job_postings_source_external_id"),
         UniqueConstraint("source", "canonical_url", name="uq_job_postings_source_canonical_url"),
+        ForeignKeyConstraint(
+            ["id", "current_snapshot_id"],
+            ["job_snapshots.posting_id", "job_snapshots.id"],
+            name="fk_job_postings_current_snapshot",
+            ondelete="RESTRICT",
+            use_alter=True,
+        ),
     )
 
     opportunity_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("job_opportunities.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     source: Mapped[JobSource] = mapped_column(enum_column_type(JobSource, "job_source"), nullable=False)
+    current_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
     external_id: Mapped[str | None] = mapped_column(String(200), comment="来源平台的职位标识；手工录入可为空。")
     canonical_url: Mapped[str | None] = mapped_column(String(2048), comment="规范化页面地址；手工录入可为空。")
     first_seen_at: Mapped[datetime] = mapped_column(
@@ -94,7 +113,10 @@ class JobSnapshot(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     """不可变的某次 JD 内容快照。"""
 
     __tablename__ = "job_snapshots"
-    __table_args__ = (UniqueConstraint("posting_id", "content_hash", name="uq_job_snapshots_posting_id_content_hash"),)
+    __table_args__ = (
+        UniqueConstraint("posting_id", "content_hash", name="uq_job_snapshots_posting_id_content_hash"),
+        UniqueConstraint("posting_id", "id", name="uq_job_snapshots_posting_id_id"),
+    )
 
     posting_id: Mapped[uuid.UUID] = mapped_column(
         PGUUID(as_uuid=True), ForeignKey("job_postings.id", ondelete="RESTRICT"), nullable=False, index=True
@@ -120,6 +142,14 @@ class JobParseResult(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     """独立不可变解析产物，重试生成新记录，不修改 JD 历史。"""
 
     __tablename__ = "job_parse_results"
+    __table_args__ = (
+        CheckConstraint(
+            "(status = 'PARSED' AND result_json IS NOT NULL AND result_json <> 'null'::jsonb "
+            "AND failure_code IS NULL) OR "
+            "(status = 'FAILED' AND (result_json IS NULL OR result_json = 'null'::jsonb) AND failure_code IS NOT NULL)",
+            name="parse_result_state",
+        ),
+    )
     job_snapshot_id: Mapped[uuid.UUID] = mapped_column(ForeignKey("job_snapshots.id", ondelete="RESTRICT"), index=True)
     parser_version: Mapped[str] = mapped_column(String(64))
     status: Mapped[str] = mapped_column(String(32))

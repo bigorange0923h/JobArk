@@ -23,7 +23,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0010"
+EXPECTED_HEAD = "0011"
 
 
 async def _read_current_revision(database_url: str) -> str | None:
@@ -178,6 +178,8 @@ _EXPECTED_FOREIGN_KEYS = {
     "fk_resume_version_evidences_evidence_id_profile_evidences",
     "fk_resume_drafts_resume_id_resumes",
     "fk_resume_drafts_base_resume_version_id_resume_versions",
+    "fk_resume_drafts_source_profile_revision_id_profile_revisions",
+    "fk_job_postings_current_snapshot",
     "fk_resume_drafts_confirmed_resume_version_id_resume_versions",
     # Job：机会、页面与快照必须保留物理引用完整性。
     "fk_job_opportunities_company_id_companies",
