@@ -157,6 +157,59 @@ class JobParseResult(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     failure_code: Mapped[str | None] = mapped_column(String(64))
 
 
+class JobImportCandidate(UuidPrimaryKeyMixin, EditableMixin, Base):
+    """平台内容的待确认候选；原提取内容冻结，人工确认及产物在同一事务记录。"""
+
+    __tablename__ = "job_import_candidates"
+    __table_args__ = (
+        CheckConstraint("source <> 'MANUAL'", name="platform_source"),
+        CheckConstraint(
+            "(target_posting_id IS NULL AND observed_posting_version IS NULL) OR "
+            "(target_posting_id IS NOT NULL AND observed_posting_version IS NOT NULL "
+            "AND observed_posting_version > 0)",
+            name="observed_target",
+        ),
+        CheckConstraint(
+            "(status = 'PENDING' AND confirmed_posting_id IS NULL AND confirmed_snapshot_id IS NULL "
+            "AND reviewed_json IS NULL) OR (status = 'CONFIRMED' AND confirmed_posting_id IS NOT NULL "
+            "AND confirmed_snapshot_id IS NOT NULL AND reviewed_json IS NOT NULL "
+            "AND reviewed_json <> 'null'::jsonb)",
+            name="confirmation_state",
+        ),
+        ForeignKeyConstraint(
+            ["confirmed_posting_id", "confirmed_snapshot_id"],
+            ["job_snapshots.posting_id", "job_snapshots.id"],
+            name="fk_job_import_candidates_confirmed_snapshot",
+            ondelete="RESTRICT",
+        ),
+    )
+
+    source: Mapped[JobSource] = mapped_column(enum_column_type(JobSource, "import_source"), nullable=False)
+    external_id: Mapped[str] = mapped_column(String(200), nullable=False, comment="详情链接识别出的稳定职位 ID。")
+    canonical_url: Mapped[str] = mapped_column(String(2048), nullable=False, comment="去除跟踪参数的白名单详情地址。")
+    input_hash: Mapped[str] = mapped_column(
+        String(64), nullable=False, comment="用户提供内容的 SHA-256，不保存整个 HTML。"
+    )
+    extractor_version: Mapped[str] = mapped_column(String(64), nullable=False, comment="本地页面提取器版本。")
+    candidate_json: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, comment="冻结的必要字段、正文摘录和警告。"
+    )
+    reviewed_json: Mapped[dict[str, Any] | None] = mapped_column(
+        JSONB(none_as_null=True),
+        comment="明确确认的人工核对内容；与原候选一起保留。",
+    )
+    expires_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, comment="待确认候选的过期时间。"
+    )
+    status: Mapped[str] = mapped_column(String(32), nullable=False, server_default=text("'PENDING'"))
+    target_posting_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("job_postings.id", ondelete="RESTRICT"))
+    observed_posting_version: Mapped[int | None] = mapped_column(
+        Integer, comment="预览时页面版本；确认时防止覆盖新观察。"
+    )
+    confirmed_posting_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("job_postings.id", ondelete="RESTRICT"))
+    confirmed_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True))
+
+
 class ExclusionPolicy(UuidPrimaryKeyMixin, EditableMixin, Base):
     """单人结构化排除策略；旧偏好标签保持独立且不执行。"""
 

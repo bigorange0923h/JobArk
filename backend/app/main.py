@@ -22,6 +22,7 @@ from .core.middleware import RequestContextMiddleware
 from .core.responses import ApiResponse, success
 from .modules.application.router import router as application_router
 from .modules.dashboard.router import router as dashboard_router
+from .modules.job.import_router import router as job_import_router
 from .modules.job.parsing import router as parsing_router
 from .modules.job.router import router as job_router
 from .modules.job.strategy import router as strategy_router
@@ -134,6 +135,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api_v1.include_router(resume_router)
     api_v1.include_router(strategy_router)
     api_v1.include_router(job_router)
+    api_v1.include_router(job_import_router)
     api_v1.include_router(application_router)
     api_v1.include_router(dashboard_router)
     api_v1.include_router(matching_router)

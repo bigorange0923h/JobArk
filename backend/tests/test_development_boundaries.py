@@ -49,7 +49,7 @@ async def development_client() -> AsyncIterator[AsyncClient]:
                 await connection.run_sync(migrate)
                 assert (
                     await connection.execute(text("SELECT version_num FROM alembic_version"))
-                ).scalar_one() == "0011"
+                ).scalar_one() == "0012"
                 application = create_app()
 
                 async def override_session() -> AsyncIterator[AsyncSession]:

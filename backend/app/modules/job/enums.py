@@ -11,6 +11,10 @@ class JobSource(StrEnum):
     """职位页面来源。"""
 
     MANUAL = "MANUAL"
+    LINKEDIN = "LINKEDIN"
+    INDEED = "INDEED"
+    BOSS = "BOSS"
+    FIFTYONEJOB = "FIFTYONEJOB"
 
 
 class OpportunityStatus(StrEnum):
