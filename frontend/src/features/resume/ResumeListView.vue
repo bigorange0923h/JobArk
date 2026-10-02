@@ -15,11 +15,11 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { fetchProfile } from '@/shared/api/profile'
+import { fetchProfile, createRevision } from '@/shared/api/profile'
 import { archiveResume, createDraft, createResume, listDrafts, listResumes, type Resume, type ResumeStatus } from '@/shared/api/resume'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
-import { createDocumentFromProfile } from './document'
+import { createDocumentFromProfile, profileFromRevision } from './document'
 
 const router = useRouter()
 
@@ -139,7 +139,8 @@ async function open(resume: Resume): Promise<void> {
     let draft = drafts[0]
     if (!draft) {
       const profile = await fetchProfile()
-      draft = await createDraft(resume.id, { document: createDocumentFromProfile(profile) })
+      const revision = await createRevision('生成简历候选稿')
+      draft = await createDraft(resume.id, { document: createDocumentFromProfile(profileFromRevision(revision, profile)), source_profile_revision_id: revision.id })
     }
     await router.push({ name: 'resume-draft-edit', params: { resumeId: resume.id, draftId: draft.id } })
   } catch (error: unknown) {

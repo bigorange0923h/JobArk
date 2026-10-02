@@ -17,7 +17,7 @@ import { onBeforeRouteLeave } from 'vue-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
-import { fetchProfile, type Profile } from '@/shared/api/profile'
+import { fetchRevision, type Profile } from '@/shared/api/profile'
 import { fetchDraft, updateDraft, type ResumeDocument, type ResumeDraft } from '@/shared/api/resume'
 
 import ResumeEditorView from './ResumeEditorView.vue'
@@ -45,7 +45,7 @@ vi.mock('@/shared/api/profile', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/shared/api/profile')>()
   return {
     ...actual,
-    fetchProfile: vi.fn(),
+    fetchRevision: vi.fn(),
   }
 })
 
@@ -83,6 +83,7 @@ function draftFixture(overrides: Partial<ResumeDraft> = {}): ResumeDraft {
     version: 1,
     resume_id: RESUME_ID,
     base_resume_version_id: null,
+    source_profile_revision_id: 'revision-1',
     document_json: documentFixture(),
     status: 'DRAFT',
     confirmed_resume_version_id: null,
@@ -132,6 +133,10 @@ function profileFixture(): Profile {
   }
 }
 
+/** 测试编辑来源固定为修订内容，当前资料不参与下拉。 */
+function revisionFixture(profile: Profile): import('@/shared/api/profile').Revision {
+  return { id: 'revision-1', profile_id: profile.id, revision_no: 1, created_at: profile.created_at, reason: '生成', snapshot_json: { profile, skills: profile.skills, experiences: profile.experiences, projects: profile.projects, educations: profile.educations, languages: profile.languages } }
+}
 function mountView(): VueWrapper {
   return mount(ResumeEditorView, { props: { resumeId: RESUME_ID, draftId: DRAFT_ID } })
 }
@@ -144,7 +149,7 @@ beforeEach(() => {
     version: payload.version + 1,
     document_json: payload.document,
   }))
-  vi.mocked(fetchProfile).mockResolvedValue(profileFixture())
+  vi.mocked(fetchRevision).mockResolvedValue(revisionFixture(profileFixture()))
 })
 
 enableAutoUnmount(afterEach)
@@ -180,7 +185,7 @@ describe('ResumeEditorView', () => {
       company: '新公司', title: '架构师', location: '北京', start_date: '2024-01-01', end_date: null,
       responsibilities: '负责平台架构', achievements: '延迟降低 30%', source_evidence_id: null,
     })
-    vi.mocked(fetchProfile).mockResolvedValueOnce(profile)
+    vi.mocked(fetchRevision).mockResolvedValueOnce(revisionFixture(profile))
     const wrapper = mountView()
     await flushPromises()
 
@@ -209,7 +214,7 @@ describe('ResumeEditorView', () => {
     profile.skills.push({ ...profile.skills[0]!, id: 'skill-2', name: 'Go', name_normalized: 'go' })
     profile.educations.push({ ...meta, id: 'education-2', school: '某大学', major: '计算机', degree: '本科', start_date: null, end_date: null, source_evidence_id: null })
     profile.languages.push({ ...meta, id: 'language-2', language: '英语', level: 'CET-6', note: null, source_evidence_id: null })
-    vi.mocked(fetchProfile).mockResolvedValueOnce(profile)
+    vi.mocked(fetchRevision).mockResolvedValueOnce(revisionFixture(profile))
     const wrapper = mountView()
     await flushPromises()
 

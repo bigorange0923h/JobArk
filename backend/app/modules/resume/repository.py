@@ -11,12 +11,15 @@
 from __future__ import annotations
 
 import uuid
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
+from typing import Any
 
 from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import Base
+from app.core.errors import ConflictError
 from app.modules.profile.models import ProfileEvidence, ProfileRevision
 
 from .enums import DraftStatus, ResumeStatus
@@ -91,6 +94,8 @@ async def next_version_no(session: AsyncSession, resume_id: uuid.UUID) -> int:
         这里只做"当前最大值 + 1"；并发下可能算出同一个号，由
         `UNIQUE(resume_id, version_no)` 兜底，服务层把它转成可理解的冲突错误。
     """
+    # 锁定长期简历方向，串行分配编号；唯一约束继续作为兜底。
+    await session.scalar(select(Resume).where(Resume.id == resume_id).with_for_update())
     current = await session.scalar(
         select(func.max(ResumeVersion.version_no)).where(ResumeVersion.resume_id == resume_id)
     )
@@ -197,7 +202,13 @@ async def add[ModelT: Base](session: AsyncSession, entity: ModelT) -> ModelT:
         只 flush 不 commit：提交由服务层决定，避免把多个写操作拆成多个事务。
     """
     session.add(entity)
-    await session.flush()
+    try:
+        await session.flush()
+    except IntegrityError as error:
+        await session.rollback()
+        if getattr(error.orig, "sqlstate", None) == "23505":
+            raise ConflictError("简历记录已被其他操作创建，请刷新后重试。") from error
+        raise
     return entity
 
 
@@ -205,6 +216,7 @@ async def add_version_evidences(
     session: AsyncSession,
     version_id: uuid.UUID,
     evidence_ids: Sequence[uuid.UUID],
+    snapshots: Mapping[uuid.UUID, dict[str, Any]],
 ) -> None:
     """写入版本与证据的关联。
 
@@ -216,6 +228,21 @@ async def add_version_evidences(
     if not evidence_ids:
         return
     session.add_all(
-        ResumeVersionEvidence(resume_version_id=version_id, evidence_id=evidence_id) for evidence_id in evidence_ids
+        ResumeVersionEvidence(
+            resume_version_id=version_id,
+            evidence_id=evidence_id,
+            source_snapshot_json=snapshots[evidence_id],
+        )
+        for evidence_id in evidence_ids
     )
     await session.flush()
+
+
+async def evidence_snapshots(session: AsyncSession, version_id: uuid.UUID) -> list[dict[str, Any]]:
+    """读取不可变版本的来源声明；不回读当前证据内容。"""
+    rows = await session.scalars(
+        select(ResumeVersionEvidence)
+        .where(ResumeVersionEvidence.resume_version_id == version_id)
+        .order_by(ResumeVersionEvidence.created_at, ResumeVersionEvidence.id)
+    )
+    return [{"evidence_id": str(row.evidence_id), **row.source_snapshot_json} for row in rows]

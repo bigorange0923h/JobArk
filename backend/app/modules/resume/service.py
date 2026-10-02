@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Mapping, Sequence
+from copy import deepcopy
 from typing import Any, cast
 
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -258,62 +259,24 @@ async def _ensure_facts_traceable(revision: ProfileRevision, document: Mapping[s
     )
 
 
-async def _ensure_evidences_usable(
-    session: AsyncSession,
+def _frozen_evidences(
+    revision: ProfileRevision,
     evidence_ids: Sequence[uuid.UUID],
-) -> list[uuid.UUID]:
-    """校验证据存在且未归档，并返回去重后的主键。
-
-    参数:
-        session: 当前会话。
-        evidence_ids: 客户端提交的证据主键。
-
-    返回:
-        list[uuid.UUID]: 去重且保持提交顺序的证据主键。
-
-    异常:
-        ValidationFailedError: 存在找不到或已归档的证据时抛出 422。
-
-    注意:
-        去重是必要的：关联表上有 `UNIQUE(resume_version_id, evidence_id)`，
-        重复提交同一证据若不先合并，会把用户输入变成数据库层报错。
-    """
-    unique_ids = list(dict.fromkeys(evidence_ids))
-    if not unique_ids:
-        return []
-
-    found = {evidence.id: evidence for evidence in await repo.list_evidences_by_ids(session, unique_ids)}
-    missing = [evidence_id for evidence_id in unique_ids if evidence_id not in found]
-    archived = [
-        evidence_id
-        for evidence_id in unique_ids
-        if (evidence := found.get(evidence_id)) is not None and evidence.archived_at is not None
-    ]
-
-    details = (
-        [
-            ErrorDetail(field="evidence_ids", reason=f"以下证据不存在：{_format_ids(missing)}"),
-        ]
-        if missing
-        else []
-    )
-    if archived:
-        details.append(ErrorDetail(field="evidence_ids", reason=f"以下证据已归档：{_format_ids(archived)}"))
-    if details:
-        raise ValidationFailedError("关联的证据不可用。", details=details)
-    return unique_ids
-
-
-def _format_ids(ids: Sequence[uuid.UUID]) -> str:
-    """把主键列表格式化为可读的错误信息片段。
-
-    参数:
-        ids: 主键列表。
-
-    返回:
-        str: 以顿号分隔的主键文本。
-    """
-    return "、".join(str(item) for item in ids)
+) -> dict[uuid.UUID, dict[str, Any]]:
+    """从固定修订冻结实际选用的来源，禁止用当前证据补写历史。"""
+    sources = {str(item.get("id")): item for item in revision.snapshot_json.get("evidences", [])}
+    result: dict[uuid.UUID, dict[str, Any]] = {}
+    for evidence_id in dict.fromkeys(evidence_ids):
+        source = sources.get(str(evidence_id))
+        if source is None:
+            raise ValidationFailedError(
+                "所选来源不在候选的资料依据中，请先明确新的依据。",
+                details=[ErrorDetail(field="evidence_ids", reason="不能引入修订之外的来源。")],
+            )
+        result[evidence_id] = deepcopy(source)
+        if "content" not in source:
+            result[evidence_id]["history_missing"] = True
+    return result
 
 
 def _document_schema_version(draft: ResumeDraft) -> int:
@@ -533,7 +496,8 @@ async def create_version(
     document_json = payload.document.model_dump(mode="json")
     # 校验在写库之前：版本一经创建即不可变，"可溯源"必须成立在它落库的那一刻。
     await _ensure_facts_traceable(revision, document_json)
-    evidence_ids = await _ensure_evidences_usable(session, payload.evidence_ids)
+    sources = _frozen_evidences(revision, payload.evidence_ids)
+    evidence_ids = list(sources)
 
     version = ResumeVersion(
         resume_id=resume.id,
@@ -544,7 +508,7 @@ async def create_version(
         created_reason=payload.created_reason,
     )
     await repo.add(session, version)
-    await repo.add_version_evidences(session, version.id, evidence_ids)
+    await repo.add_version_evidences(session, version.id, evidence_ids, sources)
     await session.commit()
     return version
 
@@ -632,7 +596,23 @@ async def create_draft(session: AsyncSession, resume_id: uuid.UUID, payload: Res
                 details=[ErrorDetail(field="base_resume_version_id", reason="请选择该简历已有版本的 id。")],
             )
 
+    source_revision_id = payload.source_profile_revision_id
+    if payload.base_resume_version_id is not None:
+        base = await repo.get_by_id(session, ResumeVersion, payload.base_resume_version_id)
+        if base is None:
+            raise ResourceNotFoundError("基线版本不存在。")
+        if source_revision_id is not None and source_revision_id != base.profile_revision_id:
+            raise ValidationFailedError("候选资料依据与基线版本不一致。")
+        source_revision_id = base.profile_revision_id
+    document_json = payload.document.model_dump(mode="json")
+    if source_revision_id is not None:
+        revision = await _require_revision(session, source_revision_id)
+        await _ensure_facts_traceable(revision, document_json)
+    elif _collect_source_fact_refs(document_json):
+        raise ValidationFailedError("引用档案事实前必须确定候选的资料修订。")
+
     draft = ResumeDraft(
+        source_profile_revision_id=source_revision_id,
         resume_id=resume.id,
         base_resume_version_id=payload.base_resume_version_id,
         document_json=payload.document.model_dump(mode="json"),
@@ -696,11 +676,24 @@ async def update_draft(
     _ensure_active(resume)
     draft = await _require_owned_draft(session, resume.id, draft_id)
     _ensure_draft_pending(draft)
+    source_revision_id = draft.source_profile_revision_id
+    if payload.source_profile_revision_id is not None:
+        if source_revision_id is not None and source_revision_id != payload.source_profile_revision_id:
+            raise ValidationFailedError("更换资料依据必须新建候选稿。")
+        if source_revision_id is None and _collect_source_fact_refs(draft.document_json):
+            raise ValidationFailedError("旧候选包含来源不明的事实，请基于明确修订新建候选稿。")
+        source_revision_id = payload.source_profile_revision_id
+    document_json = payload.document.model_dump(mode="json")
+    if source_revision_id is not None:
+        revision = await _require_revision(session, source_revision_id)
+        await _ensure_facts_traceable(revision, document_json)
+    elif _collect_source_fact_refs(document_json):
+        raise ValidationFailedError("引入档案事实前必须确定资料依据。")
     await apply_versioned_update(
         session,
         draft,
         payload.version,
-        {"document_json": payload.document.model_dump(mode="json")},
+        {"document_json": document_json, "source_profile_revision_id": source_revision_id},
         extra_conditions=[table_of(draft).c["status"] == DraftStatus.DRAFT],
     )
     await session.commit()
@@ -738,9 +731,14 @@ async def confirm_draft(
     _ensure_active(resume)
     draft = await _require_owned_draft(session, resume.id, draft_id)
     _ensure_draft_pending(draft)
-    revision = await _require_revision(session, payload.profile_revision_id)
+    if draft.source_profile_revision_id is None:
+        raise ValidationFailedError("候选稿尚无确定的资料依据，请先关联依据或新建候选稿。")
+    if payload.profile_revision_id is not None and payload.profile_revision_id != draft.source_profile_revision_id:
+        raise ValidationFailedError("确认不能更换候选稿的资料依据，请重新生成候选稿。")
+    revision = await _require_revision(session, draft.source_profile_revision_id)
     await _ensure_facts_traceable(revision, draft.document_json)
-    evidence_ids = await _ensure_evidences_usable(session, payload.evidence_ids)
+    sources = _frozen_evidences(revision, payload.evidence_ids)
+    evidence_ids = list(sources)
 
     version = ResumeVersion(
         resume_id=resume.id,
@@ -751,7 +749,7 @@ async def confirm_draft(
         created_reason=payload.created_reason,
     )
     await repo.add(session, version)
-    await repo.add_version_evidences(session, version.id, evidence_ids)
+    await repo.add_version_evidences(session, version.id, evidence_ids, sources)
     await apply_versioned_update(
         session,
         draft,

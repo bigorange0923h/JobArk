@@ -166,6 +166,7 @@ export interface ResumeVersion {
   created_at: string
   /** 该版本关联的证据主键。 */
   evidence_ids: string[]
+  evidence_snapshots?: Record<string, unknown>[]
 }
 
 /** 候选稿；确认前不进入任何正式版本。 */
@@ -173,6 +174,7 @@ export interface ResumeDraft extends EditableResource {
   resume_id: string
   /** 改写基线；为空表示从零生成。 */
   base_resume_version_id: string | null
+  source_profile_revision_id?: string | null
   document_json: ResumeDocument
   status: DraftStatus
   /** 确认后产出的版本主键。 */
@@ -213,6 +215,7 @@ export interface ResumeVersionCreateInput {
 export interface ResumeDraftCreateInput {
   document: ResumeDocument
   base_resume_version_id?: string | null
+  source_profile_revision_id?: string | null
   generator_name?: string
   generator_version?: string | null
 }
@@ -224,6 +227,7 @@ export interface ResumeDraftCreateInput {
  * 不含该条目的完整文档来表达。
  */
 export interface ResumeDraftUpdateInput {
+  source_profile_revision_id?: string | null
   version: number
   document: ResumeDocument
 }
@@ -231,7 +235,7 @@ export interface ResumeDraftUpdateInput {
 /** 确认候选稿的请求体。 */
 export interface ResumeDraftConfirmInput {
   version: number
-  profile_revision_id: string
+  profile_revision_id?: string
   created_reason?: string
   evidence_ids?: string[]
 }

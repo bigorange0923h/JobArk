@@ -314,3 +314,20 @@ export function resumeLanguageFromProfile(item: Language): ResumeLanguageItem {
 function toHighlights(responsibilities: string | null, achievements: string | null): string[] {
   return [responsibilities, achievements].flatMap((text) => (text === null ? [] : toLines(text)))
 }
+
+
+/** 按修订快照提供编辑来源；联系方式单独读取，不用当前事实覆盖历史内容。 */
+export function profileFromRevision(revision: import('@/shared/api/profile').Revision, contact?: Profile): Profile {
+  const snapshot = revision.snapshot_json
+  const root = snapshot.profile as Pick<Profile, 'id' | 'full_name' | 'headline' | 'summary' | 'city' | 'links'>
+  return {
+    ...root, singleton_key: 'default', version: 1, created_at: revision.created_at, updated_at: revision.created_at,
+    email: contact?.email ?? null, phone: contact?.phone ?? null,
+    evidences: [], preference: null,
+    skills: (snapshot.skills ?? []) as Profile['skills'],
+    experiences: (snapshot.experiences ?? []) as Profile['experiences'],
+    projects: (snapshot.projects ?? []) as Profile['projects'],
+    educations: (snapshot.educations ?? []) as Profile['educations'],
+    languages: (snapshot.languages ?? []) as Profile['languages'],
+  }
+}

@@ -231,7 +231,12 @@ async def list_versions(
     """
     versions = await service.list_versions(session, resume_id, limit=limit)
     evidences = await service.version_evidence_ids(session, [version.id for version in versions])
-    return success([_version_read(version, evidences.get(version.id, [])) for version in versions])
+    result: list[ResumeVersionRead] = []
+    for version in versions:
+        response = _version_read(version, evidences.get(version.id, []))
+        response.evidence_snapshots = await service.repo.evidence_snapshots(session, version.id)
+        result.append(response)
+    return success(result)
 
 
 @router.post(
@@ -264,7 +269,9 @@ async def create_version(
     version = await service.create_version(session, resume_id, payload)
     # 回读实际写入的关联而不是回显请求体：重复提交的证据会被合并，回显会与库中真实关联不一致。
     evidences = await service.version_evidence_ids(session, [version.id])
-    return success(_version_read(version, evidences.get(version.id, [])))
+    response = _version_read(version, evidences.get(version.id, []))
+    response.evidence_snapshots = await service.repo.evidence_snapshots(session, version.id)
+    return success(response)
 
 
 @router.get(
@@ -288,7 +295,9 @@ async def get_version(session: SessionDep, version_id: uuid.UUID) -> ApiResponse
     """
     version = await service.get_version(session, version_id)
     evidences = await service.version_evidence_ids(session, [version.id])
-    return success(_version_read(version, evidences.get(version.id, [])))
+    response = _version_read(version, evidences.get(version.id, []))
+    response.evidence_snapshots = await service.repo.evidence_snapshots(session, version.id)
+    return success(response)
 
 
 # --------------------------------------------------------------------------------------------
@@ -426,7 +435,7 @@ async def update_draft(
 @router.post(
     "/resumes/{resume_id}/drafts/{draft_id}/confirm",
     summary="确认候选稿",
-    description="确认候选内容并新建一个不可变版本；已有版本永不被覆盖，同一候选稿只能确认一次。",
+    description="沿用候选生成时固定的资料依据和冻结来源，新建不可变版本；依据缺失或不同返回 422，重复确认返回 409。",
     response_model=ApiResponse[ResumeVersionRead],
     status_code=status.HTTP_201_CREATED,
 )
@@ -454,7 +463,9 @@ async def confirm_draft(
     """
     version = await service.confirm_draft(session, resume_id, draft_id, payload)
     evidences = await service.version_evidence_ids(session, [version.id])
-    return success(_version_read(version, evidences.get(version.id, [])))
+    response = _version_read(version, evidences.get(version.id, []))
+    response.evidence_snapshots = await service.repo.evidence_snapshots(session, version.id)
+    return success(response)
 
 
 @router.post(

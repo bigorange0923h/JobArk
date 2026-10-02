@@ -16,7 +16,7 @@ import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/t
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
-import { fetchProfile, listRevisions, type Profile } from '@/shared/api/profile'
+import { fetchProfile, createRevision, type Profile } from '@/shared/api/profile'
 import {
   confirmDraft,
   createDraft,
@@ -53,7 +53,7 @@ vi.mock('@/shared/api/profile', async (importOriginal) => {
   return {
     ...actual,
     fetchProfile: vi.fn(),
-    listRevisions: vi.fn(),
+    createRevision: vi.fn(),
   }
 })
 
@@ -94,6 +94,7 @@ function draftFixture(overrides: Partial<ResumeDraft> = {}): ResumeDraft {
     version: 1,
     resume_id: RESUME_ID,
     base_resume_version_id: null,
+    source_profile_revision_id: 'revision-1',
     document_json: { schema_version: 1 } as ResumeDraft['document_json'],
     status: 'DRAFT',
     confirmed_resume_version_id: null,
@@ -133,28 +134,22 @@ function mountView(): VueWrapper {
   return mount(ResumeDetailView, { props: { resumeId: RESUME_ID } })
 }
 
-/** 驱动 AntD 下拉的选择。 */
-async function selectRevision(wrapper: VueWrapper, revisionId: string): Promise<void> {
-  await wrapper.findComponent({ name: 'ASelect' }).vm.$emit('update:value', revisionId)
-  await flushPromises()
-}
-
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(fetchResume).mockResolvedValue(resumeFixture())
   vi.mocked(listVersions).mockResolvedValue([versionFixture()])
   vi.mocked(listDrafts).mockResolvedValue([draftFixture()])
   vi.mocked(fetchProfile).mockResolvedValue(profileFixture())
-  vi.mocked(listRevisions).mockResolvedValue([
+  vi.mocked(createRevision).mockResolvedValue(
     {
       id: 'revision-1',
       profile_id: 'profile-1',
       revision_no: 1,
-      snapshot_json: {},
+      snapshot_json: { profile: profileFixture(), skills: [], experiences: [], projects: [], educations: [], languages: [] },
       reason: '生成简历',
       created_at: '2026-02-01T00:00:00Z',
     },
-  ])
+  )
   vi.mocked(createDraft).mockResolvedValue(draftFixture({ id: 'draft-2' }))
   vi.mocked(confirmDraft).mockResolvedValue(versionFixture({ id: 'version-2' }))
   vi.mocked(discardDraft).mockResolvedValue(draftFixture({ status: 'DISCARDED' }))
@@ -212,7 +207,8 @@ describe('ResumeDetailView', () => {
     expect(wrapper.find('[data-testid="create-draft"]').attributes('disabled')).toBeDefined()
   })
 
-  it('未选择资料修订时不提交确认', async () => {
+  it('历史依据缺失时不提交确认', async () => {
+    vi.mocked(listDrafts).mockResolvedValue([draftFixture({ source_profile_revision_id: null })])
     const wrapper = mountView()
     await flushPromises()
 
@@ -220,20 +216,18 @@ describe('ResumeDetailView', () => {
     await flushPromises()
 
     expect(confirmDraft).not.toHaveBeenCalled()
-    expect(wrapper.find('[data-testid="action-error"]').text()).toContain('资料修订')
+    expect(wrapper.find('[data-testid="action-error"]').text()).toContain('生成依据')
   })
 
-  it('选择资料修订后确认候选稿并重新拉取', async () => {
+  it('确认沿用固定资料修订并重新拉取', async () => {
     const wrapper = mountView()
     await flushPromises()
 
-    await selectRevision(wrapper, 'revision-1')
     await wrapper.find('[data-testid="confirm-draft-draft-1"]').trigger('click')
     await flushPromises()
 
     expect(confirmDraft).toHaveBeenCalledWith(RESUME_ID, 'draft-1', {
       version: 1,
-      profile_revision_id: 'revision-1',
     })
     expect(listVersions).toHaveBeenCalledTimes(2)
     expect(listDrafts).toHaveBeenCalledTimes(2)

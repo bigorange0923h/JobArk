@@ -18,7 +18,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { onBeforeRouteLeave, useRouter } from 'vue-router'
 import { PlusOutlined } from '@ant-design/icons-vue'
 
-import { fetchProfile, type Profile } from '@/shared/api/profile'
+import { fetchRevision, type Profile } from '@/shared/api/profile'
 import {
   fetchDraft,
   updateDraft,
@@ -39,7 +39,7 @@ import SectionSettingsPanel from './components/SectionSettingsPanel.vue'
 import ResumePreview from './components/ResumePreview.vue'
 import DegreeField from '../profile/components/DegreeField.vue'
 import {
-  SECTION_LABEL, createBlankDocument, isSectionEmpty,
+  SECTION_LABEL, createBlankDocument, isSectionEmpty, profileFromRevision,
   resumeEducationFromProfile, resumeExperienceFromProfile, resumeLanguageFromProfile,
   resumeProjectFromProfile, resumeSkillFromProfile, sectionDocumentKey, toLines,
 } from './document'
@@ -285,7 +285,8 @@ async function load(): Promise<void> {
   }
 
   try {
-    profile.value = await fetchProfile()
+    profile.value = draft.value?.source_profile_revision_id
+      ? profileFromRevision(await fetchRevision(draft.value.source_profile_revision_id)) : null
   } catch {
     // 档案缺失只影响"来源事实"下拉的可选项，不影响编辑本身，因此不打断页面。
     profile.value = null

@@ -14,7 +14,7 @@ import { enableAutoUnmount, flushPromises, mount, type VueWrapper } from '@vue/t
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError } from '@/shared/api/client'
-import { fetchProfile, type Profile } from '@/shared/api/profile'
+import { fetchProfile, createRevision, type Profile } from '@/shared/api/profile'
 import { archiveResume, createDraft, createResume, listDrafts, listResumes, type Resume, type ResumeDraft } from '@/shared/api/resume'
 
 import ResumeListView from './ResumeListView.vue'
@@ -38,7 +38,7 @@ vi.mock('@/shared/api/resume', async (importOriginal) => {
 
 vi.mock('@/shared/api/profile', async (importOriginal) => {
   const actual = await importOriginal<typeof import('@/shared/api/profile')>()
-  return { ...actual, fetchProfile: vi.fn() }
+  return { ...actual, fetchProfile: vi.fn(), createRevision: vi.fn() }
 })
 
 /** 一份简历方向。 */
@@ -62,6 +62,7 @@ function mountView(): VueWrapper {
 beforeEach(() => {
   vi.clearAllMocks()
   vi.mocked(listResumes).mockResolvedValue([resumeFixture()])
+  vi.mocked(createRevision).mockResolvedValue({ id: 'revision-1', profile_id: 'profile-1', revision_no: 1, reason: '生成', created_at: '2026-01-01', snapshot_json: { profile: { id: 'profile-1', full_name: '张伟', headline: null, city: null, summary: null, links: [] }, skills: [], experiences: [], projects: [], educations: [], languages: [] } })
   vi.mocked(createResume).mockResolvedValue(resumeFixture({ id: 'resume-2', name: 'AI 应用' }))
   vi.mocked(archiveResume).mockResolvedValue(resumeFixture({ status: 'ARCHIVED' }))
   vi.mocked(listDrafts).mockResolvedValue([{ id: 'draft-1' } as ResumeDraft])
@@ -179,6 +180,7 @@ describe('ResumeListView', () => {
     await flushPromises()
 
     expect(createDraft).toHaveBeenCalledWith('resume-1', expect.objectContaining({
+      source_profile_revision_id: 'revision-1',
       document: expect.objectContaining({ basics: expect.objectContaining({ full_name: '张伟' }) }),
     }))
     expect(push).toHaveBeenCalledWith({ name: 'resume-draft-edit', params: { resumeId: 'resume-1', draftId: 'new-draft' } })

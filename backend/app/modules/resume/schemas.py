@@ -295,6 +295,10 @@ class ResumeVersionRead(ORMModel):
     created_reason: str
     created_at: datetime = Field(description="创建时间（UTC）。")
     evidence_ids: list[UUID] = Field(default_factory=list[UUID], description="该版本关联的证据主键。")
+    evidence_snapshots: list[dict[str, Any]] = Field(
+        default_factory=lambda: list[dict[str, Any]](),
+        description="该版本当时使用的来源声明；缺失历史明确标记。",
+    )
 
 
 # --------------------------------------------------------------------------------------------
@@ -310,6 +314,10 @@ class ResumeDraftCreate(BaseModel):
     """
 
     document: ResumeDocument = Field(description="候选内容。")
+    source_profile_revision_id: UUID | None = Field(
+        default=None,
+        description="生成时的固定资料依据；有事实引用时必填，基于版本时由基线确定。",
+    )
     base_resume_version_id: UUID | None = Field(
         default=None,
         description="改写基线版本；为空表示从零生成。必须属于同一份简历。",
@@ -327,15 +335,19 @@ class ResumeDraftUpdate(BaseModel):
 
     version: int = Field(ge=1, description="候选稿当前版本号；不一致返回 409。")
     document: ResumeDocument = Field(description="替换后的完整文档。")
+    source_profile_revision_id: UUID | None = Field(
+        default=None,
+        description="仅可为尚无资料依据的人工稿首次绑定；更换既有依据须新建候选稿。",
+    )
 
 
 class ResumeDraftConfirm(BaseModel):
     """确认候选稿的请求体。"""
 
     version: int = Field(ge=1, description="候选稿当前版本号；不一致返回 409，避免重复确认。")
-    profile_revision_id: UUID = Field(
-        description="该候选稿依据的资料修订。刻意要求显式提交而不是从基线版本推断："
-        "资料可能在候选稿生成之后发生变化，静默沿用旧修订会让新版本指向不准确的输入。",
+    profile_revision_id: UUID | None = Field(
+        default=None,
+        description="兼容旧调用；如提交，必须等于候选已有依据，不能改挂最新修订。",
     )
     created_reason: str = Field(default=DEFAULT_CONFIRM_REASON, min_length=1, max_length=200)
     evidence_ids: list[UUID] = Field(default_factory=list[UUID], description="新版本关联的证据；重复项会被合并。")
@@ -351,6 +363,7 @@ class ResumeDraftRead(EditableRead):
     """候选稿响应体。"""
 
     resume_id: UUID
+    source_profile_revision_id: UUID | None
     base_resume_version_id: UUID | None
     document_json: dict[str, Any] = Field(description="候选内容；未被确认前不进入任何正式版本。")
     status: DraftStatus

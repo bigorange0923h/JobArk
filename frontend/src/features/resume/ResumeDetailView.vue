@@ -4,9 +4,7 @@
  *
  * 两条与后端契约直接相关的界面规则：
  *
- * - **确认候选稿必须显式选择资料修订**。后端要求提交 `profile_revision_id`，界面不用"最新修订"
- *   悄悄兜底：资料可能在候选稿生成之后被改过，静默沿用会让新版本指向不准确的输入，
- *   而"这个版本依据的是什么"正是修订存在的意义。
+ * - 确认沿用候选稿生成时固定的资料修订。
  * - **档案未创建时不提供"新建候选稿"**。候选稿起初稿的内容来自档案事实，没有档案就没有可填的
  *   内容；此时给出引导，而不是让用户点一个必然失败的按钮。
  *
@@ -17,7 +15,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useRouter } from 'vue-router'
 
-import { fetchProfile, listRevisions, type Profile, type Revision } from '@/shared/api/profile'
+import { fetchProfile, createRevision, type Profile } from '@/shared/api/profile'
 import {
   confirmDraft,
   createDraft,
@@ -33,7 +31,7 @@ import {
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
-import { createDocumentFromProfile } from './document'
+import { createDocumentFromProfile, profileFromRevision } from './document'
 
 const props = defineProps<{ resumeId: string }>()
 
@@ -42,10 +40,8 @@ const router = useRouter()
 const resume = ref<Resume | null>(null)
 const versions = ref<ResumeVersion[]>([])
 const drafts = ref<ResumeDraft[]>([])
-const revisions = ref<Revision[]>([])
 const profile = ref<Profile | null>(null)
 const profileMissing = ref(false)
-const selectedRevisionId = ref<string | null>(null)
 const loading = ref(false)
 const busy = ref(false)
 const loadError = ref<ParsedServerError | null>(null)
@@ -70,6 +66,7 @@ const versionColumns = [
 const draftColumns = [
   { key: 'status', title: '状态', dataIndex: 'status' },
   { key: 'generator_name', title: '来源', dataIndex: 'generator_name' },
+  { key: 'basis', title: '固定资料修订' },
   { key: 'updated_at', title: '最后修改', dataIndex: 'updated_at' },
   { key: 'actions', title: '操作' },
 ]
@@ -79,12 +76,6 @@ function isPending(draft: ResumeDraft): boolean {
   return draft.status === 'DRAFT'
 }
 
-const revisionOptions = computed(() =>
-  revisions.value.map((revision) => ({
-    value: revision.id,
-    label: `修订 ${revision.revision_no}：${revision.reason}`,
-  })),
-)
 
 const actionMessage = computed(() => actionError.value?.message ?? localNotice.value)
 
@@ -140,13 +131,11 @@ async function loadProfileContext(): Promise<void> {
   try {
     profile.value = await fetchProfile()
     profileMissing.value = false
-    revisions.value = await listRevisions()
   } catch (error: unknown) {
     const parsed = parseServerError(error)
     if (parsed.code === 'RESOURCE_NOT_FOUND') {
       profile.value = null
       profileMissing.value = true
-      revisions.value = []
       return
     }
     loadError.value = parsed
@@ -163,7 +152,8 @@ async function createDraftFromProfile(): Promise<void> {
   actionError.value = null
   localNotice.value = null
   try {
-    const draft = await createDraft(props.resumeId, { document: createDocumentFromProfile(profile.value) })
+    const revision = await createRevision('生成新的简历候选稿')
+    const draft = await createDraft(props.resumeId, { document: createDocumentFromProfile(profileFromRevision(revision, profile.value)), source_profile_revision_id: revision.id })
     await router.push({
       name: 'resume-draft-edit',
       params: { resumeId: props.resumeId, draftId: draft.id },
@@ -177,8 +167,8 @@ async function createDraftFromProfile(): Promise<void> {
 
 /** 确认候选稿并生成新版本。 */
 async function confirm(draft: ResumeDraft): Promise<void> {
-  if (selectedRevisionId.value === null) {
-    localNotice.value = '请先选择该候选稿依据的资料修订。'
+  if (!draft.source_profile_revision_id) {
+    localNotice.value = '此历史候选稿缺少生成依据，请从当前资料创建新的候选稿并重新核对。'
     return
   }
 
@@ -188,9 +178,7 @@ async function confirm(draft: ResumeDraft): Promise<void> {
   try {
     await confirmDraft(props.resumeId, draft.id, {
       version: draft.version,
-      profile_revision_id: selectedRevisionId.value,
     })
-    selectedRevisionId.value = null
     await load()
   } catch (error: unknown) {
     actionError.value = resolveActionFailure(error, '确认候选稿')
@@ -338,19 +326,7 @@ onMounted(() => {
     </a-card>
 
     <a-card size="small" title="候选稿">
-      <template #extra>
-        <a-space>
-          <span class="card-hint">确认时依据的资料修订</span>
-          <a-select
-            v-model:value="selectedRevisionId"
-            :options="revisionOptions"
-            :placeholder="profileMissing ? '请先创建档案' : '选择资料修订'"
-            :disabled="profileMissing || revisionOptions.length === 0"
-            style="min-width: 14rem"
-            data-testid="revision-select"
-          />
-        </a-space>
-      </template>
+      <template #extra><span class="card-hint">确认沿用生成时的资料修订；更新依据请新建候选稿。</span></template>
 
       <a-table
         :data-source="drafts"
@@ -363,6 +339,7 @@ onMounted(() => {
       >
         <template #bodyCell="{ column, record }">
           <template v-if="column.key === 'status'">{{ DRAFT_STATUS_LABEL[(record as ResumeDraft).status] }}</template>
+          <template v-else-if="column.key === 'basis'">{{ (record as ResumeDraft).source_profile_revision_id ?? '历史依据缺失' }}</template>
           <template v-else-if="column.key === 'actions'">
             <a-space>
               <a-button

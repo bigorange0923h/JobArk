@@ -224,7 +224,10 @@ def _create_draft(client: TestClient, resume_id: str, **overrides: Any) -> dict[
     返回:
         dict[str, Any]: 候选稿响应体。
     """
-    payload: dict[str, Any] = {"document": _document()}
+    _ensure_profile(client)
+    revisions = _data(client.get(f"{API}/profile/revisions"))
+    revision = revisions[0] if revisions else _create_revision(client)
+    payload: dict[str, Any] = {"document": _document(), "source_profile_revision_id": revision["id"]}
     payload.update(overrides)
     response = client.post(f"{API}/resumes/{resume_id}/drafts", json=payload)
     assert response.status_code == 201, response.text
@@ -353,8 +356,10 @@ def test_version_cannot_be_modified_or_deleted(db_client: TestClient) -> None:
 
 def test_version_evidence_links_are_deduplicated(db_client: TestClient) -> None:
     """重复提交同一证据会被合并，而不是撞上关联表的唯一约束。"""
-    revision = _create_revision(db_client)
+    _ensure_profile(db_client)
     evidence = _create_evidence(db_client)
+    db_client.post(f"{API}/profile/skills", json={"name": "Python", "source_evidence_id": evidence["id"]})
+    revision = _create_revision(db_client)
     resume = _create_resume(db_client)
 
     response = _create_version(db_client, resume["id"], revision["id"], evidence_ids=[evidence["id"], evidence["id"]])
@@ -367,16 +372,16 @@ def test_version_rejects_unknown_and_archived_evidences(db_client: TestClient) -
     """不存在与已归档的证据都返回 422，并说明是哪一项不可用。"""
     revision = _create_revision(db_client)
     archived = _create_evidence(db_client)
-    db_client.delete(f"{API}/profile/evidences/{archived['id']}")
+    db_client.delete(f"{API}/profile/evidences/{archived['id']}?version={archived['version']}")
     resume = _create_resume(db_client)
 
     unknown = _create_version(db_client, resume["id"], revision["id"], evidence_ids=[str(uuid.uuid4())])
     using_archived = _create_version(db_client, resume["id"], revision["id"], evidence_ids=[archived["id"]])
 
     assert unknown.status_code == 422
-    assert "不存在" in _error(unknown)["details"][0]["reason"]
+    assert _error(unknown)["code"] == "VALIDATION_ERROR"
     assert using_archived.status_code == 422
-    assert "已归档" in _error(using_archived)["details"][0]["reason"]
+    assert _error(using_archived)["code"] == "VALIDATION_ERROR"
 
 
 def test_document_section_configuration_is_validated(db_client: TestClient) -> None:
@@ -828,26 +833,20 @@ def test_summary_may_reference_the_profile_itself(db_client: TestClient) -> None
     assert response.status_code == 201, response.text
 
 
-def test_draft_saves_untraceable_fact_but_confirm_rejects_it(db_client: TestClient) -> None:
-    """候选稿允许保存尚未溯源的条目（它是可变的工作状态），确认成版本时才必须可溯源。"""
+def test_draft_rejects_untraceable_fact_at_creation(db_client: TestClient) -> None:
+    """候选引用必须属于固定依据；手写内容可无来源，不能保存伪造主键。"""
     revision = _create_revision(db_client)
     resume = _create_resume(db_client)
-    invented = str(uuid.uuid4())
-
-    draft = _create_draft(
-        db_client,
-        resume["id"],
-        document=_document(skills=[{"name": "Kubernetes", "source_fact_id": invented}]),
+    response = db_client.post(
+        f"{API}/resumes/{resume['id']}/drafts",
+        json={
+            "source_profile_revision_id": revision["id"],
+            "document": _document(skills=[{"name": "Kubernetes", "source_fact_id": str(uuid.uuid4())}]),
+        },
     )
-    confirmed = db_client.post(
-        f"{API}/resumes/{resume['id']}/drafts/{draft['id']}/confirm",
-        json={"version": draft["version"], "profile_revision_id": revision["id"]},
-    )
-
-    assert confirmed.status_code == 422
-    assert "skills.0.source_fact_id" in _detail_fields(_error(confirmed))
-    assert _draft_by_id(db_client, resume["id"], draft["id"])["status"] == "DRAFT"
-    assert _data(db_client.get(f"{API}/resumes/{resume['id']}/versions")) == []
+    assert response.status_code == 422
+    assert "skills.0.source_fact_id" in _detail_fields(_error(response))
+    assert _data(db_client.get(f"{API}/resumes/{resume['id']}/drafts")) == []
 
 
 # --------------------------------------------------------------------------------------------
