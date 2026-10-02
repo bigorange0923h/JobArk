@@ -4,7 +4,8 @@
 探针路由不进入生产入口，避免为测试而在正式应用上暴露调试接口。
 
 测试配置显式禁用 `.env` 加载，防止开发者本地配置让测试结果不可复现。
-依赖数据库的测试通过环境变量 `JOBARK_TEST_DATABASE_URL` 指向独立测试库；
+`JOBARK_VERIFY_DEVELOPMENT_DATABASE=1` 直接在开发库外层事务中隔离 API 测试，不清表；
+旧的破坏性迁移夹具仅允许 `JOBARK_TEST_DATABASE_URL` 指向可丢弃库；
 未设置时会被跳过，使不含 PostgreSQL 的环境仍能跑完其余测试。
 """
 
@@ -182,6 +183,8 @@ def test_database_url() -> str:
     database_url = os.environ.get(TEST_DATABASE_URL_ENV)
     if not database_url:
         pytest.skip(f"未设置 {TEST_DATABASE_URL_ENV}，跳过数据库集成测试。")
+    if make_url(database_url) == make_url(get_settings().database_url):
+        raise RuntimeError("破坏性夹具不得指向开发库；请使用 JOBARK_VERIFY_DEVELOPMENT_DATABASE=1。")
     asyncio.run(_ensure_database_exists(database_url))
     return database_url
 
@@ -222,7 +225,7 @@ def _upgrade_schema() -> None:
 
 @pytest.fixture
 def db_client(
-    test_database_url: str,
+    request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
     """返回指向测试库、且数据已清空的客户端。
@@ -234,6 +237,14 @@ def db_client(
     返回:
         Iterator[TestClient]: 可在真实数据库上验证领域接口的客户端。
     """
+    if os.environ.get("JOBARK_VERIFY_DEVELOPMENT_DATABASE") == "1":
+        from tests.development_database import development_db_client
+
+        with development_db_client() as client:
+            yield client
+        get_settings.cache_clear()
+        return
+    test_database_url: str = request.getfixturevalue("test_database_url")
     monkeypatch.setenv("JOBARK_DATABASE_URL", test_database_url)
     # 配置单例带缓存，必须清除，否则应用会继续连接开发库。
     get_settings.cache_clear()

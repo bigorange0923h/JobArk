@@ -93,7 +93,12 @@ async def _run_async_migrations() -> None:
 
 def run_migrations_online() -> None:
     """在线模式：连接数据库并执行迁移。"""
-    asyncio.run(_run_async_migrations())
+    supplied_connection = config.attributes.get("connection")
+    if isinstance(supplied_connection, Connection):
+        # 验证时允许调用方持有外层事务与隔离 schema；迁移不得另连 public 或自行提交。
+        _run_migrations(supplied_connection)
+    else:
+        asyncio.run(_run_async_migrations())
 
 
 if context.is_offline_mode():
