@@ -123,13 +123,21 @@ UNIQUE(profile_id, revision_no)
 | `job_snapshots` | `posting_id`、`content_hash`、首次采集时间、原始 JD | 不可变；`UNIQUE(posting_id, content_hash)`，只固化内容，不承担当前指向或后续解析状态。 |
 | `job_parse_results` | `job_snapshot_id`、`parser_version`、`status`、`result_json`、`failure_code` | 解析结果的唯一正式来源；PARSED 保存验证后的结果，FAILED 只保存安全错误码，不更新快照。 |
 
-`source` 初始支持 `MANUAL`；后续平台适配器再按真实能力增加来源值。V1 不保存浏览器 Cookie、登录会话或平台密码。
+`source` 支持 `MANUAL`、`LINKEDIN`、`INDEED`、`BOSS`、`FIFTYONEJOB`；平台来源表示用户提供的详情链接，经本地内容导入产生，不代表系统已取得自动网络访问能力。V1 不保存浏览器 Cookie、登录会话或平台密码。
 
 再次录入相同内容时复用对应快照，在同一事务中更新页面的 `current_snapshot_id`、最后发现时间及乐观锁版本；不因哈希重复返回冲突，也不修改旧快照的采集时间。因此 A → B → A 的当前内容为 A，历史仍保留 A 与 B。当前指向可在页面尚无内容时为空，存在时由数据库外键及归属约束保证指向本页面的快照。
 
 一个机会有多个页面时，以页面最后发现时间选取当前展示来源，并以页面 ID 作并列时的稳定排序；快照首次创建时间不能代替当前观察时间。排除核验与新投递准备使用该当前内容，已有匹配及已投递申请保留原输入。
 
 现有 `job_snapshots.parsed_json`、解析状态、解析器版本和错误码仅作历史兼容，新解析不再写这些字段。读取必须明确区分历史内嵌结果与正式 `JobParseResult`；迁移旧结果时保留原版本及来源，无法确定的内容标为历史缺失，不猜测补齐。待兼容读取与迁移验证完成后，才通过后续迁移删除旧列。`JobParseResult` 的状态与结果、错误码由 CHECK 联动：成功必须有实际结果且无错误码，失败必须无结果且有错误码；历史 JSON `null` 与 SQL `NULL` 均按无结果解释。匹配明确选择解析产物或固化自己的本地解析输出，不隐式使用“最新成功解析”。
+
+### 5.1 平台内容导入候选
+
+平台来源扩展为 `LINKEDIN`、`INDEED`、`BOSS`、`FIFTYONEJOB`；来源表示用户提供内容的网址平台，不宣称自动网络采集已完成。
+
+`job_import_candidates` 保存平台与外部 ID、规范 URL、输入哈希、提取器版本、候选摘录、人工确认内容、过期时间、预览观察到的页面/版本、确认产物引用与状态。预览仅创建候选；确认后才写正式职位。确认产物只能引用正式 JobPosting/JobSnapshot，重复确认相同载荷幂等，过期、版本变化或不同载荷重确认返回冲突。跨平台不自动合并，既有机会只通过独立编辑流程修改元数据，导入只更新其页面内容。原始 HTML、Cookie 和浏览器会话不入库。详细边界见 `job-collection-design.md`。
+
+迁移 `0012` 建立该表与平台来源约束。`target_posting_id` 与非空、正数的 `observed_posting_version` 必须配对；PENDING 不得有确认内容/产物，CONFIRMED 必须完整保存人工确认内容及产物。复合外键保证确认快照属于确认页面。接口返回固定的机会/页面/快照 ID 回执，旧候选重试不会改写当前页面，也不返回后来更新的 JD。存在候选或平台页面时拒绝降级，以保留来源和审计。
 
 ## 6. Matching：可解释且可复现的匹配
 
