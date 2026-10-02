@@ -9,7 +9,7 @@ import { requestV1 } from './client'
 import type { EditableResource } from './types'
 
 export type OpportunityStatus = 'ACTIVE' | 'ARCHIVED'
-export type JobSource = 'MANUAL'
+export type JobSource = 'MANUAL' | 'LINKEDIN' | 'INDEED' | 'BOSS' | 'FIFTYONEJOB'
 export type PostingStatus = 'ACTIVE' | 'UNAVAILABLE'
 export type SnapshotParseStatus = 'NOT_REQUESTED' | 'PARSED' | 'FAILED'
 

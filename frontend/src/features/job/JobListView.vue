@@ -12,6 +12,8 @@ import { createManualJob, listJobs, previewExclusion, type ExclusionEvaluation, 
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
+import JobImportPanel from './JobImportPanel.vue'
+
 const jobs = ref<JobListItem[]>([])
 const filter = ref<'ALL' | 'ELIGIBLE' | 'REVIEW' | 'EXCLUDED'>('ALL')
 const evaluations = ref<Record<string, ExclusionEvaluation | null>>({})
@@ -141,6 +143,8 @@ onMounted(() => void load())
       <div><p class="page-eyebrow">JOBS</p><h1>职位</h1><p class="page-subtitle">保存原始 JD，按机会持续跟进。</p></div>
       <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
     </header>
+
+    <JobImportPanel @saved="load" />
 
     <a-alert
       v-if="actionError"
