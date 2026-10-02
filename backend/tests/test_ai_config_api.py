@@ -323,7 +323,9 @@ def test_providers_are_listed_newest_first(db_client: TestClient) -> None:
     second = _create_provider(db_client, name="后创建的服务", base_url="https://second.test/v1")
 
     listed = db_client.get(f"{API}/providers").json()["data"]
-    assert [item["id"] for item in listed] == [second["id"], first["id"]]
+    # 外层事务验证中 PostgreSQL now() 固定；相同创建时间按主键稳定排序。
+    expected = sorted([first, second], key=lambda item: (item["created_at"], item["id"]), reverse=True)
+    assert [item["id"] for item in listed] == [item["id"] for item in expected]
 
 
 def _create_provider_with_models(client: TestClient) -> dict[str, Any]:
