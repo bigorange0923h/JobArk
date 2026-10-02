@@ -102,7 +102,7 @@ V1 前端能力包括：
 
 求职策略的多目标地点复用同一份省市树：`ProfileTargetLocationsField` 把新选择存为带省份的城市字符串，以区分同名城市；旧简称与无法映射的国内旧称、海外地点仍原样回显并由用户显式移除或补充。选择树改变时只转换新选项，不借保存其它偏好字段的机会改写旧值。职位类型、币种和手工职位的雇佣类型提供常用/历史建议，同时允许列表外输入；JD 原文、个人备注、职位标题等开放文本不伪装成封闭枚举。
 
-个人资料的核心编辑区由 `ProfileBasicsSection`、`ProfileLinksField` 与 `ProfileFactSections` 组合：基本信息、公开链接及技能、工作经历、项目经历、教育经历在手动与导入模式使用同一份字段定义和控件；工作经历不再让用户填写地点：字段从共享表单里移除（手填与导入候选同时生效），数据库列与接口字段保留——导入抽取到的地点有原文摘录支撑、照原样写入，历史值也不因字段消失而被清掉；简历编辑器另有自己的「地点」输入与预览渲染（简历上写公司城市是常见做法），两者互不影响。工作经历与项目经历的时间字段都是月份选择器（`kind: 'month'`，精确到月），写入接口的值仍是完整日期（日补 1），简历预览按月份展示。项目经历另有成果字段与「所属工作经历」下拉（`kind: 'experience'`，选项来自档案里已有的经历）：后端是可空外键 `profile_projects.experience_id`（`RESTRICT`），删除仍被项目关联的经历由服务层拦住并返回 409 与项目名，不静默解绑；该字段只在档案页出现——导入候选的工作经历还没有 id，候选契约也不接受它。项目成果与这层关联目前**只存在于档案**：简历文档的项目条目仍只承载说明与技术栈，尚未承载这两项（补齐需要给版本化的 `ResumeDocument` 加字段）。`ProfileManualFacts` 负责合法条目失焦后的自动保存，建档前只暂存草稿；`ProfileImportPanel` 负责候选填充、只读的条目级原文摘录和本地草稿，用户点击专门保存按钮并通过二次弹窗后才调用确认接口。后端尚无逐字段出处，界面不得把条目级摘录说成每个字段的精确出处。证据、语言和修订历史保留在次级展开区，不从数据库删除。旧事实面板的手动保存流程已由核心表单取代；导入仍不覆盖已有档案的根信息。
+个人资料的核心编辑区由 `ProfileBasicsSection`、`ProfileLinksField` 与 `ProfileFactSections` 组合：基本信息、公开链接及技能、工作经历、项目经历、教育经历在手动与导入模式使用同一份字段定义和控件；工作经历不再让用户填写地点：字段从共享表单里移除（手填与导入候选同时生效），数据库列与接口字段保留——导入抽取到的地点有原文摘录支撑、照原样写入，历史值也不因字段消失而被清掉；简历编辑器另有自己的「地点」输入与预览渲染（简历上写公司城市是常见做法），两者互不影响。工作经历与项目经历的时间字段都是月份选择器（`kind: 'month'`，精确到月），写入接口的值仍是完整日期（日补 1），简历预览按月份展示。项目经历另有成果字段与「所属工作经历」下拉（`kind: 'experience'`，选项来自档案里已有的经历）：后端是可空外键 `profile_projects.experience_id`（`RESTRICT`），物理删除仍被项目关联的经历由服务层拦住并返回 409 与项目名，日常归档保留关联并标明归档状态，不静默解绑；该字段只在档案页出现——导入候选的工作经历还没有 id，候选契约也不接受它。项目成果与这层关联目前**只存在于档案**：简历文档的项目条目仍只承载说明与技术栈，尚未承载这两项（补齐需要给版本化的 `ResumeDocument` 加字段）。`ProfileManualFacts` 负责合法条目失焦后的自动保存，建档前只暂存草稿；`ProfileImportPanel` 负责候选填充、只读的条目级原文摘录和本地草稿，用户点击专门保存按钮并通过二次弹窗后才调用确认接口。后端尚无逐字段出处，界面不得把条目级摘录说成每个字段的精确出处。证据、语言和修订历史保留在次级展开区，不从数据库删除。旧事实面板的手动保存流程已由核心表单取代；导入仍不覆盖已有档案的根信息。
 
 导入入口固定在「档案与联系方式」标题右侧，空档案也直接显示手动表单。文件上传弹窗只负责外发告知与抽取；抽取成功后关闭上传弹窗，打开包含已填充共享表单的核对弹窗。核对弹窗内确认即调用导入确认接口，成功后关闭弹窗并重新读取档案聚合；取消时保留内存草稿且不写库。核对弹窗本身已经是上传后的第二层提醒，不再额外叠加确认弹窗。
 
@@ -123,20 +123,21 @@ V1 前端能力包括：
 
 ```text
 PersonalProfile ──< ProfileEvidence
-       │
-       ├──< ProfileRevision ──< ResumeVersion
-       └──< Resume ──< ResumeVersion / ResumeDraft
+       └──< ProfileRevision ──< ResumeVersion / ResumeDraft
+Resume ──< ResumeVersion / ResumeDraft
 
 Company ──< JobOpportunity ──< JobPosting ──< JobSnapshot
-                                  │
-JobOpportunity ──< MatchResult >── ResumeVersion / PersonalProfile
-       │
-       └──< Application ──< ApplicationEvent
+JobPosting ── current_snapshot_id ──> JobSnapshot
+JobSnapshot ──< MatchResult >── ProfileRevision / ResumeVersion（可选）
+JobOpportunity ──< Application ──< ApplicationEvent
+Application >── JobSnapshot / ResumeVersion（准备可调整，投递后永久锁定）
 ```
 
-- `JobSnapshot` 固化原始 JD；后续解析保存为独立 `JobParseResult`，失败不覆盖快照。
+- Profile 事实与来源日常删除执行归档；历史引用不阻止当前资料维护。默认事实集合排除归档记录，历史修订保持完整内容及必要来源冻结信息，物理删除仍受外键和引用检查限制。经历归档保留已有项目关联，新关联不得指向归档经历。
+- `ResumeDraft.source_profile_revision_id` 固定候选依据，正式版本优化沿用基线修订；确认不重新选择最新修订。更换依据经显式校验后新建候选，版本证据声明保存当时来源快照，当前证据编辑不能改变历史声明。
+- `JobSnapshot` 固化并去重原始 JD，`JobPosting.current_snapshot_id` 表示页面当前内容，重复观察更新页面指向与最后发现时间；多页面按最后发现时间及稳定排序选取当前来源。解析结果以独立不可变 `JobParseResult` 为正式来源，快照旧解析列仅作兼容，失败不覆盖原文。
 - `MatchResult` 分开保存 Profile Match 和 Resume Match，绑定快照、资料修订和可选简历版本；`report_json` 固化本地解析器版本、条件、证据引用、缺口和不确定项，总分留空。独立 AI 解析结果不会悄悄替换匹配输入。
-- `Application` 表示一次求职行为，绑定使用的 `ResumeVersion`；`ApplicationEvent` 是唯一的状态历史。
+- `Application` 表示一次求职尝试，准备阶段可调整 JD 和正式简历版本；变更由 `ApplicationEvent` 留痕并更新投影，就绪后换材料须重新核验。首次确认已在外部投递时记录实际输入并永久锁定，后续状态不解锁。事件序号与实体乐观锁职责分开，状态、材料和锁定均在同一事务更新。
 - 简历定制、问候语和表单回答均为候选草稿，需用户确认后才能进入提交类操作。
 
 ## 6. 目录约定
