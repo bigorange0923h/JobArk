@@ -76,7 +76,7 @@ async function load(): Promise<void> {
   try {
     job.value = await fetchJob(props.jobId)
     snapshots.value = await listSnapshots(props.jobId)
-    selectedSnapshot.value ||= snapshots.value[0]?.id ?? ''
+    selectedSnapshot.value ||= job.value.latest_snapshot?.id ?? ''
     posting.value ||= job.value.postings[0]?.id ?? ''
     const resumes = await listResumes()
     versions.value = (await Promise.all(resumes.map(async r => (await listVersions(r.id)).map(v => ({ ...v, label: `${r.name} · v${v.version_no}` }))))).flat()
@@ -89,8 +89,8 @@ async function action(kind: 'save' | 'snapshot' | 'apply', confirmRepeat = false
   const label = kind === 'save' ? '保存职位修改' : kind === 'snapshot' ? '保存 JD 快照' : '创建申请'
   try {
     if (kind === 'save') job.value = await updateJob(props.jobId, { version: job.value.version, title: job.value.title, location: job.value.location, notes: job.value.notes, status: job.value.status })
-    if (kind === 'snapshot') { await saveSnapshot(props.jobId, posting.value, newJd.value); newJd.value = ''; await load() }
-    if (kind === 'apply') { await createApplication({ job_opportunity_id: props.jobId, job_snapshot_id: selectedSnapshot.value, resume_version_id: selectedVersion.value, confirm_repeat: confirmRepeat }); confirmRepeatOpen.value = false; await router.push({ name: 'applications' }) }
+    if (kind === 'snapshot') { const snapshot = await saveSnapshot(props.jobId, posting.value, newJd.value); selectedSnapshot.value = snapshot.id; newJd.value = ''; await load() }
+    if (kind === 'apply') { await createApplication({ job_opportunity_id: props.jobId, job_snapshot_id: selectedSnapshot.value, resume_version_id: selectedVersion.value || null, confirm_repeat: confirmRepeat }); confirmRepeatOpen.value = false; await router.push({ name: 'applications' }) }
   } catch (error: unknown) {
     // 只有稳定错误码明确表示重复时才弹确认框，不能把版本等其他冲突误当作重复申请。
     if (kind === 'apply' && error instanceof ApiError && error.code === 'DUPLICATE_APPLICATION' && !confirmRepeat) confirmRepeatOpen.value = true
@@ -131,7 +131,7 @@ onMounted(load)
             <a-space wrap><a-button :loading="busy" :disabled="!selectedSnapshot" @click="parse('LOCAL')">本地提取条件</a-button><a-button :loading="busy" :disabled="!selectedSnapshot" @click="parse('AI')">AI 解析</a-button></a-space>
             <a-collapse v-if="parseResults.length" class="parse-results"><a-collapse-panel v-for="result in parseResults" :key="result.id" :header="result.status === 'FAILED' ? '解析失败，原文已保留' : '解析结果'"><a-alert v-if="result.failure_code" type="warning" :message="`解析未成功，请检查大模型服务配置或稍后重试。错误码：${result.failure_code}`" /><template v-if="result.result_json"><ul><li v-for="(item, index) in result.result_json.requirements" :key="index">{{ item.hard ? '明确强制：' : '' }}{{ item.text }}</li></ul><p v-for="(item, index) in result.result_json.uncertainties" :key="index">{{ item }}</p></template></a-collapse-panel></a-collapse>
           </a-card>
-          <a-card title="创建申请记录" class="section-gap"><p class="card-hint">使用所选 JD 和正式简历版本；创建记录不会自动投递。</p><a-form layout="vertical" @submit.prevent="action('apply')"><a-form-item label="简历版本" required><a-select v-model:value="selectedVersion" placeholder="请选择正式版本" :options="versions.map(v => ({ value: v.id, label: v.label }))" /></a-form-item><a-button type="primary" :loading="busy" :disabled="!selectedVersion || !selectedSnapshot" @click="action('apply')">创建申请</a-button></a-form></a-card>
+          <a-card title="创建申请记录" class="section-gap"><p class="card-hint">使用所选 JD 和正式简历版本；创建记录不会自动投递。</p><a-form layout="vertical" @submit.prevent="action('apply')"><a-form-item label="简历版本（可在准备阶段选择）"><a-select v-model:value="selectedVersion" placeholder="请选择正式版本" :options="versions.map(v => ({ value: v.id, label: v.label }))" /></a-form-item><a-button type="primary" :loading="busy" :disabled="!selectedVersion || !selectedSnapshot" @click="action('apply')">创建申请</a-button></a-form></a-card>
         </div>
       </div>
       <a-modal v-if="confirmAiParseOpen" :open="confirmAiParseOpen" title="确认发送 JD 原文" :confirm-loading="busy" ok-text="确认发送并解析" cancel-text="取消" @ok="parse('AI', true)" @cancel="confirmAiParseOpen = false">

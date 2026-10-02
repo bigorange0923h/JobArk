@@ -69,13 +69,15 @@ async def dashboard(session: Annotated[AsyncSession, Depends(get_session)]) -> A
         (
             await session.scalars(
                 select(JobPosting.source)
-                .join(JobSnapshot)
+                .join(JobSnapshot, JobSnapshot.posting_id == JobPosting.id)
                 .join(Application, Application.job_snapshot_id == JobSnapshot.id)
             )
         ).all()
     )
     versions: list[VersionConversion] = []
-    for version in sorted({app.resume_version_id for app in applications}, key=str):
+    for version in sorted(
+        {app.resume_version_id for app in applications if app.resume_version_id is not None}, key=str
+    ):
         ids = [app.id for app in applications if app.resume_version_id == version]
         versions.append(
             VersionConversion(

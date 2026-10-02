@@ -6,14 +6,16 @@ import hashlib
 import re
 import uuid
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.errors import ConflictError, ResourceNotFoundError
+from app.core.errors import ResourceNotFoundError
 from app.core.versioning import apply_versioned_update
 
 from . import repository
-from .enums import JobSource, PostingStatus, SnapshotParseStatus
+from .enums import JobSource, PostingStatus
 from .models import Company, JobOpportunity, JobPosting, JobSnapshot
 from .schemas import (
     CompanyRead,
@@ -74,9 +76,11 @@ async def create_manual_job(session: AsyncSession, payload: JobManualCreate) -> 
             posting_id=posting.id,
             content_hash=content_hash(payload.raw_jd),
             raw_jd=payload.raw_jd,
-            parse_status=SnapshotParseStatus.NOT_REQUESTED,
         ),
     )
+    posting.current_snapshot_id = snapshot.id
+    await session.flush()
+    await session.refresh(posting)
     await session.commit()
     return _read_opportunity(opportunity, company, [posting], snapshot)
 
@@ -96,10 +100,7 @@ async def get_opportunity_detail(session: AsyncSession, opportunity_id: uuid.UUI
     if company is None:
         raise ResourceNotFoundError("职位关联的公司不存在。")
     postings = await repository.list_postings(session, opportunity.id)
-    snapshots = [
-        snapshot for posting in postings if (snapshot := await repository.latest_snapshot(session, posting.id))
-    ]
-    latest = max(snapshots, key=lambda item: (item.captured_at, item.created_at), default=None)
+    latest = await repository.current_snapshot(session, opportunity.id)
     return _read_opportunity(opportunity, company, postings, latest)
 
 
@@ -110,12 +111,7 @@ async def list_jobs(session: AsyncSession) -> list[JobListItem]:
         company = await repository.get_company(session, opportunity.company_id)
         if company is None:
             raise ResourceNotFoundError("职位关联的公司不存在。")
-        snapshots = [
-            snapshot
-            for posting in await repository.list_postings(session, opportunity.id)
-            if (snapshot := await repository.latest_snapshot(session, posting.id))
-        ]
-        latest = max(snapshots, key=lambda item: (item.captured_at, item.created_at), default=None)
+        latest = await repository.current_snapshot(session, opportunity.id)
         items.append(
             JobListItem(
                 id=opportunity.id,
@@ -148,24 +144,28 @@ async def update_opportunity(
 
 
 async def create_snapshot(
-    session: AsyncSession, opportunity_id: uuid.UUID, posting_id: uuid.UUID, payload: JobSnapshotCreate
+    session: AsyncSession,
+    opportunity_id: uuid.UUID,
+    posting_id: uuid.UUID,
+    payload: JobSnapshotCreate,
 ) -> JobSnapshot:
-    """为属于该机会的页面创建新的、未解析的 JD 快照。"""
+    """串行观察页面内容：重复正文复用快照，更新当前指向与真实发现时间。"""
     await require_opportunity(session, opportunity_id)
-    posting = await repository.get_posting(session, posting_id)
+    posting = await session.scalar(select(JobPosting).where(JobPosting.id == posting_id).with_for_update())
     if posting is None or posting.opportunity_id != opportunity_id:
         raise ResourceNotFoundError("职位页面不存在。")
     digest = content_hash(payload.raw_jd)
-    if await repository.get_snapshot_by_hash(session, posting.id, digest):
-        raise ConflictError("该职位页面已保存内容相同的 JD 快照。")
-    snapshot = await repository.add(
+    snapshot = await repository.get_snapshot_by_hash(session, posting.id, digest)
+    if snapshot is None:
+        snapshot = await repository.add(
+            session,
+            JobSnapshot(posting_id=posting.id, content_hash=digest, raw_jd=payload.raw_jd),
+        )
+    await apply_versioned_update(
         session,
-        JobSnapshot(
-            posting_id=posting.id,
-            content_hash=digest,
-            raw_jd=payload.raw_jd,
-            parse_status=SnapshotParseStatus.NOT_REQUESTED,
-        ),
+        posting,
+        posting.version,
+        {"current_snapshot_id": snapshot.id, "last_seen_at": datetime.now(UTC)},
     )
     await session.commit()
     return snapshot

@@ -2,9 +2,9 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { notification } from 'ant-design-vue'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import { listApplications, fetchApplication, transitionApplication, type ApplicationDetail } from '@/shared/api/application'
-import { listJobs } from '@/shared/api/job'
-import { fetchVersion, type ResumeVersion } from '@/shared/api/resume'
+import { listApplications, fetchApplication, transitionApplication, changeApplicationMaterials, type ApplicationDetail } from '@/shared/api/application'
+import { listJobs, listSnapshots } from '@/shared/api/job'
+import { fetchVersion, listResumes, listVersions, type ResumeVersion } from '@/shared/api/resume'
 import { ApiError } from '@/shared/api/client'
 import { router } from '@/app/router'
 import ApplicationView from './ApplicationView.vue'
@@ -14,14 +14,14 @@ const noticeSpy = vi.spyOn(notification, 'error')
 
 vi.mock('@/shared/api/application', async importOriginal => ({
   ...await importOriginal<typeof import('@/shared/api/application')>(),
-  listApplications: vi.fn(), fetchApplication: vi.fn(), transitionApplication: vi.fn(),
+  listApplications: vi.fn(), fetchApplication: vi.fn(), transitionApplication: vi.fn(), changeApplicationMaterials: vi.fn(),
 }))
-vi.mock('@/shared/api/job', () => ({ listJobs: vi.fn() }))
-vi.mock('@/shared/api/resume', () => ({ fetchVersion: vi.fn() }))
+vi.mock('@/shared/api/job', () => ({ listJobs: vi.fn(), listSnapshots: vi.fn() }))
+vi.mock('@/shared/api/resume', () => ({ fetchVersion: vi.fn(), listResumes: vi.fn(), listVersions: vi.fn() }))
 enableAutoUnmount(afterEach)
 
 const detail = {
-  id: 'a1', job_opportunity_id: 'j1', resume_version_id: 'v1', attempt_no: 1,
+  id: 'a1', job_opportunity_id: 'j1', job_snapshot_id: 's1', material_locked_at: null, resume_version_id: 'v1', attempt_no: 1,
   version: 1, current_status: 'SAVED', events: [], allowed_statuses: ['APPLIED'],
 } as unknown as ApplicationDetail
 
@@ -39,6 +39,9 @@ beforeEach(() => {
   noticeSpy.mockImplementation(() => undefined)
   vi.mocked(listApplications).mockResolvedValue([detail])
   vi.mocked(listJobs).mockResolvedValue([])
+  vi.mocked(listSnapshots).mockResolvedValue([])
+  vi.mocked(listResumes).mockResolvedValue([])
+  vi.mocked(listVersions).mockResolvedValue([])
   vi.mocked(fetchApplication).mockResolvedValue(detail)
   vi.mocked(fetchVersion).mockResolvedValue({id:'v1', resume_id:'r1', version_no:1} as ResumeVersion)
 })
@@ -114,4 +117,17 @@ it('读取时间线的网络错误只弹一次通知，不插入内联错误块'
   expect(noticeSpy.mock.calls[0][0]).toMatchObject({ message: '读取申请时间线失败' })
   expect(wrapper.find('[data-testid="action-error"]').exists()).toBe(false)
   expect(wrapper.find('[data-testid="load-error"]').exists()).toBe(false)
+})
+
+
+it('无简历也可查看准备记录；保存材料采用新投影', async () => {
+  vi.mocked(fetchApplication).mockResolvedValue({ ...detail, resume_version_id: null })
+  vi.mocked(changeApplicationMaterials).mockResolvedValue({ ...detail, resume_version_id: null, version: 2 })
+  const wrapper = mount(ApplicationView, { global: { plugins: [router] } })
+  await flushPromises()
+  await wrapper.find('tbody button').trigger('click'); await flushPromises()
+  expect(fetchVersion).not.toHaveBeenCalled()
+  const save = wrapper.findAll('button').find(button => button.text() === '保存材料')
+  await save?.trigger('click'); await flushPromises()
+  expect(changeApplicationMaterials).toHaveBeenCalledWith('a1', { version: 1, job_snapshot_id: 's1', resume_version_id: null })
 })

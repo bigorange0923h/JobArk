@@ -90,7 +90,7 @@ def test_list_detail_update_and_snapshot_are_scoped(db_client: TestClient) -> No
     assert detail.json()["data"]["latest_snapshot"]["id"] == snapshot.json()["data"]["id"]
 
 
-def test_snapshot_rejects_duplicate_content_and_foreign_posting(db_client: TestClient) -> None:
+def test_snapshot_reuses_duplicate_content_and_rejects_foreign_posting(db_client: TestClient) -> None:
     """相同快照不能重复；路径中的职位与页面不匹配时必须是 404 而非跨机会写入。"""
     first = _create_job(db_client)
     second_payload = _manual_payload()
@@ -101,7 +101,8 @@ def test_snapshot_rejects_duplicate_content_and_foreign_posting(db_client: TestC
         f"/api/v1/jobs/{first['id']}/postings/{first['postings'][0]['id']}/snapshots",
         json={"raw_jd": _manual_payload()["raw_jd"]},
     )
-    assert duplicate.status_code == 409
+    assert duplicate.status_code == 201
+    assert duplicate.json()['data']['id'] == first['latest_snapshot']['id']
     foreign = db_client.post(
         f"/api/v1/jobs/{first['id']}/postings/{second['postings'][0]['id']}/snapshots",
         json={"raw_jd": "不能写到另一个职位。"},

@@ -107,8 +107,7 @@ async def current(session: AsyncSession, opportunity_id: UUID, snapshot_id: UUID
     if company is None:
         raise ResourceNotFoundError("职位关联的公司不存在。")
     postings = await repository.list_postings(session, opportunity_id)
-    snapshots = [item for post in postings if (item := await repository.latest_snapshot(session, post.id))]
-    latest = max(snapshots, key=lambda item: (item.captured_at, item.created_at), default=None)
+    latest = await repository.current_snapshot(session, opportunity_id)
     if latest is None:
         raise ConflictError("职位尚无 JD 快照，不能准备投递。")
     snapshot = latest if snapshot_id is None else await session.get(JobSnapshot, snapshot_id)

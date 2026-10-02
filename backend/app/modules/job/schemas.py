@@ -97,6 +97,7 @@ class CompanyRead(EditableRead):
 class JobPostingRead(EditableRead):
     """职位页面响应。"""
 
+    current_snapshot_id: UUID | None = Field(description="页面当前内容；重复观察可指向旧快照。")
     opportunity_id: UUID
     source: JobSource
     external_id: str | None

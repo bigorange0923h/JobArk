@@ -54,11 +54,21 @@ async def get_posting(session: AsyncSession, posting_id: uuid.UUID) -> JobPostin
 
 
 async def latest_snapshot(session: AsyncSession, posting_id: uuid.UUID) -> JobSnapshot | None:
-    """读取指定页面最新的内容快照。"""
+    """读取页面明确的当前内容，不用首次采集时间推断当前指向。"""
     return await session.scalar(
         select(JobSnapshot)
-        .where(JobSnapshot.posting_id == posting_id)
-        .order_by(JobSnapshot.captured_at.desc(), JobSnapshot.created_at.desc())
+        .join(JobPosting, JobPosting.current_snapshot_id == JobSnapshot.id)
+        .where(JobPosting.id == posting_id, JobSnapshot.posting_id == posting_id)
+    )
+
+
+async def current_snapshot(session: AsyncSession, opportunity_id: uuid.UUID) -> JobSnapshot | None:
+    """按页面最近观察时间选择机会当前内容，并以页面 ID 稳定处理并列。"""
+    return await session.scalar(
+        select(JobSnapshot)
+        .join(JobPosting, JobPosting.current_snapshot_id == JobSnapshot.id)
+        .where(JobPosting.opportunity_id == opportunity_id, JobSnapshot.posting_id == JobPosting.id)
+        .order_by(JobPosting.last_seen_at.desc(), JobPosting.id.desc())
         .limit(1)
     )
 
@@ -83,7 +93,7 @@ async def list_snapshots(session: AsyncSession, opportunity_id: uuid.UUID) -> Se
     return (
         await session.scalars(
             select(JobSnapshot)
-            .join(JobPosting)
+            .join(JobPosting, JobSnapshot.posting_id == JobPosting.id)
             .where(JobPosting.opportunity_id == opportunity_id)
             .order_by(JobSnapshot.captured_at.desc(), JobSnapshot.id)
         )

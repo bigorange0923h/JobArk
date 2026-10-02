@@ -10,7 +10,7 @@ from app.core.database import get_session
 from app.core.responses import ApiResponse, success
 
 from . import service
-from .schemas import ApplicationCreate, ApplicationDetail, ApplicationRead, ApplicationTransition
+from .schemas import ApplicationCreate, ApplicationDetail, ApplicationMaterials, ApplicationRead, ApplicationTransition
 
 router = APIRouter(prefix="/applications", tags=["application"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -31,7 +31,7 @@ async def list_applications(session: SessionDep) -> ApiResponse[list[Application
     "",
     summary="创建申请记录",
     description=(
-        "固定 JD 与简历版本；已有申请返回 409 + DUPLICATE_APPLICATION，"
+        "创建可调整材料的准备记录；已有申请返回 409 + DUPLICATE_APPLICATION，"
         "用户确认后携带 confirm_repeat 创建新尝试；引用无效返回 404/422。"
     ),
     response_model=ApiResponse[ApplicationDetail],
@@ -64,3 +64,19 @@ async def change_status(
 ) -> ApiResponse[ApplicationDetail]:
     """原子创建状态事件并更新投影。"""
     return success(await service.transition(session, application_id, payload))
+
+
+@router.patch(
+    "/{application_id}/materials",
+    summary="调整申请准备材料",
+    description="要求当前 version；未锁定准备阶段可换 JD 或正式简历，就绪变更后重新核验。"
+    "不存在返回 404，过期/已锁定/已结束返回 409，归属无效返回 422；无外部副作用。",
+    response_model=ApiResponse[ApplicationDetail],
+)
+async def change_materials(
+    session: SessionDep,
+    application_id: UUID,
+    payload: ApplicationMaterials,
+) -> ApiResponse[ApplicationDetail]:
+    """原子保存材料前后引用、必要状态变更及事件历史。"""
+    return success(await service.change_materials(session, application_id, payload))
