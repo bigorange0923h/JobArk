@@ -26,6 +26,7 @@ from .modules.job.parsing import router as parsing_router
 from .modules.job.router import router as job_router
 from .modules.job.strategy import router as strategy_router
 from .modules.matching.router import router as matching_router
+from .modules.profile.archive import router as profile_archive_router
 from .modules.profile.import_router import router as profile_import_router
 from .modules.profile.router import router as profile_router
 from .modules.resume.optimization import router as optimization_router
@@ -128,6 +129,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     # AI 配置是基础设施接口（服务商/模型/凭据），与业务领域路由并列挂载。
     api_v1.include_router(ai_router)
     api_v1.include_router(profile_router)
+    api_v1.include_router(profile_archive_router)
     api_v1.include_router(profile_import_router)
     api_v1.include_router(resume_router)
     api_v1.include_router(strategy_router)

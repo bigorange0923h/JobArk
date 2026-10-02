@@ -26,7 +26,8 @@ from app.core.database import get_session
 from app.core.errors import ResourceNotFoundError
 from app.core.responses import ApiResponse, success
 
-from . import service
+from . import repository, service
+from .models import ProfileRevision
 from .schemas import (
     EducationCreate,
     EducationRead,
@@ -243,10 +244,14 @@ async def update_evidence(
 @router.delete(
     "/profile/evidences/{evidence_id}",
     summary="归档证据",
-    description="把证据标记为已归档（写 archived_at），不物理删除：证据可能被多条事实引用，删除会破坏这些引用。",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用与项目关联保留。",
     response_model=ApiResponse[EvidenceRead],
 )
-async def archive_evidence(session: SessionDep, evidence_id: uuid.UUID) -> ApiResponse[EvidenceRead]:
+async def archive_evidence(
+    session: SessionDep,
+    evidence_id: uuid.UUID,
+    version: Annotated[int, Query(ge=1)],
+) -> ApiResponse[EvidenceRead]:
     """归档证据。
 
     参数:
@@ -259,7 +264,7 @@ async def archive_evidence(session: SessionDep, evidence_id: uuid.UUID) -> ApiRe
     异常:
         RESOURCE_NOT_FOUND: 证据不存在。
     """
-    evidence = await service.archive_evidence(session, evidence_id)
+    evidence = await service.archive_evidence(session, evidence_id, version)
     return success(EvidenceRead.model_validate(evidence))
 
 
@@ -322,25 +327,27 @@ async def update_skill(session: SessionDep, skill_id: uuid.UUID, payload: SkillU
 
 @router.delete(
     "/profile/skills/{skill_id}",
-    summary="删除技能",
-    description="物理删除；若该技能已被任何资料修订引用，返回 409 并列出引用它的修订号。",
+    summary="归档技能",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用不阻止归档。",
     response_model=ApiResponse[ResourceRef],
 )
-async def delete_skill(session: SessionDep, skill_id: uuid.UUID) -> ApiResponse[ResourceRef]:
-    """删除技能。
+async def delete_skill(
+    session: SessionDep, skill_id: uuid.UUID, version: Annotated[int, Query(ge=1)]
+) -> ApiResponse[ResourceRef]:
+    """归档技能。
 
     参数:
         session: 请求级数据库会话。
         skill_id: 技能主键。
 
     返回:
-        ApiResponse[ResourceRef]: 被删除记录的主键。
+        ApiResponse[ResourceRef]: 被归档记录的主键。
 
     异常:
         RESOURCE_NOT_FOUND: 技能不存在。
-        CONFLICT: 已被资料修订引用。
+        CONFLICT: 乐观锁版本过期。
     """
-    await service.delete_skill(session, skill_id)
+    await service.delete_skill(session, skill_id, version)
     return success(ResourceRef(id=skill_id))
 
 
@@ -406,25 +413,27 @@ async def update_experience(
 
 @router.delete(
     "/profile/experiences/{experience_id}",
-    summary="删除工作经历",
-    description="物理删除；被资料修订引用时返回 409。",
+    summary="归档工作经历",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用与项目关联保留。",
     response_model=ApiResponse[ResourceRef],
 )
-async def delete_experience(session: SessionDep, experience_id: uuid.UUID) -> ApiResponse[ResourceRef]:
-    """删除工作经历。
+async def delete_experience(
+    session: SessionDep, experience_id: uuid.UUID, version: Annotated[int, Query(ge=1)]
+) -> ApiResponse[ResourceRef]:
+    """归档工作经历。
 
     参数:
         session: 请求级数据库会话。
         experience_id: 记录主键。
 
     返回:
-        ApiResponse[ResourceRef]: 被删除记录的主键。
+        ApiResponse[ResourceRef]: 被归档记录的主键。
 
     异常:
         RESOURCE_NOT_FOUND: 记录不存在。
-        CONFLICT: 已被资料修订引用。
+        CONFLICT: 乐观锁版本过期。
     """
-    await service.delete_experience(session, experience_id)
+    await service.delete_experience(session, experience_id, version)
     return success(ResourceRef(id=experience_id))
 
 
@@ -491,24 +500,26 @@ async def update_project(
 @router.delete(
     "/profile/projects/{project_id}",
     summary="删除项目",
-    description="物理删除；被资料修订引用时返回 409。",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用与项目关联保留。",
     response_model=ApiResponse[ResourceRef],
 )
-async def delete_project(session: SessionDep, project_id: uuid.UUID) -> ApiResponse[ResourceRef]:
-    """删除项目。
+async def delete_project(
+    session: SessionDep, project_id: uuid.UUID, version: Annotated[int, Query(ge=1)]
+) -> ApiResponse[ResourceRef]:
+    """归档项目。
 
     参数:
         session: 请求级数据库会话。
         project_id: 记录主键。
 
     返回:
-        ApiResponse[ResourceRef]: 被删除记录的主键。
+        ApiResponse[ResourceRef]: 被归档记录的主键。
 
     异常:
         RESOURCE_NOT_FOUND: 记录不存在。
-        CONFLICT: 已被资料修订引用。
+        CONFLICT: 乐观锁版本过期。
     """
-    await service.delete_project(session, project_id)
+    await service.delete_project(session, project_id, version)
     return success(ResourceRef(id=project_id))
 
 
@@ -574,25 +585,27 @@ async def update_education(
 
 @router.delete(
     "/profile/educations/{education_id}",
-    summary="删除教育经历",
-    description="物理删除；被资料修订引用时返回 409。",
+    summary="归档教育经历",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用与项目关联保留。",
     response_model=ApiResponse[ResourceRef],
 )
-async def delete_education(session: SessionDep, education_id: uuid.UUID) -> ApiResponse[ResourceRef]:
-    """删除教育经历。
+async def delete_education(
+    session: SessionDep, education_id: uuid.UUID, version: Annotated[int, Query(ge=1)]
+) -> ApiResponse[ResourceRef]:
+    """归档教育经历。
 
     参数:
         session: 请求级数据库会话。
         education_id: 记录主键。
 
     返回:
-        ApiResponse[ResourceRef]: 被删除记录的主键。
+        ApiResponse[ResourceRef]: 被归档记录的主键。
 
     异常:
         RESOURCE_NOT_FOUND: 记录不存在。
-        CONFLICT: 已被资料修订引用。
+        CONFLICT: 乐观锁版本过期。
     """
-    await service.delete_education(session, education_id)
+    await service.delete_education(session, education_id, version)
     return success(ResourceRef(id=education_id))
 
 
@@ -659,24 +672,26 @@ async def update_language(
 @router.delete(
     "/profile/languages/{language_id}",
     summary="删除语言能力",
-    description="物理删除；被资料修订引用时返回 409。",
+    description="按 version 归档事实；不存在返回 404，版本过期返回 409；历史引用与项目关联保留。",
     response_model=ApiResponse[ResourceRef],
 )
-async def delete_language(session: SessionDep, language_id: uuid.UUID) -> ApiResponse[ResourceRef]:
-    """删除语言能力。
+async def delete_language(
+    session: SessionDep, language_id: uuid.UUID, version: Annotated[int, Query(ge=1)]
+) -> ApiResponse[ResourceRef]:
+    """归档语言能力。
 
     参数:
         session: 请求级数据库会话。
         language_id: 记录主键。
 
     返回:
-        ApiResponse[ResourceRef]: 被删除记录的主键。
+        ApiResponse[ResourceRef]: 被归档记录的主键。
 
     异常:
         RESOURCE_NOT_FOUND: 记录不存在。
-        CONFLICT: 已被资料修订引用。
+        CONFLICT: 乐观锁版本过期。
     """
-    await service.delete_language(session, language_id)
+    await service.delete_language(session, language_id, version)
     return success(ResourceRef(id=language_id))
 
 
@@ -786,4 +801,18 @@ async def create_revision(session: SessionDep, payload: RevisionCreate) -> ApiRe
         RESOURCE_NOT_FOUND: 档案尚未创建。
     """
     revision = await service.create_revision(session, payload)
+    return success(RevisionRead.model_validate(revision))
+
+
+@router.get(
+    "/profile/revisions/{revision_id}",
+    summary="读取资料修订",
+    description="读取不可变的生成依据；不存在返回 404，不用当前档案补齐历史数据。",
+    response_model=ApiResponse[RevisionRead],
+)
+async def get_revision(session: SessionDep, revision_id: uuid.UUID) -> ApiResponse[RevisionRead]:
+    """按主键读取已保存修订，供候选稿编辑器展示固定来源。"""
+    revision = await repository.get_by_id(session, ProfileRevision, revision_id)
+    if revision is None:
+        raise ResourceNotFoundError("资料修订不存在。")
     return success(RevisionRead.model_validate(revision))

@@ -99,7 +99,7 @@ it('项目可记录成果并关联已有工作经历，时间只到月', async (
 
     // 「所属工作经历」的选项来自档案里已有的经历，标签带月份区间便于区分同一公司的多段任职。
     const link = wrapper.findAllComponents({ name: 'ASelect' })[0]
-    expect(link?.props('options')).toEqual([{ value: 'experience-1', label: '某公司 · 后端工程师（2022-03 至今）' }])
+    expect(link?.props('options')).toEqual([{ value: 'experience-1', label: '某公司 · 后端工程师（2022-03 — 至今）' }])
 
     await wrapper.find('[data-testid="fact-projects-0-name"]').setValue('订单系统重构')
     await wrapper.find('[data-testid="fact-projects-0-achievements"]').setValue('把下单耗时降低 30%')

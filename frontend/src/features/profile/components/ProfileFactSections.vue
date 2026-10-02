@@ -13,7 +13,7 @@ const props = withDefaults(defineProps<{
   statuses?: Record<string, string>
   errors?: Record<string, string>
   /** 「所属工作经历」下拉的选项；只在档案页传入（导入候选还没有可关联的 id）。 */
-  experienceOptions?: { value: string; label: string }[]
+  experienceOptions?: { value: string; label: string; disabled?: boolean }[]
 }>(), { sourceTitles: () => ({}), statuses: () => ({}), errors: () => ({}), experienceOptions: () => [] })
 const emit = defineEmits<{
   updateField: [key: ProfileFactKey, index: number, field: ProfileFactField, value: unknown]
@@ -135,8 +135,8 @@ function statusKey(key: ProfileFactKey, index: number): string {
           </a-form-item></a-form>
           <p class="skill-source" :title="skillSource(item, mode, sourceTitles)">{{ skillSource(item, mode, sourceTitles) }}<span v-if="mode === 'manual' && statuses[statusKey('skills', index)]"> · {{ statuses[statusKey('skills', index)] }}</span><span v-if="errors[`skills-${index}-name`]"> · {{ errors[`skills-${index}-name`] }}</span></p>
         </div>
-        <a-popconfirm v-if="mode === 'manual' && item['id']" title="确认删除这项技能？" ok-text="删除" cancel-text="取消" @confirm="removeSkill(index)">
-          <a-button type="text" danger size="small" :data-testid="`remove-item-skills-${index}`" :aria-label="`删除技能 ${valueOf('skills', item, skillNameField!)}`">删除</a-button>
+        <a-popconfirm v-if="mode === 'manual' && item['id']" title="确认归档这项技能？历史引用会保留，可在归档列表恢复。" ok-text="归档" cancel-text="取消" @confirm="removeSkill(index)">
+          <a-button type="text" danger size="small" :data-testid="`remove-item-skills-${index}`" :aria-label="`删除技能 ${valueOf('skills', item, skillNameField!)}`">归档</a-button>
         </a-popconfirm>
         <a-button v-else type="text" danger size="small" :data-testid="`remove-item-skills-${index}`" :aria-label="`删除技能 ${valueOf('skills', item, skillNameField!)}`" @click="removeSkill(index)">删除</a-button>
       </div>
@@ -144,8 +144,8 @@ function statusKey(key: ProfileFactKey, index: number): string {
     <a-card v-for="(item, index) in section.key === 'skills' ? [] : items[section.key]" :key="String(item['id'] ?? index)" size="small" class="fact-item" :data-testid="`form-item-${section.key}-${index}`">
       <template #title>{{ section.title }} {{ index + 1 }}</template>
       <template #extra>
-        <a-popconfirm v-if="mode === 'manual' && item['id']" :title="`确认删除这条${section.title}？`" ok-text="删除" cancel-text="取消" @confirm="emit('removeItem', section.key, index)">
-          <a-button type="link" danger size="small">删除</a-button>
+        <a-popconfirm v-if="mode === 'manual' && item['id']" :title="`确认归档这条${section.title}？历史引用会保留。`" ok-text="归档" cancel-text="取消" @confirm="emit('removeItem', section.key, index)">
+          <a-button type="link" danger size="small">归档</a-button>
         </a-popconfirm>
         <a-button v-else type="link" danger size="small" :data-testid="`remove-item-${section.key}-${index}`" @click="emit('removeItem', section.key, index)">移除</a-button>
       </template>

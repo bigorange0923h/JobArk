@@ -157,7 +157,7 @@ def test_archived_evidence_is_hidden_from_default_list(db_client: TestClient) ->
     _create_profile(db_client)
     evidence = _create_evidence(db_client)
 
-    archived = db_client.delete(f"{API}/profile/evidences/{evidence['id']}")
+    archived = db_client.delete(f"{API}/profile/evidences/{evidence['id']}?version={evidence['version']}")
     assert archived.status_code == 200, archived.text
     assert _data(archived)["archived_at"] is not None
 
@@ -279,8 +279,8 @@ def test_preference_lifecycle(db_client: TestClient) -> None:
     assert stale.status_code == 409
 
 
-def test_referenced_skill_cannot_be_deleted(db_client: TestClient) -> None:
-    """被资料修订引用的事实不能删除，错误中要给出引用它的修订号。"""
+def test_referenced_skill_can_be_archived(db_client: TestClient) -> None:
+    """引用历史的事实可归档，历史修订仍保留原条目。"""
     _create_profile(db_client)
     evidence = _create_evidence(db_client)
     skill = _data(
@@ -293,22 +293,19 @@ def test_referenced_skill_cannot_be_deleted(db_client: TestClient) -> None:
     assert revision.status_code == 201, revision.text
     assert _data(revision)["revision_no"] == 1
 
-    response = db_client.delete(f"{API}/profile/skills/{skill['id']}")
+    response = db_client.delete(f"{API}/profile/skills/{skill['id']}?version={skill['version']}")
 
-    assert response.status_code == 409
-    error = _error(response)
-    assert error["code"] == "CONFLICT"
-    assert "1" in error["details"][0]["reason"]
-    # 删除失败后记录必须仍然存在，避免"报错但数据已变"。
-    assert [item["id"] for item in _data(db_client.get(f"{API}/profile"))["skills"]] == [skill["id"]]
+    assert response.status_code == 200
+    assert _data(db_client.get(f"{API}/profile"))["skills"] == []
+    assert _data(revision)["snapshot_json"]["skills"][0]["id"] == skill["id"]
 
 
 def test_unreferenced_skill_can_be_deleted(db_client: TestClient) -> None:
-    """未被引用的事实可以物理删除。"""
+    """未被引用的事实也采用可恢复的归档。"""
     _create_profile(db_client)
     skill = _data(db_client.post(f"{API}/profile/skills", json={"name": "Go"}))
 
-    response = db_client.delete(f"{API}/profile/skills/{skill['id']}")
+    response = db_client.delete(f"{API}/profile/skills/{skill['id']}?version={skill['version']}")
 
     assert response.status_code == 200
     assert _data(response)["id"] == skill["id"]
@@ -322,7 +319,8 @@ def test_revision_snapshot_excludes_contact_details(db_client: TestClient) -> No
     就有被带进提示词的风险。
     """
     _create_profile(db_client)
-    _create_evidence(db_client)
+    evidence = _create_evidence(db_client)
+    db_client.post(f"{API}/profile/skills", json={"name": "AWS", "source_evidence_id": evidence["id"]})
 
     revision = db_client.post(f"{API}/profile/revisions", json={"reason": "发起匹配"})
     assert revision.status_code == 201, revision.text
@@ -382,7 +380,7 @@ def test_project_rejects_unknown_experience(db_client: TestClient) -> None:
     assert "experience_id" in _detail_fields(error)
 
 
-def test_experience_linked_to_project_cannot_be_deleted(db_client: TestClient) -> None:
+def test_experience_linked_to_project_can_be_archived(db_client: TestClient) -> None:
     """被项目关联的工作经历不能删除，错误里要点出关联的项目名。
 
     关联是用户建立的关系；直接删掉经历会让那些项目静默失去归属，因此这里明确阻止。
@@ -396,14 +394,12 @@ def test_experience_linked_to_project_cannot_be_deleted(db_client: TestClient) -
     )
     db_client.post(f"{API}/profile/projects", json={"name": "订单系统重构", "experience_id": experience["id"]})
 
-    response = db_client.delete(f"{API}/profile/experiences/{experience['id']}")
+    response = db_client.delete(f"{API}/profile/experiences/{experience['id']}?version={experience['version']}")
 
-    assert response.status_code == 409
-    error = _error(response)
-    assert error["code"] == "CONFLICT"
-    assert "订单系统重构" in error["details"][0]["reason"]
-    # 删除失败后记录必须仍然存在，避免"报错但数据已变"。
-    assert [item["id"] for item in _data(db_client.get(f"{API}/profile"))["experiences"]] == [experience["id"]]
+    assert response.status_code == 200
+    current = _data(db_client.get(f"{API}/profile"))
+    assert current["experiences"] == []
+    assert current["projects"][0]["experience_id"] == experience["id"]
 
 
 def _create_facts(

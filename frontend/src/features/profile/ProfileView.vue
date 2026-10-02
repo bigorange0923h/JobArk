@@ -16,6 +16,7 @@ import { computed, onMounted, ref } from 'vue'
 import { fetchProfile, type Profile } from '@/shared/api/profile'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
+import ArchivedFactsPanel from './components/ArchivedFactsPanel.vue'
 import FactPanel from './components/FactPanel.vue'
 import ProfileBasicsPanel from './components/ProfileBasicsPanel.vue'
 import ProfileManualFacts from './components/ProfileManualFacts.vue'
@@ -158,6 +159,7 @@ onMounted(() => {
         <a-collapse-panel key="advanced" header="其他资料与历史记录">
       <FactPanel :descriptor="languagesDescriptor" :items="profile.languages" @changed="reload" @conflict="onConflict" />
 
+      <ArchivedFactsPanel @changed="reload" />
       <RevisionPanel />
         </a-collapse-panel>
       </a-collapse>

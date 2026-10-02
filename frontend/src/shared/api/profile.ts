@@ -85,6 +85,7 @@ export interface Experience extends EditableResource {
 
 /** 项目经历。 */
 export interface Project extends EditableResource {
+  experience_summary?: string | null
   name: string
   role: string | null
   description: string | null
@@ -384,7 +385,7 @@ export interface PreferenceInput {
 export interface FactApi<TRead, TPayload> {
   create: (payload: TPayload) => Promise<TRead>
   update: (id: string, payload: TPayload & { version: number }) => Promise<TRead>
-  remove: (id: string) => Promise<{ id: string }>
+  remove: (id: string, version: number) => Promise<{ id: string }>
 }
 
 /** 构造一类事实的写操作集合。 */
@@ -393,7 +394,7 @@ export function createFactApi<TRead, TPayload>(path: string): FactApi<TRead, TPa
     create: (payload) => requestV1<TRead>(path, { init: jsonInit('POST', payload) }),
     update: (id, payload) => requestV1<TRead>(`${path}/${id}`, { init: jsonInit('PATCH', payload) }),
     // 证据的 DELETE 在后端实现为归档（写 archived_at），方法名保持 remove 以免界面层假设是物理删除。
-    remove: (id) => requestV1<{ id: string }>(`${path}/${id}`, { init: { method: 'DELETE' } }),
+    remove: (id, version) => requestV1<{ id: string }>(`${path}/${id}?version=${version}`, { init: { method: 'DELETE' } }),
   }
 }
 
@@ -703,4 +704,29 @@ function jsonInit(method: string, payload: unknown): RequestInit {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(payload),
   }
+}
+
+
+/** 五类归档事实；用于恢复，不参与当前编辑表单。 */
+export type ArchivedFactKind = 'skills' | 'experiences' | 'projects' | 'educations' | 'languages'
+export interface ArchivedFact extends EditableResource {
+  archived_at: string
+  name?: string
+  company?: string
+  title?: string
+  school?: string
+  language?: string
+}
+export type ArchivedFacts = Record<ArchivedFactKind, ArchivedFact[]>
+/** 浏览已归档的历史事实。 */
+export function fetchArchivedFacts(): Promise<ArchivedFacts> {
+  return requestV1('/profile/archived-facts')
+}
+/** 按版本恢复；同名技能冲突时保留归档记录。 */
+export function restoreArchivedFact(kind: ArchivedFactKind, id: string, version: number): Promise<ArchivedFact> {
+  return requestV1(`/profile/archived-facts/${kind}/${id}/restore`, { init: jsonInit('POST', { version }) })
+}
+/** 按 ID 读取固定修订；不以当前档案替换旧输入。 */
+export function fetchRevision(id: string): Promise<Revision> {
+  return requestV1(`/profile/revisions/${id}`)
 }

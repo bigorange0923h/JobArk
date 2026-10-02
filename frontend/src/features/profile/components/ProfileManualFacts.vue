@@ -24,14 +24,16 @@ const busy = new WeakSet<FactItem>()
  *
  * 标签带上月份区间：同一家公司可能有多段任职，只给公司名会让用户选错。时间口径与字段一致（只到月）。
  */
-const experienceOptions = computed(() =>
-  (props.profile?.experiences ?? []).map((item) => ({
-    value: item.id,
-    label: item.end_date === null
-      ? `${item.company} · ${item.title}（${item.start_date.slice(0, 7)} 至今）`
-      : `${item.company} · ${item.title}（${item.start_date.slice(0, 7)} — ${item.end_date.slice(0, 7)}）`,
-  })),
-)
+const experienceOptions = computed(() => {
+  const active = (props.profile?.experiences ?? []).map((item) => ({
+    value: item.id, label: `${item.company} · ${item.title}（${item.start_date.slice(0, 7)} — ${item.end_date?.slice(0, 7) ?? '至今'}）`,
+  }))
+  const known = new Set(active.map((item) => item.value))
+  const retained = (props.profile?.projects ?? []).filter((item) => item.experience_id && !known.has(item.experience_id))
+    .map((item) => ({ value: item.experience_id!, label: item.experience_summary ?? '原关联经历（已归档）', disabled: true }))
+  return [...active, ...retained]
+})
+
 
 /** 从服务端回填已保存项，同时保留尚未落库或在请求期间继续编辑的草稿。 */
 watch(() => props.profile, (profile) => {
@@ -181,14 +183,14 @@ async function removeItem(key: ProfileFactKey, index: number): Promise<void> {
     rows.value[key].splice(index, 1)
     return
   }
-  statuses.value[`${key}-${index}`] = '正在删除…'
+  statuses.value[`${key}-${index}`] = '正在归档…'
   try {
-    await apiFor(key).remove(id)
+    await apiFor(key).remove(id, Number(item['version']))
     rows.value[key].splice(index, 1)
     emit('changed')
   } catch (cause: unknown) {
     const parsed = parseServerError(cause)
-    statuses.value[`${key}-${index}`] = `删除失败：${parsed.message}`
+    statuses.value[`${key}-${index}`] = `归档失败：${parsed.message}`
   }
 }
 </script>

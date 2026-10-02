@@ -53,7 +53,7 @@ function factTarget(name: string): HTMLElement | null {
   return document.querySelector<HTMLElement>(`[data-testid="panel-${props.descriptor.key}"] [data-testid="fact-field-${name}"]`)
 }
 
-const removeLabel = computed(() => props.descriptor.removeLabel ?? '删除')
+const removeLabel = computed(() => props.descriptor.removeLabel ?? '归档')
 
 const modalTitle = computed(() =>
   editing.value === null ? `新增${props.descriptor.title}` : `编辑${props.descriptor.title}`,
@@ -205,7 +205,7 @@ async function submit(): Promise<void> {
 async function remove(item: TItem): Promise<void> {
   panelError.value = null
   try {
-    await props.descriptor.operations.remove(item.id)
+    await props.descriptor.operations.remove(item.id, item.version)
     emit('changed')
   } catch (error: unknown) {
     handleWriteError(error)

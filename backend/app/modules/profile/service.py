@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Sequence
+from copy import deepcopy
 from datetime import UTC, date, datetime
 from typing import Any, cast
 
@@ -55,15 +56,6 @@ from .schemas import (
     SkillCreate,
     SkillUpdate,
 )
-
-# 事实模型与修订快照字段名的对应关系；删除前用它判断该事实是否已被修订引用。
-SNAPSHOT_KEY_BY_MODEL: dict[type[Base], str] = {
-    ProfileSkill: "skills",
-    ProfileExperience: "experiences",
-    ProfileProject: "projects",
-    ProfileEducation: "educations",
-    ProfileLanguage: "languages",
-}
 
 # 「本人编辑」证据的固定标题：同一档案只保留一条，避免每轮编辑都新增一行证据。
 MANUAL_EDIT_EVIDENCE_TITLE = "本人编辑：内容修订"
@@ -114,14 +106,21 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
         刻意不包含 `email` 与 `phone`：联系方式与匹配、简历生成无关，而快照会被后续 LLM 流程读取，
         不写入快照可以从源头上避免联系方式被带进提示词。
     """
+    referenced_evidence_ids = {
+        item.source_evidence_id
+        for group in (profile.skills, profile.experiences, profile.projects, profile.educations, profile.languages)
+        for item in group
+        if item.archived_at is None and item.source_evidence_id is not None
+    }
     return {
+        "schema_version": 2,
         "profile": {
             "id": str(profile.id),
             "full_name": profile.full_name,
             "headline": profile.headline,
             "summary": profile.summary,
             "city": profile.city,
-            "links": profile.links,
+            "links": deepcopy(profile.links),
         },
         "evidences": [
             {
@@ -129,10 +128,14 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "source_type": evidence.source_type.value,
                 "title": evidence.title,
                 "source_url": evidence.source_url,
+                "content": evidence.content,
+                "source_hash": evidence.source_hash,
+                "version": evidence.version,
+                "archived_at": evidence.archived_at.isoformat() if evidence.archived_at else None,
                 "verification_status": evidence.verification_status.value,
             }
             for evidence in profile.evidences
-            if evidence.archived_at is None
+            if evidence.id in referenced_evidence_ids
         ],
         "skills": [
             {
@@ -140,11 +143,14 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "name": skill.name,
                 "category": skill.category,
                 "proficiency": skill.proficiency.value if skill.proficiency else None,
-                "years_of_experience": float(skill.years_of_experience) if skill.years_of_experience else None,
+                "years_of_experience": float(skill.years_of_experience)
+                if skill.years_of_experience is not None
+                else None,
                 "source_evidence_id": str(skill.source_evidence_id) if skill.source_evidence_id else None,
                 "claim_status": skill.claim_status.value,
             }
             for skill in profile.skills
+            if skill.archived_at is None
         ],
         "experiences": [
             {
@@ -159,6 +165,7 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
             }
             for item in profile.experiences
+            if item.archived_at is None
         ],
         "projects": [
             {
@@ -167,11 +174,16 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "role": item.role,
                 "description": item.description,
                 "achievements": item.achievements,
-                "tech_stack": item.tech_stack,
+                "tech_stack": deepcopy(item.tech_stack),
                 "url": item.url,
+                "start_date": item.start_date.isoformat() if item.start_date else None,
+                "end_date": item.end_date.isoformat() if item.end_date else None,
+                "experience_id": str(item.experience_id) if item.experience_id else None,
+                "experience_summary": item.experience_summary,
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
             }
             for item in profile.projects
+            if item.archived_at is None
         ],
         "educations": [
             {
@@ -179,18 +191,23 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "school": item.school,
                 "major": item.major,
                 "degree": item.degree,
+                "start_date": item.start_date.isoformat() if item.start_date else None,
+                "end_date": item.end_date.isoformat() if item.end_date else None,
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
             }
             for item in profile.educations
+            if item.archived_at is None
         ],
         "languages": [
             {
                 "id": str(item.id),
                 "language": item.language,
                 "level": item.level,
+                "note": item.note,
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
             }
             for item in profile.languages
+            if item.archived_at is None
         ],
     }
 
@@ -224,7 +241,7 @@ async def _require_fact[FactT: Base](session: AsyncSession, model: type[FactT], 
         ResourceNotFoundError: 记录不存在时抛出。
     """
     entity = await repo.get_by_id(session, model, fact_id)
-    if entity is None:
+    if entity is None or getattr(entity, "archived_at", None) is not None:
         raise ResourceNotFoundError("请求的资源不存在。")
     return entity
 
@@ -341,58 +358,10 @@ async def _ensure_experience_usable(
     if experience_id is None:
         return
     experience = await repo.get_by_id(session, ProfileExperience, experience_id)
-    if experience is None or experience.profile_id != profile_id:
+    if experience is None or experience.profile_id != profile_id or experience.archived_at is not None:
         raise ValidationFailedError(
             "关联的工作经历不存在。",
             details=[ErrorDetail(field="experience_id", reason="请选择本档案中已有的工作经历。")],
-        )
-
-
-async def _ensure_experience_unlinked(session: AsyncSession, experience: ProfileExperience) -> None:
-    """校验工作经历没有被任何项目关联。
-
-    参数:
-        session: 当前会话。
-        experience: 待删除的工作经历。
-
-    异常:
-        ConflictError: 仍被项目关联时抛出 409，并列出项目名。
-
-    注意:
-        关联是用户建立的关系，直接删掉经历会让那些项目静默失去归属；这里明确阻止，
-        与"被资料修订引用不可删除"是同一条原则：宁可让用户多做一步，也不静默丢信息。
-    """
-    linked = await repo.find_projects_by_experience(session, experience.id)
-    if not linked:
-        return
-    names = "、".join(project.name for project in linked)
-    raise ConflictError(
-        "该工作经历已被项目经历关联，不能删除。",
-        details=[ErrorDetail(field=None, reason=f"关联的项目：{names}。请先取消关联或删除这些项目。")],
-    )
-
-
-async def _ensure_fact_not_referenced(session: AsyncSession, model: type[Base], fact_id: uuid.UUID) -> None:
-    """校验事实未被任何资料修订引用。
-
-    参数:
-        session: 当前会话。
-        model: 事实模型类。
-        fact_id: 记录主键。
-
-    异常:
-        ConflictError: 已被修订引用时抛出 409，并列出引用它的修订号。
-
-    注意:
-        修订是不可变历史；允许删除被引用的事实会让历史修订指向不存在的记录，
-        "匹配与简历可复现"的前提随之失效。
-    """
-    revision_numbers = await repo.find_revisions_referencing(session, SNAPSHOT_KEY_BY_MODEL[model], fact_id)
-    if revision_numbers:
-        referenced_by = ", ".join(str(number) for number in revision_numbers)
-        raise ConflictError(
-            "该记录已被资料修订引用，不能删除。",
-            details=[ErrorDetail(field=None, reason=f"被修订 {referenced_by} 引用；请先处理相关修订。")],
         )
 
 
@@ -597,7 +566,7 @@ async def update_evidence(session: AsyncSession, evidence_id: uuid.UUID, payload
     return evidence
 
 
-async def archive_evidence(session: AsyncSession, evidence_id: uuid.UUID) -> ProfileEvidence:
+async def archive_evidence(session: AsyncSession, evidence_id: uuid.UUID, version: int) -> ProfileEvidence:
     """归档证据。
 
     参数:
@@ -609,17 +578,12 @@ async def archive_evidence(session: AsyncSession, evidence_id: uuid.UUID) -> Pro
 
     注意:
         界面的"删除"在此实现为归档：证据可能被多条事实引用，物理删除会让这些引用的目标消失，
-        使"结论可追溯到证据"失效。归档后该证据不再出现在默认列表与修订快照中。
+        使"结论可追溯到证据"失效。归档后不再供新事实选择；仍被活动事实引用的来源会保留在新修订快照中。
     """
     profile = await require_profile(session)
     evidence = await _require_fact(session, ProfileEvidence, evidence_id)
     _ensure_owned(evidence.profile_id, profile.id)
-    evidence.archived_at = datetime.now(UTC)
-    evidence.version += 1
-    await session.flush()
-    # `updated_at` 由数据库端 `onupdate=now()` 生成，flush 后该属性处于过期状态；
-    # 不显式刷新就交给 Pydantic 序列化，会在同步上下文触发惰性加载并抛 MissingGreenlet。
-    await session.refresh(evidence)
+    await apply_versioned_update(session, evidence, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
     return evidence
 
@@ -629,7 +593,7 @@ async def archive_evidence(session: AsyncSession, evidence_id: uuid.UUID) -> Pro
 # --------------------------------------------------------------------------------------------
 
 
-async def _ensure_skill_name_available(
+async def ensure_skill_name_available(
     session: AsyncSession,
     profile_id: uuid.UUID,
     name_normalized: str,
@@ -691,7 +655,7 @@ async def create_skill(session: AsyncSession, payload: SkillCreate) -> ProfileSk
     """
     profile = await require_profile(session)
     normalized = normalize_skill_name(payload.name)
-    await _ensure_skill_name_available(session, profile.id, normalized)
+    await ensure_skill_name_available(session, profile.id, normalized)
     await _ensure_evidence_usable(session, payload.source_evidence_id)
     _ensure_claim_supported(payload.claim_status, payload.source_evidence_id)
 
@@ -734,9 +698,9 @@ async def update_skill(session: AsyncSession, skill_id: uuid.UUID, payload: Skil
     updates = collect_updates(payload)
     if "name" in updates:
         normalized = normalize_skill_name(cast(str, updates["name"]))
-        await _ensure_skill_name_available(session, profile.id, normalized, exclude_id=skill.id)
+        await ensure_skill_name_available(session, profile.id, normalized, exclude_id=skill.id)
         updates["name_normalized"] = normalized
-    if "source_evidence_id" in updates:
+    if "source_evidence_id" in updates and updates["source_evidence_id"] != skill.source_evidence_id:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
     # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
     await _reattribute_edited_fact(session, skill, updates)
@@ -751,22 +715,12 @@ async def update_skill(session: AsyncSession, skill_id: uuid.UUID, payload: Skil
     return skill
 
 
-async def delete_skill(session: AsyncSession, skill_id: uuid.UUID) -> None:
-    """删除技能。
-
-    参数:
-        session: 当前会话。
-        skill_id: 技能主键。
-
-    异常:
-        ResourceNotFoundError: 技能不存在。
-        ConflictError: 已被资料修订引用。
-    """
+async def delete_skill(session: AsyncSession, skill_id: uuid.UUID, version: int) -> None:
+    """按客户端版本归档skill事实；历史修订与项目关联保持不变。"""
     profile = await require_profile(session)
     skill = await _require_fact(session, ProfileSkill, skill_id)
     _ensure_owned(skill.profile_id, profile.id)
-    await _ensure_fact_not_referenced(session, ProfileSkill, skill.id)
-    await repo.remove(session, skill)
+    await apply_versioned_update(session, skill, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
 
 
@@ -829,7 +783,7 @@ async def update_experience(
     _ensure_owned(experience.profile_id, profile.id)
 
     updates = collect_updates(payload)
-    if "source_evidence_id" in updates:
+    if "source_evidence_id" in updates and updates["source_evidence_id"] != experience.source_evidence_id:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
 
     start_date = cast(date | None, updates.get("start_date", experience.start_date))
@@ -848,23 +802,12 @@ async def update_experience(
     return experience
 
 
-async def delete_experience(session: AsyncSession, experience_id: uuid.UUID) -> None:
-    """删除工作经历。
-
-    参数:
-        session: 当前会话。
-        experience_id: 记录主键。
-
-    异常:
-        ResourceNotFoundError: 记录不存在。
-        ConflictError: 已被资料修订引用。
-    """
+async def delete_experience(session: AsyncSession, experience_id: uuid.UUID, version: int) -> None:
+    """按客户端版本归档experience事实；历史修订与项目关联保持不变。"""
     profile = await require_profile(session)
     experience = await _require_fact(session, ProfileExperience, experience_id)
     _ensure_owned(experience.profile_id, profile.id)
-    await _ensure_fact_not_referenced(session, ProfileExperience, experience.id)
-    await _ensure_experience_unlinked(session, experience)
-    await repo.remove(session, experience)
+    await apply_versioned_update(session, experience, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
 
 
@@ -901,6 +844,7 @@ async def create_project(session: AsyncSession, payload: ProjectCreate) -> Profi
         sort_order=payload.sort_order,
     )
     await repo.add(session, project)
+    await session.refresh(project, attribute_names=["experience"])
     await session.commit()
     return project
 
@@ -926,9 +870,9 @@ async def update_project(session: AsyncSession, project_id: uuid.UUID, payload: 
     _ensure_owned(project.profile_id, profile.id)
 
     updates = collect_updates(payload)
-    if "source_evidence_id" in updates:
+    if "source_evidence_id" in updates and updates["source_evidence_id"] != project.source_evidence_id:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
-    if "experience_id" in updates:
+    if "experience_id" in updates and updates["experience_id"] != project.experience_id:
         await _ensure_experience_usable(session, profile.id, cast(uuid.UUID | None, updates["experience_id"]))
 
     start_date = cast(date | None, updates.get("start_date", project.start_date))
@@ -943,26 +887,17 @@ async def update_project(session: AsyncSession, project_id: uuid.UUID, payload: 
     await _reattribute_edited_fact(session, project, updates)
 
     await apply_versioned_update(session, project, payload.version, updates)
+    await session.refresh(project, attribute_names=["experience"])
     await session.commit()
     return project
 
 
-async def delete_project(session: AsyncSession, project_id: uuid.UUID) -> None:
-    """删除项目。
-
-    参数:
-        session: 当前会话。
-        project_id: 记录主键。
-
-    异常:
-        ResourceNotFoundError: 记录不存在。
-        ConflictError: 已被资料修订引用。
-    """
+async def delete_project(session: AsyncSession, project_id: uuid.UUID, version: int) -> None:
+    """按客户端版本归档project事实；历史修订与项目关联保持不变。"""
     profile = await require_profile(session)
     project = await _require_fact(session, ProfileProject, project_id)
     _ensure_owned(project.profile_id, profile.id)
-    await _ensure_fact_not_referenced(session, ProfileProject, project.id)
-    await repo.remove(session, project)
+    await apply_versioned_update(session, project, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
 
 
@@ -1023,7 +958,7 @@ async def update_education(
     _ensure_owned(education.profile_id, profile.id)
 
     updates = collect_updates(payload)
-    if "source_evidence_id" in updates:
+    if "source_evidence_id" in updates and updates["source_evidence_id"] != education.source_evidence_id:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
 
     start_date = cast(date | None, updates.get("start_date", education.start_date))
@@ -1042,22 +977,12 @@ async def update_education(
     return education
 
 
-async def delete_education(session: AsyncSession, education_id: uuid.UUID) -> None:
-    """删除教育经历。
-
-    参数:
-        session: 当前会话。
-        education_id: 记录主键。
-
-    异常:
-        ResourceNotFoundError: 记录不存在。
-        ConflictError: 已被资料修订引用。
-    """
+async def delete_education(session: AsyncSession, education_id: uuid.UUID, version: int) -> None:
+    """按客户端版本归档education事实；历史修订与项目关联保持不变。"""
     profile = await require_profile(session)
     education = await _require_fact(session, ProfileEducation, education_id)
     _ensure_owned(education.profile_id, profile.id)
-    await _ensure_fact_not_referenced(session, ProfileEducation, education.id)
-    await repo.remove(session, education)
+    await apply_versioned_update(session, education, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
 
 
@@ -1116,7 +1041,7 @@ async def update_language(
     _ensure_owned(language.profile_id, profile.id)
 
     updates = collect_updates(payload)
-    if "source_evidence_id" in updates:
+    if "source_evidence_id" in updates and updates["source_evidence_id"] != language.source_evidence_id:
         await _ensure_evidence_usable(session, cast(uuid.UUID | None, updates["source_evidence_id"]))
 
     # 内容改了就不再沿用旧简历摘录作为来源；用户显式指定来源时不覆盖。
@@ -1127,22 +1052,12 @@ async def update_language(
     return language
 
 
-async def delete_language(session: AsyncSession, language_id: uuid.UUID) -> None:
-    """删除语言能力。
-
-    参数:
-        session: 当前会话。
-        language_id: 记录主键。
-
-    异常:
-        ResourceNotFoundError: 记录不存在。
-        ConflictError: 已被资料修订引用。
-    """
+async def delete_language(session: AsyncSession, language_id: uuid.UUID, version: int) -> None:
+    """按客户端版本归档language事实；历史修订与项目关联保持不变。"""
     profile = await require_profile(session)
     language = await _require_fact(session, ProfileLanguage, language_id)
     _ensure_owned(language.profile_id, profile.id)
-    await _ensure_fact_not_referenced(session, ProfileLanguage, language.id)
-    await repo.remove(session, language)
+    await apply_versioned_update(session, language, version, {"archived_at": datetime.now(UTC)})
     await session.commit()
 
 

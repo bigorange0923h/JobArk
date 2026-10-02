@@ -15,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import Base
 
 from ..matching.models import MatchResult
-from ..resume.models import ResumeVersion, ResumeVersionEvidence
+from ..resume.models import ResumeDraft, ResumeVersion, ResumeVersionEvidence
 from .models import (
     PersonalProfile,
     ProfileEducation,
@@ -122,6 +122,7 @@ async def skill_name_exists(
         .where(
             ProfileSkill.profile_id == profile_id,
             ProfileSkill.name_normalized == name_normalized,
+            ProfileSkill.archived_at.is_(None),
         )
     )
     if exclude_id is not None:
@@ -148,15 +149,18 @@ async def count_external_references(session: AsyncSession, profile_id: uuid.UUID
     revision_ids = select(ProfileRevision.id).where(ProfileRevision.profile_id == profile_id)
     evidence_ids = select(ProfileEvidence.id).where(ProfileEvidence.profile_id == profile_id)
     checks = {
-        "简历版本": select(func.count()).select_from(ResumeVersion).where(
-            ResumeVersion.profile_revision_id.in_(revision_ids)
-        ),
-        "简历版本证据关联": select(func.count()).select_from(ResumeVersionEvidence).where(
-            ResumeVersionEvidence.evidence_id.in_(evidence_ids)
-        ),
-        "匹配结果": select(func.count()).select_from(MatchResult).where(
-            MatchResult.profile_revision_id.in_(revision_ids)
-        ),
+        "简历候选稿": select(func.count())
+        .select_from(ResumeDraft)
+        .where(ResumeDraft.source_profile_revision_id.in_(revision_ids)),
+        "简历版本": select(func.count())
+        .select_from(ResumeVersion)
+        .where(ResumeVersion.profile_revision_id.in_(revision_ids)),
+        "简历版本证据关联": select(func.count())
+        .select_from(ResumeVersionEvidence)
+        .where(ResumeVersionEvidence.evidence_id.in_(evidence_ids)),
+        "匹配结果": select(func.count())
+        .select_from(MatchResult)
+        .where(MatchResult.profile_revision_id.in_(revision_ids)),
     }
 
     counts: dict[str, int] = {}
@@ -247,6 +251,7 @@ async def next_revision_no(session: AsyncSession, profile_id: uuid.UUID) -> int:
     返回:
         int: 下一个修订号，从 1 开始。
     """
+    await session.scalar(select(PersonalProfile).where(PersonalProfile.id == profile_id).with_for_update())
     current = await session.scalar(
         select(func.max(ProfileRevision.revision_no)).where(ProfileRevision.profile_id == profile_id)
     )

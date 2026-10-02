@@ -24,10 +24,10 @@ from .enums import ClaimStatus, EvidenceSourceType, RemotePreference, SkillProfi
 class ResourceRef(BaseModel):
     """删除操作的响应体。
 
-    只返回被删除记录的主键：记录已不存在，返回完整内容会误导前端以为它仍然可读。
+    返回归档记录的主键；记录保留于历史，但不再进入当前事实集合。
     """
 
-    id: UUID = Field(description="已被删除记录的主键。")
+    id: UUID = Field(description="已归档记录的主键。")
 
 
 class ProfileLink(BaseModel):
@@ -130,6 +130,8 @@ class SkillUpdate(BaseModel):
 class SkillRead(EditableRead):
     """技能响应体。"""
 
+    archived_at: datetime | None = Field(description="事实归档时间；当前档案排除已归档条目。")
+
     name: str
     name_normalized: str = Field(description="服务端规范化后的技能名，用于同档案内唯一性判断。")
     category: str | None
@@ -190,6 +192,8 @@ class ExperienceUpdate(BaseModel):
 
 class ExperienceRead(EditableRead):
     """工作经历响应体。"""
+
+    archived_at: datetime | None = Field(description="事实归档时间；当前档案排除已归档条目。")
 
     company: str
     title: str
@@ -252,6 +256,10 @@ class ProjectUpdate(BaseModel):
 class ProjectRead(EditableRead):
     """项目响应体。"""
 
+    experience_summary: str | None = Field(default=None, description="已有经历归属，含归档状态。")
+
+    archived_at: datetime | None = Field(description="事实归档时间；当前档案排除已归档条目。")
+
     name: str
     role: str | None
     description: str | None
@@ -307,6 +315,8 @@ class EducationUpdate(BaseModel):
 class EducationRead(EditableRead):
     """教育经历响应体。"""
 
+    archived_at: datetime | None = Field(description="事实归档时间；当前档案排除已归档条目。")
+
     school: str
     major: str | None
     degree: str | None
@@ -339,6 +349,8 @@ class LanguageUpdate(BaseModel):
 
 class LanguageRead(EditableRead):
     """语言能力响应体。"""
+
+    archived_at: datetime | None = Field(description="事实归档时间；当前档案排除已归档条目。")
 
     language: str
     level: str | None

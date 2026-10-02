@@ -3,7 +3,7 @@
 import pytest
 
 from app.modules.profile.import_fixture import FIXTURE_TEXT, mock_extract_profile
-from app.modules.profile.import_service import _parse_preview_candidate
+from app.modules.profile.import_service import _parse_preview_candidate  # pyright: ignore[reportPrivateUsage]
 from app.modules.profile.skill_categories import suggest_skill_category
 
 
