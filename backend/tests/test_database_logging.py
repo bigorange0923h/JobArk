@@ -1,4 +1,4 @@
-"""数据库日志隐私回归：仅执行合成 SELECT，不访问或修改业务表。"""
+"""数据库日志隐私回归默认复用开发库；仅执行合成 SELECT，不访问或修改业务表。"""
 
 import logging
 import os
@@ -15,12 +15,8 @@ from app.core.database import Database
 
 @pytest_asyncio.fixture
 async def echo_database() -> AsyncIterator[Database]:
-    """显式允许连接时提供开启 SQL 回显的数据库；测试结束关闭全部连接。"""
-    database_url = os.environ.get("JOBARK_TEST_DATABASE_URL")
-    if not database_url:
-        if os.environ.get("JOBARK_VERIFY_DEVELOPMENT_DATABASE") != "1":
-            pytest.skip("未提供专用测试库，也未显式启用只读开发库验证。")
-        database_url = get_settings().database_url
+    """提供开启回显的数据库，默认开发连接；可显式覆盖连接，测试结束关闭全部连接。"""
+    database_url = os.environ.get("JOBARK_TEST_DATABASE_URL") or get_settings().database_url
     settings = Settings(
         app_env=AppEnv.TEST,
         database_url=database_url,

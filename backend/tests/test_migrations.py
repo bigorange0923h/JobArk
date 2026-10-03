@@ -1,7 +1,7 @@
 """迁移链路的集成验证。
 
-阶段 0 的验收标准是"空数据库可重复迁移"，因此这些测试对真实 PostgreSQL 反复执行
-`upgrade`/`downgrade`，而不是只断言迁移脚本存在。未配置测试库时整组测试被跳过。
+应用与测试共用配置的 PostgreSQL 数据库；每个用例在独立随机 schema 内反复执行
+`upgrade`/`downgrade`，而不是只断言迁移脚本存在。连接仅搜索该 schema，既有业务表不参与测试。
 
 注意:
     这些测试必须是同步的。Alembic 的异步 `env.py` 内部调用 `asyncio.run`，
@@ -11,11 +11,13 @@
 import asyncio
 from collections.abc import Iterator
 from pathlib import Path
+from urllib.parse import parse_qs, urlsplit
 
 import pytest
 from alembic import command
 from alembic.config import Config
 from sqlalchemy import text
+from sqlalchemy.engine import make_url
 from sqlalchemy.exc import ProgrammingError
 from sqlalchemy.ext.asyncio import create_async_engine
 from sqlalchemy.pool import NullPool
@@ -26,11 +28,28 @@ BACKEND_ROOT = Path(__file__).resolve().parents[1]
 EXPECTED_HEAD = "0012"
 
 
+async def _assert_migration_schema(database_url: str) -> None:
+    """迁移前确认当前连接只搜索夹具提供的 schema；不读取或降级业务版本表。"""
+    dsn = make_url(database_url).query["dsn"]
+    assert isinstance(dsn, str)
+    expected_schema = parse_qs(urlsplit(dsn).query)["search_path"][0]
+    engine = create_async_engine(database_url, poolclass=NullPool)
+    try:
+        async with engine.connect() as connection:
+            schema, search_schemas = (
+                await connection.execute(text("SELECT current_schema(), current_schemas(false)"))
+            ).one()
+            assert schema == expected_schema
+            assert search_schemas == [expected_schema]
+    finally:
+        await engine.dispose()
+
+
 async def _read_current_revision(database_url: str) -> str | None:
-    """读取数据库当前的迁移版本。
+    """读取隔离 schema 当前的迁移版本，不回退到业务 schema。
 
     参数:
-        database_url: 目标数据库连接串。
+        database_url: 带随机 schema 搜索路径的同库连接串。
 
     返回:
         str | None: 当前版本号；尚未执行过任何迁移（版本表不存在）时为 None。
@@ -65,17 +84,17 @@ def _current_revision(database_url: str) -> str | None:
 
 @pytest.fixture
 def alembic_config(test_database_url: str, monkeypatch: pytest.MonkeyPatch) -> Iterator[Config]:
-    """把迁移环境指向测试库，并保证前后都处于空库状态。
+    """把迁移环境限定在本用例随机 schema，并保证前后都处于基线状态。
 
     参数:
-        test_database_url: 会话级测试库连接串。
+        test_database_url: 函数级随机 schema 连接串，与应用使用同一数据库。
         monkeypatch: 用于临时设置连接串环境变量。
 
     返回:
         Iterator[Config]: 指向 `backend/alembic.ini` 的配置。
 
     注意:
-        `get_settings` 带缓存，设置环境变量后必须清除，否则迁移会继续连到开发库。
+        `get_settings` 带缓存，切换搜索路径后必须清除，避免迁移仍使用业务 schema。
     """
     monkeypatch.setenv("JOBARK_DATABASE_URL", test_database_url)
     get_settings.cache_clear()
@@ -83,6 +102,7 @@ def alembic_config(test_database_url: str, monkeypatch: pytest.MonkeyPatch) -> I
     config = Config(str(BACKEND_ROOT / "alembic.ini"))
     config.set_main_option("script_location", str(BACKEND_ROOT / "migrations"))
 
+    asyncio.run(_assert_migration_schema(test_database_url))
     command.downgrade(config, "base")
     try:
         yield config
@@ -92,7 +112,10 @@ def alembic_config(test_database_url: str, monkeypatch: pytest.MonkeyPatch) -> I
 
 
 def test_upgrade_from_empty_database_reaches_head(alembic_config: Config, test_database_url: str) -> None:
-    """空库执行 upgrade 应到达最新版本。"""
+    """空 schema 不读取同库业务版本、约束或索引，执行 upgrade 后到达最新版本。"""
+    assert _current_revision(test_database_url) is None
+    assert asyncio.run(_foreign_key_names(test_database_url)) == set()
+    assert asyncio.run(_index_definitions(test_database_url, "ai_models")) == []
     command.upgrade(alembic_config, "head")
 
     assert _current_revision(test_database_url) == EXPECTED_HEAD
@@ -124,7 +147,7 @@ def test_upgrade_downgrade_upgrade_cycle_is_repeatable(alembic_config: Config, t
 
 
 async def _foreign_key_names(database_url: str) -> set[str]:
-    """读取 public schema 中的物理外键约束名。
+    """只读取当前隔离 schema 的物理外键约束名，不混入业务表约束。
 
     参数:
         database_url: 目标数据库连接串。
@@ -138,7 +161,7 @@ async def _foreign_key_names(database_url: str) -> set[str]:
             result = await connection.execute(
                 text(
                     "SELECT constraint_name FROM information_schema.table_constraints "
-                    "WHERE constraint_type = 'FOREIGN KEY' AND table_schema = 'public'"
+                    "WHERE constraint_type = 'FOREIGN KEY' AND table_schema = current_schema()"
                 )
             )
             return {str(row[0]) for row in result.all()}
@@ -210,7 +233,7 @@ def test_schema_has_expected_foreign_keys(alembic_config: Config, test_database_
 
 
 async def _index_definitions(database_url: str, table_name: str) -> list[str]:
-    """读取指定表的索引定义。
+    """读取当前隔离 schema 中指定表的索引定义，不混入同名业务表。
 
     参数:
         database_url: 目标数据库连接串。
@@ -223,7 +246,7 @@ async def _index_definitions(database_url: str, table_name: str) -> list[str]:
     try:
         async with engine.connect() as connection:
             result = await connection.execute(
-                text("SELECT indexdef FROM pg_indexes WHERE schemaname = 'public' AND tablename = :table"),
+                text("SELECT indexdef FROM pg_indexes WHERE schemaname = current_schema() AND tablename = :table"),
                 {"table": table_name},
             )
             return [str(row[0]) for row in result.all()]

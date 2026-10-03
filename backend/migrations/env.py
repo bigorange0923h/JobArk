@@ -35,7 +35,7 @@ def _database_url() -> str:
     """返回迁移使用的连接串。
 
     返回:
-        str: 应用配置中的异步连接串；测试通过环境变量指向独立测试库。
+        str: 应用配置中的异步连接串；独立连接的测试地址携带随机 schema 搜索路径。
     """
     return get_settings().database_url
 

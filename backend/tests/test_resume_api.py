@@ -8,7 +8,7 @@
 - 归档语义：归档的简历方向不能再产生新版本或候选稿。
 - 文档结构：模块顺序、显隐配置与结构版本非法时返回 422，而不是把坏数据写进库。
 
-未配置 `JOBARK_TEST_DATABASE_URL` 时整组测试会被跳过（见 `conftest.py` 的 `db_client`）。
+默认复用应用数据库，以随机 schema 和事务回滚隔离（见 `conftest.py` 的 `db_client`）。
 """
 
 import uuid

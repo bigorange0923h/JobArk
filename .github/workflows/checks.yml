@@ -7,16 +7,15 @@ jobs:
       postgres:
         image: postgres:16
         env:
-          POSTGRES_USER: jobark_test
+          POSTGRES_USER: jobark_app
           POSTGRES_PASSWORD: ci-only-password
-          POSTGRES_DB: jobark_test
+          POSTGRES_DB: jobark
         ports: ['5432:5432']
         options: >-
-          --health-cmd "pg_isready -U jobark_test"
+          --health-cmd "pg_isready -U jobark_app -d jobark"
           --health-interval 5s --health-timeout 5s --health-retries 10
     env:
-      JOBARK_TEST_DATABASE_URL: postgresql+asyncpg://jobark_test:ci-only-password@localhost:5432/jobark_test
-      JOBARK_DATABASE_URL: postgresql+asyncpg://jobark_test:ci-only-password@localhost:5432/jobark_test
+      JOBARK_DATABASE_URL: postgresql+asyncpg://jobark_app:ci-only-password@localhost:5432/jobark
     defaults:
       run:
         working-directory: backend

@@ -4,12 +4,11 @@
 探针路由不进入生产入口，避免为测试而在正式应用上暴露调试接口。
 
 测试配置显式禁用 `.env` 加载，防止开发者本地配置让测试结果不可复现。
-`JOBARK_VERIFY_DEVELOPMENT_DATABASE=1` 直接在开发库外层事务中隔离 API 测试，不清表；
-旧的破坏性迁移夹具仅允许 `JOBARK_TEST_DATABASE_URL` 指向可丢弃库；
-未设置时会被跳过，使不含 PostgreSQL 的环境仍能跑完其余测试。
+数据库测试默认共用应用数据库。普通 API 用例在随机 schema 和外层事务中回滚；
+多连接及独立迁移用例仅清理各自创建的随机 schema，不创建数据库或清空业务表。
+旧 `JOBARK_TEST_DATABASE_URL` 只是可选地址覆盖，与应用地址相同允许。
 """
 
-import asyncio
 import os
 from collections.abc import Iterator
 from pathlib import Path
@@ -19,10 +18,8 @@ from alembic import command
 from alembic.config import Config
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from sqlalchemy import text
-from sqlalchemy.engine import make_url
-from sqlalchemy.ext.asyncio import create_async_engine
-from sqlalchemy.pool import NullPool
+from tests.database_sandbox import shared_database_schema
+from tests.development_database import development_db_client
 
 from app.core.config import AppEnv, Settings, get_settings
 from app.core.errors import ResourceNotFoundError
@@ -31,38 +28,6 @@ from app.main import create_app
 
 TEST_DATABASE_URL_ENV = "JOBARK_TEST_DATABASE_URL"
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-
-# 领域表清单：清空测试数据时使用，顺序无关（TRUNCATE 带 CASCADE）。
-_DOMAIN_TABLES = (
-    "job_import_candidates",
-    # AI 配置表：先于其父表出现，保持"子表在前"的可读顺序。
-    "ai_models",
-    "ai_providers",
-    "job_parse_results",
-    "exclusion_exceptions",
-    "exclusion_evaluations",
-    "exclusion_policies",
-    "match_results",
-    "application_events",
-    "applications",
-    "job_snapshots",
-    "job_postings",
-    "job_opportunities",
-    "companies",
-    "resume_version_evidences",
-    "resume_drafts",
-    "resume_versions",
-    "resumes",
-    "profile_revisions",
-    "profile_preferences",
-    "profile_languages",
-    "profile_educations",
-    "profile_projects",
-    "profile_experiences",
-    "profile_skills",
-    "profile_evidences",
-    "personal_profiles",
-)
 
 
 @pytest.fixture(autouse=True)
@@ -136,81 +101,22 @@ def client(app: FastAPI) -> Iterator[TestClient]:
         yield test_client
 
 
-async def _ensure_database_exists(database_url: str) -> None:
-    """确保测试库存在，避免依赖手工准备环境。
-
-    参数:
-        database_url: 测试库连接串。
-
-    异常:
-        RuntimeError: 连接串未指定数据库名时抛出。
-
-    注意:
-        建库必须用 AUTOCOMMIT：PostgreSQL 不允许在事务块中执行 CREATE DATABASE。
-        维护库固定连到 `postgres`，不假设生产库名。
-    """
-    target = make_url(database_url)
-    if target.database is None:
-        raise RuntimeError("测试连接串必须包含数据库名。")
-
-    admin_engine = create_async_engine(
-        target.set(database="postgres"),
-        isolation_level="AUTOCOMMIT",
-        poolclass=NullPool,
-    )
+@pytest.fixture
+def test_database_url() -> Iterator[str]:
+    """在应用数据库中给多连接用例创建随机 schema，退出只清理本次范围。"""
+    database_url = os.environ.get(TEST_DATABASE_URL_ENV) or get_settings().database_url
     try:
-        async with admin_engine.connect() as connection:
-            exists = await connection.scalar(
-                text("SELECT 1 FROM pg_database WHERE datname = :name"),
-                {"name": target.database},
-            )
-            if exists is None:
-                await connection.execute(text(f'CREATE DATABASE "{target.database}"'))
+        with shared_database_schema(database_url) as sandbox:
+            yield sandbox.database_url
     finally:
-        await admin_engine.dispose()
-
-
-@pytest.fixture(scope="session")
-def test_database_url() -> str:
-    """返回独立测试库的连接串。
-
-    返回:
-        str: 测试库连接串，取自 `JOBARK_TEST_DATABASE_URL`。
-
-    注意:
-        本夹具是数据库集成测试的唯一开关：未设置环境变量时跳过，而不是让测试因缺库而失败；
-        设置后会自动创建缺失的测试库。测试库与开发库必须分离，避免迁移测试清空开发数据。
-    """
-    database_url = os.environ.get(TEST_DATABASE_URL_ENV)
-    if not database_url:
-        pytest.skip(f"未设置 {TEST_DATABASE_URL_ENV}，跳过数据库集成测试。")
-    if make_url(database_url) == make_url(get_settings().database_url):
-        raise RuntimeError("破坏性夹具不得指向开发库；请使用 JOBARK_VERIFY_DEVELOPMENT_DATABASE=1。")
-    asyncio.run(_ensure_database_exists(database_url))
-    return database_url
-
-
-async def _truncate_domain_tables(database_url: str) -> None:
-    """清空领域表，保证测试之间互不影响。
-
-    参数:
-        database_url: 目标数据库连接串。
-
-    注意:
-        使用 TRUNCATE 而不是 DELETE：前者一次完成且重置序列，不会因为外键顺序反复失败。
-    """
-    engine = create_async_engine(database_url, poolclass=NullPool)
-    try:
-        async with engine.begin() as connection:
-            await connection.execute(text(f"TRUNCATE {', '.join(_DOMAIN_TABLES)} CASCADE"))
-    finally:
-        await engine.dispose()
+        get_settings.cache_clear()
 
 
 def _upgrade_schema() -> None:
     """把测试库迁移到最新版本。
 
     注意:
+        仅供多连接夹具在本次新建随机 schema 中运行；不升级业务 schema。
         每次使用数据库夹具时都执行一次：迁移是幂等的，而已迁移的库执行 upgrade 是空操作。
         刻意不做"缺表才升级"的判断——那种判断会在新增迁移时静默失效，表现为测试里缺表，
         让人误以为是代码问题。
@@ -229,39 +135,39 @@ def db_client(
     request: pytest.FixtureRequest,
     monkeypatch: pytest.MonkeyPatch,
 ) -> Iterator[TestClient]:
-    """返回指向测试库、且数据已清空的客户端。
+    """默认共用开发库，以事务或随机 schema 隔离客户端。
 
     参数:
-        test_database_url: 会话级测试库连接串。
-        monkeypatch: 用于把连接串注入应用配置。
+        request: 识别本用例是否另需独立数据库连接。
+        monkeypatch: 多连接用例把隔离地址注入应用配置。
 
     返回:
         Iterator[TestClient]: 可在真实数据库上验证领域接口的客户端。
     """
-    if os.environ.get("JOBARK_VERIFY_DEVELOPMENT_DATABASE") == "1":
-        from tests.development_database import development_db_client
-
-        with development_db_client() as client:
-            yield client
-        get_settings.cache_clear()
+    if "test_database_url" not in request.fixturenames:
+        database_url = os.environ.get(TEST_DATABASE_URL_ENV) or get_settings().database_url
+        try:
+            with development_db_client(database_url) as client:
+                yield client
+        finally:
+            get_settings.cache_clear()
         return
     test_database_url: str = request.getfixturevalue("test_database_url")
     monkeypatch.setenv("JOBARK_DATABASE_URL", test_database_url)
     # 配置单例带缓存，必须清除，否则应用会继续连接开发库。
     get_settings.cache_clear()
 
-    _upgrade_schema()
-    asyncio.run(_truncate_domain_tables(test_database_url))
-
-    application = create_app(
-        Settings(
-            app_env=AppEnv.TEST,
-            log_level="WARNING",
-            database_url=test_database_url,
-            # 与 conftest 其他夹具一致：运行期禁用 .env 读取。
-            _env_file=None,  # pyright: ignore[reportCallIssue]
+    try:
+        _upgrade_schema()
+        application = create_app(
+            Settings(
+                app_env=AppEnv.TEST,
+                log_level="WARNING",
+                database_url=test_database_url,
+                _env_file=None,  # pyright: ignore[reportCallIssue]
+            )
         )
-    )
-    with TestClient(application, raise_server_exceptions=False) as client:
-        yield client
-    get_settings.cache_clear()
+        with TestClient(application, raise_server_exceptions=False) as client:
+            yield client
+    finally:
+        get_settings.cache_clear()

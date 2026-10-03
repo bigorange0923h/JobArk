@@ -1,6 +1,5 @@
-"""真实迁移和约束回归：只在开发连接的事务随机 schema 内操作，不更改业务 schema。"""
+"""默认复用开发连接的真实迁移回归：只在事务随机 schema 操作，不更改业务 schema。"""
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
@@ -70,9 +69,7 @@ async def _baseline(sandbox: MigrationSandbox) -> dict[str, Any]:
 
 @pytest_asyncio.fixture
 async def migration_sandbox() -> AsyncIterator[MigrationSandbox]:
-    """显式启用后在事务随机 schema 建立 0011 基线；退出回滚数据、DDL 和版本表。"""
-    if os.environ.get("JOBARK_VERIFY_DEVELOPMENT_DATABASE") != "1":
-        pytest.skip("未显式启用开发库事务验证。")
+    """默认在开发连接的事务随机 schema 建立 0011 基线；退出回滚数据、DDL 和版本表。"""
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool, connect_args={"timeout": 8})
     schema = "jobark_import_verify_" + uuid.uuid4().hex
     try:

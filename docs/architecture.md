@@ -64,7 +64,7 @@ FastAPI application
 - 业务数据库引擎固定隐藏 SQLAlchemy 回显及其包装异常的绑定参数部分，保留语句诊断，避免候选正文、个人资料或凭据通过参数日志泄漏。该开关不清洗 SQL 字面量、数据库驱动原始错误或其他应用日志；业务内容一律参数化，不拼入 SQL 字面量。
 - `Base` 与约束命名约定定义在 `app/core/database.py`；`migrations/env.py` 显式导入各领域 `models`，新增领域必须在此追加导入，否则 autogenerate 会静默漏表。
 - `alembic.ini` 不保存连接串且必须保持 ASCII-only（`configparser` 按本地编码读取）；版本号使用可读递增编号。
-- 质量护栏：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`）。GitHub Actions 配置位于 `.github/workflows/checks.yml`，数据库测试只使用独立 `jobark_test`；提交前仍需本地验证，不能把配置文件等同于远端运行成功。
+- 质量护栏：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`）。数据库测试默认共用应用配置的数据库，以随机 schema 隔离；普通 API 写入由外层事务回滚，多连接提交和独立迁移用例只清理各自创建的随机 schema。无需另建测试库或设置验证开关，不因测试 URL 与应用 URL 相同而拒绝。GitHub Actions 配置位于 `.github/workflows/checks.yml`，只配置一个临时 PostgreSQL 数据库并使用同样的隔离规则；提交前仍需本地验证，不能把配置文件等同于远端运行成功。
 
 ## 4. 前端技术架构与能力
 
@@ -173,7 +173,7 @@ JobArk/
 │   │   ├── env.py                # 异步迁移环境；领域模型在此显式导入
 │   │   ├── script.py.mako        # 迁移脚本模板
 │   │   └── versions/             # 迁移脚本，可读递增编号（0001、0002……）
-│   └── tests/                    # 契约测试 + 数据库集成测试（缺测试库时自动跳过）
+│   └── tests/                    # 契约测试 + 共用数据库、随机 schema 隔离的集成测试
 ├── frontend/                     # 独立 npm 工程根：package.json、vite.config.ts、tsconfig.json
 │   └── src/
 │       ├── main.ts               # 应用入口

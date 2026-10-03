@@ -1,12 +1,10 @@
-"""在开发库的事务内隔离 schema 验证真实迁移与接口，不清表、不持久化测试数据。"""
+"""默认复用开发库，在事务随机 schema 验证迁移与接口，不清表、不持久化测试数据。"""
 
-import os
 import uuid
 from collections.abc import AsyncIterator
 from pathlib import Path
 from typing import Any
 
-import pytest
 import pytest_asyncio
 from alembic import command
 from alembic.config import Config
@@ -24,9 +22,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 @pytest_asyncio.fixture
 async def development_client() -> AsyncIterator[AsyncClient]:
-    """使用开发连接，在外层事务内运行迁移和接口；服务 commit 仅释放保存点。"""
-    if os.environ.get("JOBARK_VERIFY_DEVELOPMENT_DATABASE") != "1":
-        pytest.skip("未显式启用开发库事务验证。")
+    """默认使用开发连接与随机 schema，无需开关；外层回滚，服务 commit 仅释放保存点。"""
     engine = create_async_engine(get_settings().database_url, poolclass=NullPool, connect_args={"timeout": 8})
     schema = "jobark_verify_" + uuid.uuid4().hex
     try:

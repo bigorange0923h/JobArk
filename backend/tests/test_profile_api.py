@@ -3,7 +3,7 @@
 覆盖正常路径与关键失败路径：单例约束、乐观锁、数据真实性约束（"已验证"必须挂证据）、
 引用完整性（被修订引用的事实不可删除）、归档语义，以及修订快照不含联系方式。
 
-未配置 `JOBARK_TEST_DATABASE_URL` 时整组测试会被跳过（见 `conftest.py` 的 `db_client`）。
+默认复用应用数据库，以随机 schema 和事务回滚隔离（见 `conftest.py` 的 `db_client`）。
 """
 
 import json

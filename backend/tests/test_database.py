@@ -1,6 +1,6 @@
 """数据库持有者与请求级会话的集成验证。
 
-未配置 `JOBARK_TEST_DATABASE_URL` 时这些测试会被跳过。
+默认复用应用数据库，在本次随机 schema 中验证，不需要独立测试库。
 """
 
 from fastapi import Depends, FastAPI
