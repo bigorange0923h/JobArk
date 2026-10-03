@@ -61,6 +61,7 @@ FastAPI application
 - 数据库 I/O 全异步（`AsyncSession` + asyncpg），Alembic 同样使用异步 `env.py`；纯计算（评分、校验、字段转换）保持普通 `def`。
 - 事务边界由应用服务显式控制，会话依赖不做隐式提交；服务顺序固定为**取数据 → 结束事务 → 等待外部 → 按需开启新事务写回**，禁止在持有事务时等待 LLM、浏览器或第三方 HTTP。
 - 每个请求与后台任务各自获取会话，不跨请求复用。
+- 业务数据库引擎固定隐藏 SQLAlchemy 回显及其包装异常的绑定参数部分，保留语句诊断，避免候选正文、个人资料或凭据通过参数日志泄漏。该开关不清洗 SQL 字面量、数据库驱动原始错误或其他应用日志；业务内容一律参数化，不拼入 SQL 字面量。
 - `Base` 与约束命名约定定义在 `app/core/database.py`；`migrations/env.py` 显式导入各领域 `models`，新增领域必须在此追加导入，否则 autogenerate 会静默漏表。
 - `alembic.ini` 不保存连接串且必须保持 ASCII-only（`configparser` 按本地编码读取）；版本号使用可读递增编号。
 - 质量护栏：Pyright `strict`、pytest 警告即失败、Ruff（`check` + `format`）。GitHub Actions 配置位于 `.github/workflows/checks.yml`，数据库测试只使用独立 `jobark_test`；提交前仍需本地验证，不能把配置文件等同于远端运行成功。

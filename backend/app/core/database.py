@@ -61,6 +61,9 @@ class Database:
         self._engine: AsyncEngine = create_async_engine(
             settings.database_url,
             echo=settings.database_echo,
+            # SQL 回显仍可诊断语句，但绑定参数可能含候选正文、个人信息或凭据；
+            # 始终隐藏 SQLAlchemy 回显和包装异常的参数部分，不改变驱动原始错误。
+            hide_parameters=True,
             # 连接可能已被数据库或中间网络设备断开，取用前先探活，避免偶发的陈旧连接错误。
             pool_pre_ping=True,
         )

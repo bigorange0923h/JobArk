@@ -47,7 +47,7 @@ class Settings(BaseSettings):
     # 默认值是本地开发占位串，密码必须与仓库根目录 .env 的 POSTGRES_PASSWORD 一致；
     # 未配置时服务仍可启动，但首次查询会以明确的认证失败暴露问题。
     database_url: str = "postgresql+asyncpg://jobark_app:jobark_app@127.0.0.1:5432/jobark"
-    # 仅供本地排查 SQL 使用；生产环境开启会把语句与参数写入日志。
+    # 仅供排查 SQL 语句使用；数据库引擎始终隐藏绑定参数，避免正文和个人信息进入日志。
     database_echo: bool = False
     # 已废弃：旧环境变量保存的大模型服务地址与令牌。字段名沿用历史命名（gateway 为内部实现名，
     # 非用户可见术语）；仅为不破坏既有 `.env` 而保留，任何代码都不再读取它们，
