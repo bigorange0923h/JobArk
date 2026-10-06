@@ -25,7 +25,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0012"
+EXPECTED_HEAD = "0013"
 
 
 async def _assert_migration_schema(database_url: str) -> None:

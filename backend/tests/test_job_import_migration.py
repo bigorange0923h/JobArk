@@ -160,7 +160,37 @@ async def test_upgrade_preserves_manual_business_rows_and_matches_models(migrati
     assert (
         await migration_sandbox.connection.execute(text("SELECT count(*) FROM job_import_candidates"))
     ).scalar_one() == 0
+    await _migrate(migration_sandbox, "upgrade", "head")
     await _migrate(migration_sandbox, "check", "head")
+
+
+async def test_manual_channel_upgrade_preserves_history_and_refuses_loss(migration_sandbox: MigrationSandbox) -> None:
+    """新列只增加空值，真实保存渠道后拒绝降级，清空后可无损回退。"""
+    await _migrate(migration_sandbox, "upgrade", "0012")
+    original = await _baseline(migration_sandbox)
+    await _migrate(migration_sandbox, "upgrade", "0013")
+    upgraded = await _baseline(migration_sandbox)
+    assert upgraded["company"].pop("description") is None
+    assert upgraded["posting"].pop("channel_name") is None
+    assert upgraded == original
+    await migration_sandbox.connection.execute(
+        text("UPDATE job_postings SET channel_name='公司官网' WHERE id=:id"),
+        {"id": migration_sandbox.posting_id},
+    )
+    with pytest.raises(DBAPIError, match="manual channel or company description exists; downgrade refused"):
+        async with migration_sandbox.connection.begin_nested():
+            await _migrate(migration_sandbox, "downgrade", "0012")
+    assert (
+        await migration_sandbox.connection.execute(text("SELECT version_num FROM alembic_version"))
+    ).scalar_one() == "0013"
+    await migration_sandbox.connection.execute(text("UPDATE job_postings SET channel_name=NULL"))
+    await migration_sandbox.connection.execute(text("UPDATE companies SET description='用户介绍'"))
+    with pytest.raises(DBAPIError, match="manual channel or company description exists; downgrade refused"):
+        async with migration_sandbox.connection.begin_nested():
+            await _migrate(migration_sandbox, "downgrade", "0012")
+    await migration_sandbox.connection.execute(text("UPDATE companies SET description=NULL"))
+    await _migrate(migration_sandbox, "downgrade", "0012")
+    assert await _baseline(migration_sandbox) == original
 
 
 async def test_observed_target_requires_nonnull_version(migration_sandbox: MigrationSandbox) -> None:

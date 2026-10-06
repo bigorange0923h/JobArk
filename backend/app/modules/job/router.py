@@ -55,7 +55,10 @@ async def list_jobs(session: SessionDep) -> ApiResponse[list[JobListItem]]:
 @router.post(
     "",
     summary="手工录入职位与 JD",
-    description="原子创建公司、职位机会、手工页面与不可变原始 JD 快照；不会调用 AI 解析。",
+    description=(
+        "单人本地录入，原子保存公司资料、用户声明的渠道、可选链接与不可变 JD；不访问平台或调用 AI。"
+        "必填缺失、空白渠道或超长内容返回 422，重复来源链接返回 409。"
+    ),
     response_model=ApiResponse[JobOpportunityRead],
     status_code=status.HTTP_201_CREATED,
 )

@@ -20,6 +20,9 @@ class CompanyCreate(BaseModel):
     name: str = Field(min_length=1, max_length=200, description="公司显示名称。")
     website_url: HttpUrl | None = Field(default=None, max_length=2048, description="公司官网。")
     industry: str | None = Field(default=None, max_length=120, description="行业描述。")
+    description: str | None = Field(
+        default=None, max_length=10000, description="用户复制或填写的公司介绍，不自动确认分类。"
+    )
     location: str | None = Field(default=None, max_length=200, description="公司所在地。")
 
 
@@ -37,6 +40,16 @@ class JobManualCreate(BaseModel):
         return value
 
     company: CompanyCreate
+    channel_name: str | None = Field(
+        default=None, min_length=1, max_length=80, description="用户声明的来源渠道；省略表示未指定，不代表平台采集。"
+    )
+
+    @field_validator("channel_name", mode="before")
+    @classmethod
+    def normalize_channel(cls, value: object) -> object:
+        """渠道去除首尾空白，空白名称交给长度校验拒绝；旧请求允许省略。"""
+        return value.strip() if isinstance(value, str) else value
+
     title: str = Field(min_length=1, max_length=200, description="职位标题。")
     location: str | None = Field(default=None, max_length=200, description="职位地点。")
     employment_type: str | None = Field(default=None, max_length=80, description="雇佣类型。")
@@ -89,6 +102,7 @@ class CompanyRead(EditableRead):
     name_normalized: str
     website_url: str | None
     industry: str | None
+    description: str | None = Field(default=None, description="用户提供的公司介绍。")
     nature_code: str | None
     industry_code: str | None
     location: str | None
@@ -100,6 +114,7 @@ class JobPostingRead(EditableRead):
     current_snapshot_id: UUID | None = Field(description="页面当前内容；重复观察可指向旧快照。")
     opportunity_id: UUID
     source: JobSource
+    channel_name: str | None = Field(default=None, description="用户声明的渠道；为空时沿用适配器来源显示。")
     external_id: str | None
     canonical_url: str | None
     first_seen_at: datetime = Field(description="系统首次发现该来源的时间，不是平台发布时间。")

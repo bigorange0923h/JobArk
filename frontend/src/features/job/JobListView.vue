@@ -26,6 +26,8 @@ const loadError = ref<ParsedServerError | null>(null)
 /** 保存失败：字段级原因内联展示，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
 const form = ref<ManualJobCreate>(emptyForm())
+/** 渠道是用户声明，不触发平台访问；其他渠道可直接输入。 */
+const channelOptions = ['BOSS 直聘', 'LinkedIn', 'Indeed', '前程无忧', '公司官网'].map(value => ({ value, label: value }))
 const employmentTypeOptions = computed(() => [
   ...new Set(['全职', '兼职', '实习', '合同制', ...jobs.value.map((job) => job.employment_type).filter((value): value is string => !!value)]),
 ].map((value) => ({ value, label: value })))
@@ -56,7 +58,8 @@ const actionErrorDescription = computed(() => {
 
 function emptyForm(): ManualJobCreate {
   return {
-    company: { name: '', website_url: null, industry: null, location: null },
+    company: { name: '', website_url: null, industry: null, location: null, description: null },
+    channel_name: null,
     title: '',
     location: null,
     employment_type: null,
@@ -80,12 +83,14 @@ function payload(): ManualJobCreate {
       website_url: blankToNull(form.value.company.website_url),
       industry: blankToNull(form.value.company.industry),
       location: blankToNull(form.value.company.location),
+      description: blankToNull(form.value.company.description ?? null),
     },
     title: form.value.title.trim(),
     location: blankToNull(form.value.location),
     employment_type: blankToNull(form.value.employment_type),
     notes: blankToNull(form.value.notes),
     canonical_url: blankToNull(form.value.canonical_url),
+    channel_name: blankToNull(form.value.channel_name ?? null),
     raw_jd: form.value.raw_jd,
   }
 }
@@ -144,8 +149,6 @@ onMounted(() => void load())
       <a-button size="small" :loading="loading" data-testid="reload" @click="load">刷新</a-button>
     </header>
 
-    <JobImportPanel @saved="load" />
-
     <a-alert
       v-if="actionError"
       type="error"
@@ -158,21 +161,27 @@ onMounted(() => void load())
       @close="actionError = null"
     />
 
-    <a-card size="small" title="手工录入职位">
+    <a-card size="small" title="复制 JD 录入职位">
       <a-form layout="vertical" @submit.prevent="submit">
         <div class="form-grid">
+          <a-form-item label="来源渠道" extra="选择常用渠道，或直接输入其他渠道；留空表示未指定。"><a-auto-complete v-model:value="form.channel_name" :options="channelOptions" :maxlength="80" placeholder="选择或输入来源渠道" data-testid="job-channel" /></a-form-item>
           <a-form-item label="公司" required><a-input v-model:value="form.company.name" :maxlength="200" data-testid="company-name" /></a-form-item>
           <a-form-item label="职位" required><a-input v-model:value="form.title" :maxlength="200" data-testid="job-title" /></a-form-item>
           <a-form-item label="职位地点"><a-input v-model:value="form.location" :maxlength="200" /></a-form-item>
           <a-form-item label="雇佣类型" extra="优先选择常见类型；列表外的类型可直接输入。"><a-auto-complete v-model:value="form.employment_type" :options="employmentTypeOptions" :maxlength="80" placeholder="选择或输入雇佣类型" data-testid="job-employment-type" /></a-form-item>
           <a-form-item label="招聘页面 URL"><a-input v-model:value="form.canonical_url" :maxlength="2048" /></a-form-item>
           <a-form-item label="公司官网"><a-input v-model:value="form.company.website_url" :maxlength="2048" /></a-form-item>
+          <a-form-item label="公司行业"><a-input v-model:value="form.company.industry" :maxlength="120" data-testid="company-industry" /></a-form-item>
+          <a-form-item label="公司所在地"><a-input v-model:value="form.company.location" :maxlength="200" data-testid="company-location" /></a-form-item>
         </div>
+        <a-form-item label="公司介绍" extra="有公司介绍时可复制到这里；没有时可留空。自动提取可用时，请使用下方平台内容预览入口核对支持的字段。"><a-textarea v-model:value="form.company.description" :rows="3" :maxlength="10000" data-testid="company-description" /></a-form-item>
         <a-form-item label="JD 原文" required><a-textarea v-model:value="form.raw_jd" :rows="7" :maxlength="100000" data-testid="raw-jd" /></a-form-item>
         <a-form-item label="个人备注"><a-textarea v-model:value="form.notes" :rows="2" :maxlength="10000" /></a-form-item>
         <a-button type="primary" :loading="submitting" :disabled="!form.company.name.trim() || !form.title.trim() || !form.raw_jd.trim()" data-testid="create-job" @click="submit">保存职位与 JD</a-button>
       </a-form>
     </a-card>
+
+    <JobImportPanel @saved="load" />
 
     <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="errorDescription" class="load-error" data-testid="load-error" />
     <a-radio-group v-model:value="filter" class="job-filters">

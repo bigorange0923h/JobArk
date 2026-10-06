@@ -38,6 +38,16 @@ describe('当前保存 JD', () => {
     expect(card.find('pre').element.textContent).toBe(a.raw_jd)
     expect(card.text()).not.toContain('Invalid Date')
   })
+  it('用户声明的渠道与公司介绍能回读，手工录入不会显示为平台采集', async () => {
+    const data = fixture()
+    data.postings[1]!.source = 'MANUAL'
+    data.postings[1]!.channel_name = '公司官网'
+    data.company.description = '用户复制的公司介绍'
+    vi.mocked(fetchJob).mockResolvedValue(data)
+    const w = await open()
+    expect(w.find('[data-testid="current-jd"]').text()).toContain('公司官网（手工录入）')
+    expect(w.find('[data-testid="company-info"]').text()).toContain('用户复制的公司介绍')
+  })
   it('历史选择无写入，刷新变化提示并保留选择', async () => {
     const w = await open()
     w.getComponent<ComponentPublicInstance<{ value: string }>>('[data-testid="snapshot-selection"]').vm.$emit('update:value', 'b'); await flushPromises()

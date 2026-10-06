@@ -18,6 +18,8 @@ export interface JobCompany extends EditableResource {
   name_normalized: string
   website_url: string | null
   industry: string | null
+  /** 用户提供的公司介绍，不自动确认性质或行业。 */
+  description?: string | null
   nature_code: string | null
   industry_code: string | null
   location: string | null
@@ -28,6 +30,8 @@ export interface JobPosting extends EditableResource {
   current_snapshot_id: string | null
   opportunity_id: string
   source: JobSource
+  /** 用户声明渠道，与手工录入或适配器来源分别保存。 */
+  channel_name?: string | null
   external_id: string | null
   canonical_url: string | null
   /** 系统首次发现该来源，不是平台发布时间。 */
@@ -95,7 +99,8 @@ export function confirmExclusionFacts(id: string, payload: { company_version: nu
 export function grantExclusionException(id: string, evaluation: ExclusionEvaluation, reason: string): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion/exception`, { init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: evaluation.snapshot_id, policy_version: evaluation.policy_version, company_version: evaluation.company_version, opportunity_version: evaluation.opportunity_version, reason, confirm: true }) } }) }
 
 export interface ManualJobCreate {
-  company: { name: string; website_url: string | null; industry: string | null; location: string | null }
+  company: { name: string; website_url: string | null; industry: string | null; location: string | null; description?: string | null }
+  channel_name?: string | null
   title: string
   location: string | null
   employment_type: string | null

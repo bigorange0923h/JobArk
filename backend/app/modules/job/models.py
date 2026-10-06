@@ -47,6 +47,7 @@ class Company(UuidPrimaryKeyMixin, EditableMixin, Base):
     )
     website_url: Mapped[str | None] = mapped_column(String(2048), comment="公司官网；不用于自动判定公司唯一性。")
     industry: Mapped[str | None] = mapped_column(String(120), comment="行业描述。")
+    description: Mapped[str | None] = mapped_column(Text, comment="用户提供的公司介绍，不自动确认分类。")
     nature_code: Mapped[str | None] = mapped_column(String(40), comment="用户确认的公司性质代码。")
     industry_code: Mapped[str | None] = mapped_column(String(80), comment="用户确认的两级行业代码。")
     location: Mapped[str | None] = mapped_column(String(200), comment="公司所在地或主要办公地。")
@@ -95,6 +96,7 @@ class JobPosting(UuidPrimaryKeyMixin, EditableMixin, Base):
         PGUUID(as_uuid=True), ForeignKey("job_opportunities.id", ondelete="RESTRICT"), nullable=False, index=True
     )
     source: Mapped[JobSource] = mapped_column(enum_column_type(JobSource, "job_source"), nullable=False)
+    channel_name: Mapped[str | None] = mapped_column(String(80), comment="用户声明的渠道，不证明自动访问成功。")
     current_snapshot_id: Mapped[uuid.UUID | None] = mapped_column(PGUUID(as_uuid=True), index=True)
     external_id: Mapped[str | None] = mapped_column(String(200), comment="来源平台的职位标识；手工录入可为空。")
     canonical_url: Mapped[str | None] = mapped_column(String(2048), comment="规范化页面地址；手工录入可为空。")

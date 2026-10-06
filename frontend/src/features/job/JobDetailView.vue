@@ -31,7 +31,7 @@ function timeLabel(value: string | null | undefined): string {
 }
 /** 来源标识始终可核对，无链接不推测为手工来源。 */
 function postingLabel(value: JobPosting | undefined): string {
-  return value ? `${channels[value.source]} · ${value.external_id ?? value.id} · ${value.canonical_url ?? '无原始链接'}` : '来源信息缺失'
+  return value ? `${value.channel_name ?? channels[value.source]}${value.channel_name && value.source === 'MANUAL' ? '（手工录入）' : ''} · ${value.external_id ?? value.id} · ${value.canonical_url ?? '无原始链接'}` : '来源信息缺失'
 }
 /** 历史内容只作查看或材料选择，明确标出该来源当前指向。 */
 function snapshotLabel(value: JobSnapshot): string {
@@ -147,6 +147,13 @@ onMounted(load)
     <template v-if="job && !loadError">
       <div class="detail-grid">
         <div class="primary-column">
+          <a-card title="公司资料" data-testid="company-info" class="section-gap">
+            <p>公司：{{ job.company.name }}</p>
+            <p>官网：{{ job.company.website_url ?? '未填写' }}</p>
+            <p>行业：{{ job.company.industry ?? '未填写' }}</p>
+            <p>所在地：{{ job.company.location ?? '未填写' }}</p>
+            <p style="white-space: pre-wrap">公司介绍：{{ job.company.description ?? '未填写' }}</p>
+          </a-card>
           <JobExclusionPanel :job-id="jobId" />
           <a-card title="当前保存 JD" data-testid="current-jd" class="section-gap">
             <p class="card-hint">这是系统已保存内容，不代表平台实时最新。以下系统时间对应当前采用来源，按浏览器本地时区显示；手工保存或内容导入不代表平台扫描成功。</p>

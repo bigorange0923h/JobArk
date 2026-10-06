@@ -194,6 +194,8 @@ JobArk/
 
 ## 7. V1 实施顺序
 
+分阶段扩展见 [职位录入、采集与投递需求](requirements/job-intake-and-submission.md)。JobPosting 的 `channel_name` 记录用户声明的渠道，`source` 保留既有导入适配器来源标识；手工选择 BOSS 等渠道不会创建平台读取事实或稳定外部 ID。Company 的 `description` 保存用户提供的公司介绍，不派生已确认公司分类。旧记录渠道为空时按既有来源显示。自动采集与投递在适配器层分开实现，采集授权不等于提交授权；投递结果未知不能自动重试或记为 APPLIED。
+
 1. 初始化后端工程：配置、数据库、Alembic、健康检查、测试约定。
 2. 实现 Profile、证据与 Resume/ResumeVersion；完成结构化编辑与 HTML/CSS 预览。
 3. 实现 Job、Posting、Snapshot 和手动 JD 录入；再接入受控 JD 解析与匹配。

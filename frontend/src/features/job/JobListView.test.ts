@@ -34,6 +34,39 @@ beforeEach(() => {
 enableAutoUnmount(afterEach)
 
 describe('JobListView', () => {
+  it('复制 JD 入口优先，渠道和手动公司介绍一起保存且不要求链接', async () => {
+    const wrapper = mount(JobListView)
+    await flushPromises()
+    expect(wrapper.html().indexOf('复制 JD 录入职位')).toBeLessThan(wrapper.html().indexOf('平台'))
+    const channel = wrapper.findAllComponents({ name: 'AAutoComplete' }).find(component => component.attributes('data-testid') === 'job-channel')!
+    expect(channel.props('options')).toContainEqual({ value: '公司官网', label: '公司官网' })
+    channel.vm.$emit('update:value', '朋友推荐')
+    await wrapper.find('[data-testid="company-name"]').setValue('示例科技')
+    await wrapper.find('[data-testid="job-title"]').setValue('后端工程师')
+    await wrapper.find('[data-testid="raw-jd"]').setValue('真实 JD')
+    await wrapper.find('[data-testid="company-description"]').setValue('公司介绍原文')
+    await wrapper.find('[data-testid="company-industry"]').setValue('软件')
+    await wrapper.find('[data-testid="create-job"]').trigger('click')
+    await flushPromises()
+    expect(createManualJob).toHaveBeenCalledWith(expect.objectContaining({ channel_name: '朋友推荐', canonical_url: null, company: expect.objectContaining({ description: '公司介绍原文', industry: '软件' }) }))
+  })
+
+  it('保存冲突保留渠道与公司介绍，供修正后继续保存', async () => {
+    vi.mocked(createManualJob).mockRejectedValueOnce(new ApiError({ code: 'CONFLICT', message: '来源链接已存在', status: 409 }))
+    const wrapper = mount(JobListView)
+    await flushPromises()
+    const channel = wrapper.findAllComponents({ name: 'AAutoComplete' }).find(component => component.attributes('data-testid') === 'job-channel')!
+    channel.vm.$emit('update:value', '公司官网')
+    await wrapper.find('[data-testid="company-name"]').setValue('示例科技')
+    await wrapper.find('[data-testid="job-title"]').setValue('后端工程师')
+    await wrapper.find('[data-testid="raw-jd"]').setValue('真实 JD')
+    await wrapper.find('[data-testid="company-description"]').setValue('公司介绍原文')
+    await wrapper.find('[data-testid="create-job"]').trigger('click')
+    await flushPromises()
+    expect(channel.props('value')).toBe('公司官网')
+    expect((wrapper.find('[data-testid="company-description"]').element as HTMLTextAreaElement).value).toBe('公司介绍原文')
+    expect(wrapper.find('[data-testid="form-error"]').text()).toContain('来源链接已存在')
+  })
   it('读取并展示职位摘要', async () => {
     const wrapper = mount(JobListView)
     await flushPromises()
@@ -60,7 +93,7 @@ describe('JobListView', () => {
     vi.mocked(listJobs).mockResolvedValueOnce([{ ...listItem(), employment_type: '学徒制' }])
     const wrapper = mount(JobListView)
     await flushPromises()
-    const employment = wrapper.findComponent({ name: 'AAutoComplete' })
+    const employment = wrapper.findAllComponents({ name: 'AAutoComplete' }).find(component => component.attributes('data-testid') === 'job-employment-type')!
     expect(employment.props('options')).toContainEqual({ value: '全职', label: '全职' })
     expect(employment.props('options')).toContainEqual({ value: '学徒制', label: '学徒制' })
     employment.vm.$emit('update:value', '灵活用工')

@@ -7,6 +7,7 @@ import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.modules.job.enums import JobSource
@@ -51,6 +52,36 @@ def test_manual_job_creates_company_opportunity_posting_and_raw_snapshot(db_clie
     )
     assert job["latest_snapshot"]["parse_status"] == "NOT_REQUESTED"
     assert job["latest_snapshot"]["parsed_json"] is None
+
+
+@pytest.mark.parametrize("channel", ["BOSS 直聘", "公司官网", "朋友推荐"])
+def test_manual_channel_and_company_details_round_trip(db_client: TestClient, channel: str) -> None:
+    """无链接的用户渠道和公司介绍可回读，但不能伪装为平台读取结果。"""
+    payload = _manual_payload()
+    payload["canonical_url"] = None
+    payload["channel_name"] = f"  {channel}  "
+    payload["company"]["description"] = "用户复制的公司介绍\n不代表已核实分类。"
+    created = db_client.post("/api/v1/jobs", json=payload)
+    assert created.status_code == 201
+    job = created.json()["data"]
+    reread = db_client.get(f"/api/v1/jobs/{job['id']}").json()["data"]
+    assert reread["company"]["description"] == payload["company"]["description"]
+    assert reread["postings"][0]["channel_name"] == channel
+    assert reread["postings"][0]["source"] == "MANUAL"
+    assert reread["postings"][0]["canonical_url"] is None
+    assert reread["company"]["nature_code"] is None
+
+
+@pytest.mark.parametrize(
+    "fields",
+    [{"channel_name": "  "}, {"channel_name": "x" * 81}, {"company": {"name": "测试", "description": "x" * 10001}}],
+)
+def test_manual_channel_validation_has_no_partial_write(db_client: TestClient, fields: dict[str, Any]) -> None:
+    """非法渠道或公司介绍返回字段错误，不留下半份职位。"""
+    response = db_client.post("/api/v1/jobs", json={**_manual_payload(), **fields})
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert db_client.get("/api/v1/jobs").json()["data"] == []
 
 
 def test_list_detail_update_and_snapshot_are_scoped(db_client: TestClient) -> None:

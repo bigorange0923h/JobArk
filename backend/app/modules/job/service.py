@@ -48,6 +48,7 @@ async def create_manual_job(session: AsyncSession, payload: JobManualCreate) -> 
             name_normalized=normalize_company_name(payload.company.name),
             website_url=str(payload.company.website_url) if payload.company.website_url else None,
             industry=payload.company.industry,
+            description=payload.company.description,
             location=payload.company.location,
         ),
     )
@@ -66,6 +67,7 @@ async def create_manual_job(session: AsyncSession, payload: JobManualCreate) -> 
         JobPosting(
             opportunity_id=opportunity.id,
             source=JobSource.MANUAL,
+            channel_name=payload.channel_name,
             canonical_url=str(payload.canonical_url) if payload.canonical_url else None,
             page_status=PostingStatus.ACTIVE,
         ),
