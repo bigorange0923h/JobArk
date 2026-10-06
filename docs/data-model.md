@@ -115,6 +115,8 @@ UNIQUE(profile_id, revision_no)
 
 ## 5. Job：机会、页面与 JD 快照
 
+当前 JD 读取不新增表或列：`latest_snapshot.posting_id` 派生当前采用来源，`latest_snapshot` 与列表 `latest_snapshot_id/latest_captured_at` 保留兼容名称及含义。列表时间称“当前 JD 首次采集”，来源 `first_seen_at` 为系统首次发现，`last_seen_at` 为系统最近接收手工保存或导入内容，不是平台扫描成功。平台发布时间未实现且不得替代。历史是去重内容集合，不是完整观察流水；历史查看、解析和申请材料选择不写 `current_snapshot_id`。无当前内容返回空，不从历史兜底。
+
 已确认策略驱动的启动补跑／定时扫描、自动保存与自动匹配，尚未实施。策略查询快照、扫描幂等时段／租约、平台原文与人工修订区分、匹配同输入复用的建议见 `job-browsing-design.md` 第 10 节。投递策略当前缺少明确岗位检索词，不能把排除词当正向查询；匹配默认目标尚待确定。
 
 每日平台读取目标已确认但未实施。待确认字段设计见 [job-browsing-design.md 第 9 节](job-browsing-design.md#9-每日发现与-jd-更新已确认目标与待确认设计)：平台最近成功读取时间须独立于现有混合保存语义的 last_seen_at；扫描尝试与内容快照分离，失败不推进成功时间，重复正文不新建快照。历史数据不得推断为平台读取成功。
