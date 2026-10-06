@@ -26,13 +26,6 @@ export interface ProfileFactSection {
 /** 字段名称与导入候选、日常档案接口对齐，来源元数据不混进可编辑的事实字段。 */
 export const PROFILE_FACT_SECTIONS: readonly ProfileFactSection[] = [
   {
-    key: 'skills', title: '技能',
-    fields: [
-      { name: 'name', label: '技能名称', kind: 'text', required: true },
-      { name: 'category', label: '技能分类', kind: 'text' },
-    ],
-  },
-  {
     key: 'experiences', title: '工作经历',
     fields: [
       { name: 'company', label: '公司', kind: 'text', required: true },
@@ -61,6 +54,13 @@ export const PROFILE_FACT_SECTIONS: readonly ProfileFactSection[] = [
       // 与工作经历一致：项目时间也只到月。
       { name: 'start_date', label: '开始时间', kind: 'month' },
       { name: 'end_date', label: '结束时间', kind: 'month' },
+    ],
+  },
+  {
+    key: 'skills', title: '技能',
+    fields: [
+      { name: 'name', label: '技能名称', kind: 'text', required: true },
+      { name: 'category', label: '技能分类', kind: 'text' },
     ],
   },
   {

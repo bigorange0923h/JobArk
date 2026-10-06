@@ -53,8 +53,9 @@ function quoteOf(item: FactItem): string {
 }
 
 const editingSkill = ref<number | null>(null)
-const skillNameField = PROFILE_FACT_SECTIONS[0]?.fields[0]
-const skillCategoryField = PROFILE_FACT_SECTIONS[0]?.fields.find((field) => field.name === 'category')
+const skillSection = PROFILE_FACT_SECTIONS.find((section) => section.key === 'skills')
+const skillNameField = skillSection?.fields.find((field) => field.name === 'name')
+const skillCategoryField = skillSection?.fields.find((field) => field.name === 'category')
 const skillCategoryOptions = computed(() => buildSkillCategoryOptions(props.items.skills.map((item) =>
   typeof item['category'] === 'string' ? item['category'] : null,
 )))
