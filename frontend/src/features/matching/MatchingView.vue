@@ -2,7 +2,7 @@
 /** 可解释匹配入口：选择不可变输入，逐条阅读证据与未知项。 */
 import { computed, onMounted, ref } from 'vue'
 import { requestV1 } from '@/shared/api/client'
-import { listJobs, listSnapshots, type JobListItem, type JobSnapshot } from '@/shared/api/job'
+import { fetchJob, listJobs, listSnapshots, type JobListItem, type JobSnapshot } from '@/shared/api/job'
 import { listResumes, listVersions, type ResumeVersion } from '@/shared/api/resume'
 import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
@@ -77,10 +77,10 @@ async function selectJob(): Promise<void> {
   snapshotId.value = ''
   actionError.value = null
   try {
-    const results = await listSnapshots(selected)
+    const [detail, results] = await Promise.all([fetchJob(selected), listSnapshots(selected)])
     if (jobId.value === selected) {
-      snapshots.value = results
-      snapshotId.value = results[0]?.id ?? ''
+      snapshots.value = detail.latest_snapshot && !results.some(s => s.id === detail.latest_snapshot?.id) ? [detail.latest_snapshot, ...results] : results
+      snapshotId.value = detail.latest_snapshot?.id ?? ''
     }
   } catch (error: unknown) {
     if (jobId.value === selected) actionError.value = resolveActionFailure(error, '读取职位快照')
@@ -134,8 +134,8 @@ onMounted(() => { void load() })
     <a-card title="生成报告" class="section-gap">
       <a-form layout="vertical" @submit.prevent="analyze">
         <div class="form-grid">
-          <a-form-item label="职位" required><a-select v-model:value="jobId" placeholder="选择职位" :options="jobs.map(j => ({ value: j.id, label: `${j.company_name} · ${j.title}` }))" @change="selectJob" /></a-form-item>
-          <a-form-item label="JD 快照" required><a-select v-model:value="snapshotId" placeholder="选择快照" :options="snapshots.map(s => ({ value: s.id, label: new Date(s.captured_at).toLocaleString() }))" /></a-form-item>
+          <a-form-item label="职位" required><a-select v-model:value="jobId" data-testid="matching-job" placeholder="选择职位" :options="jobs.map(j => ({ value: j.id, label: `${j.company_name} · ${j.title}` }))" @change="selectJob" /></a-form-item>
+          <a-form-item label="JD 快照" required><a-select v-model:value="snapshotId" data-testid="matching-snapshot" placeholder="选择快照（默认当前保存 JD）" :options="snapshots.map(s => ({ value: s.id, label: `${s.posting_id} · ${new Date(s.captured_at).toLocaleString()}` }))" /></a-form-item>
           <a-form-item label="匹配对象"><a-select v-model:value="versionId" :options="[{ value: '', label: '个人资料' }, ...versions.map(v => ({ value: v.id, label: v.label }))]" /></a-form-item>
           <a-form-item v-if="!versionId" label="资料修订" required><a-select v-model:value="revisionId" placeholder="选择修订" :options="revisions.map(r => ({ value: r.id, label: `修订 ${r.revision_no}` }))" /></a-form-item>
         </div>

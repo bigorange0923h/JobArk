@@ -37,7 +37,7 @@ const columns = [
   { key: 'employment_type', title: '类型', dataIndex: 'employment_type' },
   { key: 'status', title: '状态', dataIndex: 'status' },
   { key: 'exclusion', title: '策略判定' },
-  { key: 'latest_captured_at', title: '最近 JD', dataIndex: 'latest_captured_at' },
+  { key: 'latest_captured_at', title: '当前 JD 首次采集', dataIndex: 'latest_captured_at' },
 ]
 
 const errorDescription = computed(() => {
@@ -131,7 +131,7 @@ function statusLabel(status: string): string {
 }
 
 function formatTime(value: string | null): string {
-  return value === null ? '—' : new Date(value).toLocaleString('zh-CN', { hour12: false })
+  return !value || Number.isNaN(Date.parse(value)) ? '未知' : new Date(value).toLocaleString('zh-CN', { hour12: false })
 }
 
 onMounted(() => void load())
@@ -190,7 +190,7 @@ onMounted(() => void load())
           <div v-if="evaluationErrors[record.id]">评估失败：{{ evaluationErrors[record.id] }}</div>
           <div v-for="(reason, index) in evaluations[record.id]?.decision.reasons ?? []" :key="index">{{ reason.text }}<span v-if="reason.snippet">：{{ reason.snippet }}</span></div>
         </template>
-        <template v-else-if="column.key === 'latest_captured_at'">{{ formatTime(record.latest_captured_at) }}</template>
+        <template v-else-if="column.key === 'latest_captured_at'">{{ record.latest_snapshot_id ? formatTime(record.latest_captured_at) : '无当前 JD' }}</template>
         <template v-else>{{ record[column.dataIndex] ?? '—' }}</template>
       </template>
     </a-table>

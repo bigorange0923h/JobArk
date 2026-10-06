@@ -39,6 +39,8 @@ describe('JobListView', () => {
     await flushPromises()
     expect(wrapper.text()).toContain('示例科技')
     expect(wrapper.text()).toContain('后端工程师')
+    expect(wrapper.text()).toContain('当前 JD 首次采集')
+    expect(wrapper.text()).not.toContain('最近 JD')
   })
 
   it('只在三个必填字段齐全时提交，成功后刷新并清空输入', async () => {

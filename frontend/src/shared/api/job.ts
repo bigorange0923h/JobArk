@@ -24,11 +24,15 @@ export interface JobCompany extends EditableResource {
 }
 
 export interface JobPosting extends EditableResource {
+  /** 来源明确采用的快照，重复正文可回到旧快照。 */
+  current_snapshot_id: string | null
   opportunity_id: string
   source: JobSource
   external_id: string | null
   canonical_url: string | null
+  /** 系统首次发现该来源，不是平台发布时间。 */
   first_seen_at: string
+  /** 系统最近接收手工保存或导入内容，不表示平台扫描成功。 */
   last_seen_at: string
   page_status: PostingStatus
 }
@@ -37,6 +41,7 @@ export interface JobSnapshot {
   id: string
   posting_id: string
   content_hash: string
+  /** 此来源下内容首次采集；A→B→A 复用时保持不变。 */
   captured_at: string
   raw_jd: string
   parsed_json: Record<string, unknown> | null
@@ -53,6 +58,7 @@ export interface JobListItem extends EditableResource {
   employment_type: string | null
   status: OpportunityStatus
   latest_snapshot_id: string | null
+  /** 当前 JD 内容首次采集时间，不是最近接收或平台发布时间。 */
   latest_captured_at: string | null
 }
 
@@ -65,6 +71,7 @@ export interface JobOpportunity extends EditableResource {
   notes: string | null
   outsourcing_arrangement: string | null
   postings: JobPosting[]
+  /** 当前保存 JD；posting_id 派生采用来源，无当前内容为空。 */
   latest_snapshot: JobSnapshot | null
 }
 

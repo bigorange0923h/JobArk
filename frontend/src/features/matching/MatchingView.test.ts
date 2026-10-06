@@ -3,10 +3,11 @@
 /** 匹配页错误反馈分流：加载失败留在页面，生成动作的网络失败走全局通知。 */
 import { flushPromises, mount } from '@vue/test-utils'
 import { notification } from 'ant-design-vue'
+import type { ComponentPublicInstance } from 'vue'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { ApiError, requestV1 } from '@/shared/api/client'
-import { listJobs } from '@/shared/api/job'
+import { fetchJob, listJobs, listSnapshots } from '@/shared/api/job'
 import { listResumes } from '@/shared/api/resume'
 
 import MatchingView from './MatchingView.vue'
@@ -20,7 +21,7 @@ vi.mock('@/shared/api/client', async importOriginal => {
 
 vi.mock('@/shared/api/job', async importOriginal => {
   const actual = await importOriginal<typeof import('@/shared/api/job')>()
-  return { ...actual, listJobs: vi.fn() }
+  return { ...actual, listJobs: vi.fn(), fetchJob: vi.fn(), listSnapshots: vi.fn() }
 })
 
 vi.mock('@/shared/api/resume', async importOriginal => {
@@ -41,6 +42,19 @@ beforeEach(() => {
 })
 
 describe('MatchingView', () => {
+  it('默认明确当前 JD，当前缺失时不以历史首项兜底', async () => {
+    vi.mocked(fetchJob).mockResolvedValue({ latest_snapshot: { id: 'current', posting_id: 'source', captured_at: '2026-01-01T00:00:00Z' } } as never)
+    vi.mocked(listSnapshots).mockResolvedValue([{ id: 'history', captured_at: '2026-02-01T00:00:00Z' }, { id: 'current', captured_at: '2026-01-01T00:00:00Z' }] as never)
+    const wrapper = mount(MatchingView)
+    await flushPromises()
+    const choice = wrapper.getComponent<ComponentPublicInstance<{ value: string }>>('[data-testid="matching-job"]')
+    choice.vm.$emit('update:value', 'job'); choice.vm.$emit('change', 'job'); await flushPromises()
+    expect(wrapper.getComponent<ComponentPublicInstance<{ value: string }>>('[data-testid="matching-snapshot"]').props('value')).toBe('current')
+    vi.mocked(fetchJob).mockResolvedValue({ latest_snapshot: null } as never)
+    choice.vm.$emit('update:value', 'missing'); choice.vm.$emit('change', 'missing'); await flushPromises()
+    expect(wrapper.getComponent<ComponentPublicInstance<{ value: string }>>('[data-testid="matching-snapshot"]').props('value')).toBe('')
+    wrapper.unmount()
+  })
   it('初始加载失败保留页面内错误与重试入口，不弹全局通知', async () => {
     vi.mocked(listJobs).mockRejectedValue(
       new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' }),
