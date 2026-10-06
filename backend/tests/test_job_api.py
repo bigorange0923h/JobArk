@@ -4,9 +4,14 @@ from __future__ import annotations
 
 import hashlib
 import uuid
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 from fastapi.testclient import TestClient
+
+from app.modules.job.enums import JobSource
+from app.modules.job.models import JobPosting, JobSnapshot
+from app.modules.job.service import content_hash
 
 
 def _manual_payload() -> dict[str, Any]:
@@ -102,7 +107,7 @@ def test_snapshot_reuses_duplicate_content_and_rejects_foreign_posting(db_client
         json={"raw_jd": _manual_payload()["raw_jd"]},
     )
     assert duplicate.status_code == 201
-    assert duplicate.json()['data']['id'] == first['latest_snapshot']['id']
+    assert duplicate.json()["data"]["id"] == first["latest_snapshot"]["id"]
     foreign = db_client.post(
         f"/api/v1/jobs/{first['id']}/postings/{second['postings'][0]['id']}/snapshots",
         json={"raw_jd": "不能写到另一个职位。"},
@@ -119,3 +124,77 @@ def test_unknown_job_and_stale_update_return_contract_errors(db_client: TestClie
     stale = db_client.patch(f"/api/v1/jobs/{job['id']}", json={"version": 99, "title": "过期写入"})
     assert stale.status_code == 409
     assert stale.json()["error"]["code"] == "CONFLICT"
+
+
+def test_current_jd_returns_to_a_without_rewriting_capture_time(db_client: TestClient) -> None:
+    """A→B→A 必须回到旧 A，历史读取不会推进来源当前指向。"""
+    original = _create_job(db_client)
+    path = f"/api/v1/jobs/{original['id']}"
+    save_path = f"{path}/postings/{original['postings'][0]['id']}/snapshots"
+    assert db_client.post(save_path, json={"raw_jd": "B 的完整原文"}).status_code == 201
+    returned = db_client.post(save_path, json={"raw_jd": _manual_payload()["raw_jd"]}).json()["data"]
+    assert returned["id"] == original["latest_snapshot"]["id"]
+    assert returned["captured_at"] == original["latest_snapshot"]["captured_at"]
+    before = db_client.get(path).json()["data"]
+    history = db_client.get(f"{path}/snapshots").json()["data"]
+    assert len(history) == 2
+    assert db_client.get(path).json()["data"] == before
+    assert before["latest_snapshot"]["id"] == returned["id"]
+    assert before["postings"][0]["current_snapshot_id"] == returned["id"]
+    assert before["postings"][0]["last_seen_at"] > original["postings"][0]["last_seen_at"]
+
+
+def test_multi_source_current_selection_and_missing_current(db_client: TestClient) -> None:
+    """真实隔离会话验证最近接收优先、ID 并列稳定及无当前不兜底历史。"""
+    original = _create_job(db_client)
+    opportunity_id = uuid.UUID(original["id"])
+    original_posting_id = uuid.UUID(original["postings"][0]["id"])
+    other_id = uuid.UUID(int=original_posting_id.int + 1)
+    moment = datetime(2026, 1, 2, tzinfo=UTC)
+
+    async def arrange() -> str:
+        """只使用 db_client 已替换的随机 schema 会话工厂。"""
+        async with cast(Any, db_client.app).state.database.session() as session:
+            first = await session.get(JobPosting, original_posting_id)
+            assert first is not None
+            first.last_seen_at = moment
+            other = JobPosting(
+                id=other_id,
+                opportunity_id=opportunity_id,
+                source=JobSource.BOSS,
+                last_seen_at=moment - timedelta(days=1),
+            )
+            session.add(other)
+            await session.flush()
+            saved = JobSnapshot(posting_id=other_id, content_hash=content_hash("另一来源"), raw_jd="另一来源")
+            session.add(saved)
+            await session.flush()
+            other.current_snapshot_id = saved.id
+            await session.commit()
+            return str(saved.id)
+
+    portal = cast(Any, db_client).portal
+    other_snapshot_id = portal.call(arrange)
+    path = f"/api/v1/jobs/{opportunity_id}"
+    assert db_client.get(path).json()["data"]["latest_snapshot"]["id"] == original["latest_snapshot"]["id"]
+
+    async def adjust(*, missing: bool = False) -> None:
+        """推进另一来源时间至并列，或移除两来源当前指向，保留所有历史。"""
+        async with cast(Any, db_client.app).state.database.session() as session:
+            for posting_id in (original_posting_id, other_id):
+                row = await session.get(JobPosting, posting_id)
+                assert row is not None
+                row.last_seen_at = moment
+                if missing:
+                    row.current_snapshot_id = None
+            await session.commit()
+
+    portal.call(adjust)
+    for _ in range(2):
+        detail = db_client.get(path).json()["data"]
+        assert detail["latest_snapshot"]["id"] == other_snapshot_id
+        assert detail["latest_snapshot"]["posting_id"] == str(other_id)
+    portal.call(lambda: adjust(missing=True))
+    assert db_client.get(path).json()["data"]["latest_snapshot"] is None
+    assert db_client.get("/api/v1/jobs").json()["data"][0]["latest_captured_at"] is None
+    assert len(db_client.get(f"{path}/snapshots").json()["data"]) == 2

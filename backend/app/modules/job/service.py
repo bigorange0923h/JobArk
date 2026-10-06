@@ -94,7 +94,7 @@ async def require_opportunity(session: AsyncSession, opportunity_id: uuid.UUID) 
 
 
 async def get_opportunity_detail(session: AsyncSession, opportunity_id: uuid.UUID) -> JobOpportunityRead:
-    """读取职位聚合，并以所有页面中最新的 JD 为当前快照。"""
+    """读取职位聚合，按来源最近接收时间及 ID 选择明确指向的当前 JD。"""
     opportunity = await require_opportunity(session, opportunity_id)
     company = await repository.get_company(session, opportunity.company_id)
     if company is None:
@@ -105,7 +105,7 @@ async def get_opportunity_detail(session: AsyncSession, opportunity_id: uuid.UUI
 
 
 async def list_jobs(session: AsyncSession) -> list[JobListItem]:
-    """列出职位机会及其最新 JD 时间，避免列表接口传输全文。"""
+    """列出职位机会及当前 JD 首次采集时间，避免列表接口传输全文。"""
     items: list[JobListItem] = []
     for opportunity in await repository.list_opportunities(session):
         company = await repository.get_company(session, opportunity.company_id)

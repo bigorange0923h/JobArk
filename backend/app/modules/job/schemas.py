@@ -102,8 +102,8 @@ class JobPostingRead(EditableRead):
     source: JobSource
     external_id: str | None
     canonical_url: str | None
-    first_seen_at: datetime
-    last_seen_at: datetime
+    first_seen_at: datetime = Field(description="系统首次发现该来源的时间，不是平台发布时间。")
+    last_seen_at: datetime = Field(description="系统最近接收该来源内容的时间；手工保存或导入，不表示平台扫描成功。")
     page_status: PostingStatus
 
 
@@ -113,7 +113,7 @@ class JobSnapshotRead(ORMModel):
     id: UUID
     posting_id: UUID
     content_hash: str
-    captured_at: datetime
+    captured_at: datetime = Field(description="该来源下此 JD 内容首次采集时间；复用旧内容时保持不变。")
     raw_jd: str
     parsed_json: dict[str, object] | None
     parse_status: SnapshotParseStatus
@@ -133,16 +133,25 @@ class JobOpportunityRead(EditableRead):
     notes: str | None
     outsourcing_arrangement: str | None
     postings: list[JobPostingRead]
-    latest_snapshot: JobSnapshotRead | None
+    latest_snapshot: JobSnapshotRead | None = Field(
+        description=(
+            "兼容字段：从有当前快照的来源按 last_seen_at DESC、id DESC 选取；"
+            "posting_id 标识采用来源，不代表平台实时最新。"
+        )
+    )
 
 
 class JobListItem(EditableRead):
-    """职位列表项；保留最新快照摘要而不重复传输完整 JD。"""
+    """职位列表项；保留当前快照摘要而不重复传输完整 JD。"""
 
     company_name: str
     title: str
     location: str | None
     employment_type: str | None
     status: OpportunityStatus
-    latest_snapshot_id: UUID | None
-    latest_captured_at: datetime | None
+    latest_snapshot_id: UUID | None = Field(
+        description="兼容字段：当前保存 JD 的快照 ID；无当前内容时为空，不以历史兜底。"
+    )
+    latest_captured_at: datetime | None = Field(
+        description="兼容字段：当前 JD 内容首次采集时间，不是最近接收或平台发布时间。"
+    )

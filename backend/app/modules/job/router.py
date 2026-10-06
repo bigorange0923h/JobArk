@@ -28,7 +28,9 @@ SessionDep = Annotated[AsyncSession, Depends(get_session)]
 @router.get(
     "/{opportunity_id}/snapshots",
     summary="历史 JD 快照",
-    description="单人本地读取；返回原始历史内容，机会不存在返回 404。",
+    description=(
+        "单人本地读取；返回去重历史原文及 posting_id，不修改来源当前指向；不表示完整观察流水，机会不存在返回 404。"
+    ),
     response_model=ApiResponse[list[JobSnapshotRead]],
 )
 async def list_snapshots(session: SessionDep, opportunity_id: uuid.UUID) -> ApiResponse[list[JobSnapshotRead]]:
@@ -42,7 +44,7 @@ async def list_snapshots(session: SessionDep, opportunity_id: uuid.UUID) -> ApiR
 @router.get(
     "",
     summary="列出职位机会",
-    description="返回人工维护的职位摘要与最近 JD 时间，不返回完整 JD。",
+    description="单人本地读取已保存职位摘要及当前 JD 首次采集时间，不返回全文；不代表平台发布时间或扫描成功。",
     response_model=ApiResponse[list[JobListItem]],
 )
 async def list_jobs(session: SessionDep) -> ApiResponse[list[JobListItem]]:
@@ -65,7 +67,10 @@ async def create_manual_job(session: SessionDep, payload: JobManualCreate) -> Ap
 @router.get(
     "/{opportunity_id}",
     summary="读取职位详情",
-    description="返回公司、关联页面及最近 JD 快照；职位不存在时返回 404。",
+    description=(
+        "单人本地读取公司、来源及当前保存 JD；按有当前快照来源的 last_seen_at DESC、id DESC 选择。"
+        "快照 posting_id 标识采用来源。无当前内容返回空，不以历史兜底；职位不存在返回 404。不触发采集。"
+    ),
     response_model=ApiResponse[JobOpportunityRead],
 )
 async def get_job(session: SessionDep, opportunity_id: uuid.UUID) -> ApiResponse[JobOpportunityRead]:
