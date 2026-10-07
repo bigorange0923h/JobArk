@@ -12,11 +12,12 @@ from app.ai import service as ai_service
 from app.ai.llm import gateway
 from app.core.config import get_settings
 from app.core.database import get_session
-from app.core.errors import AppError, ResourceNotFoundError, ValidationFailedError
+from app.core.errors import AppError, ConflictError, ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ApiResponse, ORMModel, success
 
+from . import strategy
 from .analysis import JDAnalysis, parse_jd
-from .models import JobParseResult, JobSnapshot
+from .models import JobParseResult, JobPosting, JobSnapshot
 
 router = APIRouter(prefix="/job-snapshots", tags=["job"])
 SessionDep = Annotated[AsyncSession, Depends(get_session)]
@@ -54,6 +55,12 @@ async def parse_snapshot(session: SessionDep, snapshot_id: UUID, payload: ParseR
         raise ResourceNotFoundError("JD 快照不存在。")
     if payload.engine == "AI" and not payload.confirm_external:
         raise ValidationFailedError("请确认将 JD 原文发送到已配置的大模型服务。")
+    if payload.engine == "AI":
+        posting = await session.get(JobPosting, snapshot.posting_id)
+        if posting is not None:
+            gate = await strategy.current(session, posting.opportunity_id, snapshot_id)
+            if gate.decision.verdict == "EXCLUDED":
+                raise ConflictError("已命中排除规则，外部解析已停止；可以继续本地提取。")
     raw = snapshot.raw_jd
     await session.rollback()
     # 默认模型解析必须放在"解析失败可保存为 FAILED 产物"的 try 之外：
@@ -87,7 +94,7 @@ async def parse_snapshot(session: SessionDep, snapshot_id: UUID, payload: ParseR
         result = None
     entity = JobParseResult(
         job_snapshot_id=snapshot_id,
-        parser_version="literal-lines-v1" if payload.engine == "LOCAL" else "ai-quotes-v1",
+        parser_version="literal-lines-v2" if payload.engine == "LOCAL" else "ai-quotes-v1",
         status="FAILED" if failure else "PARSED",
         result_json=result.model_dump() if result else None,
         failure_code=failure,

@@ -24,6 +24,7 @@ from .modules.application.router import router as application_router
 from .modules.dashboard.router import router as dashboard_router
 from .modules.job.import_router import router as job_import_router
 from .modules.job.parsing import router as parsing_router
+from .modules.job.research import router as research_router
 from .modules.job.router import router as job_router
 from .modules.job.strategy import router as strategy_router
 from .modules.matching.router import router as matching_router
@@ -141,6 +142,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
     api_v1.include_router(matching_router)
     api_v1.include_router(optimization_router)
     api_v1.include_router(parsing_router)
+    api_v1.include_router(research_router)
     application.include_router(api_v1)
 
     return application

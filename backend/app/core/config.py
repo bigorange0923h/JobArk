@@ -8,6 +8,7 @@
 from enum import StrEnum
 from functools import lru_cache
 from typing import Annotated, Literal
+from urllib.parse import urlsplit
 
 from pydantic import Field, SecretStr, field_validator, model_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
@@ -58,6 +59,13 @@ class Settings(BaseSettings):
     # 根密钥必须留在数据库之外：数据库泄露时密文仍不可读，测试/生产缺失时安全失败。
     ai_credential_encryption_key: SecretStr = SecretStr("")
     ai_timeout_seconds: float = Field(default=30, gt=0, le=120)
+    company_search_url: str = ""
+    company_search_token: SecretStr = SecretStr("")
+    company_search_name: str = "独立公司公开搜索服务"
+    company_search_queries: int = Field(default=6, ge=1, le=6)
+    company_search_sources: int = Field(default=8, ge=1, le=8)
+    company_search_timeout: float = Field(default=15, gt=0, le=15)
+    company_research_timeout: float = Field(default=90, gt=0, le=90)
     # 诊断开关：把大模型返回的 JSON 原文写入日志，用于本地排查候选为何缺失、被清空或被改写。
     # 默认关闭，且禁止在 prod 开启（见下方 validator）：模型输出可能包含简历里的姓名、
     # 联系方式与工作经历，常规日志与响应都不得承载这些内容。
@@ -115,6 +123,23 @@ class Settings(BaseSettings):
         """
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]
+        return value
+
+    @field_validator("company_search_url")
+    @classmethod
+    def _safe_search_endpoint(cls, value: str) -> str:
+        """配置读接口会显示端点；禁止把凭据/查询令牌写在 URL 内。"""
+        if value:
+            parsed = urlsplit(value)
+            if (
+                parsed.scheme != "https"
+                or not parsed.hostname
+                or parsed.username
+                or parsed.password
+                or parsed.query
+                or parsed.fragment
+            ):
+                raise ValueError("公司搜索端点必须为不含凭据、查询或片段的 HTTPS URL。")
         return value
 
 

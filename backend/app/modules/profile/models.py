@@ -390,6 +390,11 @@ class ProfilePreference(UuidPrimaryKeyMixin, EditableMixin, Base):
         nullable=False,
         index=True,
     )
+    target_roles: Mapped[list[str]] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    hard_limits: Mapped[dict[str, Any]] = mapped_column(JSONB, nullable=False, server_default=text("'{}'::jsonb"))
+    priority_rules: Mapped[list[dict[str, Any]]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'[]'::jsonb")
+    )
     target_locations: Mapped[list[str]] = mapped_column(
         JSONB,
         nullable=False,

@@ -53,21 +53,37 @@ class Company(UuidPrimaryKeyMixin, EditableMixin, Base):
     location: Mapped[str | None] = mapped_column(String(200), comment="公司所在地或主要办公地。")
 
 
+class CompanyResearchReport(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
+    """独立不可变公开资料报告；来源和失败状态不覆盖公司主数据。"""
+
+    __tablename__ = "company_research_reports"
+    opportunity_id: Mapped[uuid.UUID] = mapped_column(
+        ForeignKey("job_opportunities.id", ondelete="RESTRICT"), index=True
+    )
+    company_id: Mapped[uuid.UUID | None] = mapped_column(ForeignKey("companies.id", ondelete="RESTRICT"), index=True)
+    identity_fingerprint: Mapped[str] = mapped_column(String(64), index=True)
+    status: Mapped[str] = mapped_column(String(32), comment="独立完成、部分来源、待确认或安全失败状态。")
+    report_json: Mapped[dict[str, Any]] = mapped_column(JSONB, comment="固定实体、来源摘录和分维度结论。")
+
+
 class JobOpportunity(UuidPrimaryKeyMixin, EditableMixin, Base):
     """一个可人工维护的职位机会，而非某个招聘页面。"""
 
     __tablename__ = "job_opportunities"
 
-    company_id: Mapped[uuid.UUID] = mapped_column(
-        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="RESTRICT"), nullable=False, index=True
+    company_id: Mapped[uuid.UUID | None] = mapped_column(
+        PGUUID(as_uuid=True), ForeignKey("companies.id", ondelete="RESTRICT"), nullable=True, index=True
     )
-    title: Mapped[str] = mapped_column(String(200), nullable=False, comment="职位标题。")
+    title: Mapped[str | None] = mapped_column(String(200), nullable=True, comment="职位标题；缺失不造占位事实。")
     location: Mapped[str | None] = mapped_column(String(200), comment="职位地点。")
     employment_type: Mapped[str | None] = mapped_column(String(80), comment="雇佣类型，例如全职或实习。")
     status: Mapped[OpportunityStatus] = mapped_column(
         enum_column_type(OpportunityStatus, "opportunity_status"), nullable=False, server_default=text("'ACTIVE'")
     )
     notes: Mapped[str | None] = mapped_column(Text, comment="用户手工备注；不承载页面原始内容。")
+    work_terms: Mapped[dict[str, Any]] = mapped_column(
+        JSONB, nullable=False, server_default=text("'{}'::jsonb"), comment="用户明确确认的薪资口径与工作方式。"
+    )
     outsourcing_arrangement: Mapped[str | None] = mapped_column(
         String(32), comment="用户确认的岗位安排：OUTSOURCING、DIRECT 或未知。"
     )

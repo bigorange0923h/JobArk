@@ -85,14 +85,14 @@ def _keyword_hits(text: str, keyword: str) -> list[tuple[str, bool]]:
     """返回原文片段与局部否定提示；局部提示只负责升级待核对。"""
     term = keyword
     body = text
-    ascii_word = all(char.isascii() and (char.isalnum() or char == "_") for char in term)
-    pattern = rf"(?<![A-Za-z0-9_]){re.escape(term)}(?![A-Za-z0-9_])" if ascii_word else re.escape(term)
+    ascii_word = term.isascii()
+    pattern = rf"(?<![A-Za-z0-9_+#]){re.escape(term)}(?![A-Za-z0-9_+#])" if ascii_word else re.escape(term)
     found: list[tuple[str, bool]] = []
     for match in re.finditer(pattern, body, re.IGNORECASE):
         start, end = match.span()
         snippet = text[max(0, start - 24) : min(len(text), end + 24)]
-        prefix = body[max(0, start - 8) : start].casefold()
-        uncertain = bool(re.search(r"(?:非|不是|并非|无需|不属于|非[\s\S]{0,3}|not\s+|no\s+)$", prefix))
+        prefix = body[max(0, start - 8) : start].casefold().rstrip()
+        uncertain = bool(re.search(r"(?:非|不是|并非|无需|不要求|不属于|非[\s\S]{0,3}|not\s+|no\s+)$", prefix))
         found.append((snippet, uncertain))
     return found
 

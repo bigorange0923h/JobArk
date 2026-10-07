@@ -29,6 +29,9 @@ class MatchResult(UuidPrimaryKeyMixin, CreatedAtMixin, Base):
     resume_version_id: Mapped[uuid.UUID | None] = mapped_column(
         ForeignKey("resume_versions.id", ondelete="RESTRICT"), index=True
     )
+    parse_result_id: Mapped[uuid.UUID | None] = mapped_column(
+        ForeignKey("job_parse_results.id", ondelete="RESTRICT"), index=True
+    )
     match_kind: Mapped[str] = mapped_column(String(16))
     engine_name: Mapped[str] = mapped_column(String(64))
     engine_version: Mapped[str] = mapped_column(String(64))

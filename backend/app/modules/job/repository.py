@@ -33,9 +33,9 @@ async def get_opportunity(session: AsyncSession, opportunity_id: uuid.UUID) -> J
     return await session.get(JobOpportunity, opportunity_id)
 
 
-async def get_company(session: AsyncSession, company_id: uuid.UUID) -> Company | None:
+async def get_company(session: AsyncSession, company_id: uuid.UUID | None) -> Company | None:
     """按主键读取公司。"""
-    return await session.get(Company, company_id)
+    return await session.get(Company, company_id) if company_id is not None else None
 
 
 async def list_postings(session: AsyncSession, opportunity_id: uuid.UUID) -> Sequence[JobPosting]:

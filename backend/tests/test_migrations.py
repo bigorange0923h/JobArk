@@ -25,7 +25,7 @@ from sqlalchemy.pool import NullPool
 from app.core.config import get_settings
 
 BACKEND_ROOT = Path(__file__).resolve().parents[1]
-EXPECTED_HEAD = "0013"
+EXPECTED_HEAD = "0016"
 
 
 async def _assert_migration_schema(database_url: str) -> None:
@@ -171,6 +171,9 @@ async def _foreign_key_names(database_url: str) -> set[str]:
 
 # 期望存在的跨表外键。约束名本身编码了"子表_列_目标表"，因此这份清单同时就是引用关系清单。
 _EXPECTED_FOREIGN_KEYS = {
+    "fk_match_results_parse_result_id_job_parse_results",
+    "fk_company_research_reports_opportunity_id_job_opportunities",
+    "fk_company_research_reports_company_id_companies",
     "fk_job_import_candidates_target_posting_id_job_postings",
     "fk_job_import_candidates_confirmed_posting_id_job_postings",
     "fk_job_import_candidates_confirmed_snapshot",

@@ -1101,6 +1101,9 @@ async def upsert_preference(session: AsyncSession, payload: PreferenceUpsert) ->
     existing = await repo.get_preference(session, profile.id)
     values: dict[str, Any] = {
         "target_locations": payload.target_locations,
+        "target_roles": [value.strip() for value in payload.target_roles],
+        "hard_limits": payload.hard_limits.model_dump(),
+        "priority_rules": [rule.model_dump() for rule in payload.priority_rules],
         "job_types": payload.job_types,
         "salary_min": payload.salary_min,
         "salary_max": payload.salary_max,

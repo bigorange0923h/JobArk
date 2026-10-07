@@ -12,6 +12,9 @@ from app.core.database import get_session
 from app.core.errors import ConflictError, ResourceNotFoundError, ValidationFailedError
 from app.core.responses import ApiResponse, success
 from app.core.versioning import apply_versioned_update
+from app.modules.matching.scoring import strategy_conditions
+from app.modules.profile.models import ProfilePreference
+from app.modules.profile.schemas import PreferenceRead
 
 from . import repository, service
 from .exclusions import INDUSTRIES, Decision, EvaluationInput, ExclusionReason, ExclusionRule, evaluate, normalize_name
@@ -104,7 +107,7 @@ async def current(session: AsyncSession, opportunity_id: UUID, snapshot_id: UUID
     """总是依据现有规则与当前输入计算，查询或评估失败绝不返回通过。"""
     job = await service.require_opportunity(session, opportunity_id)
     company = await repository.get_company(session, job.company_id)
-    if company is None:
+    if company is None and job.company_id is not None:
         raise ResourceNotFoundError("职位关联的公司不存在。")
     postings = await repository.list_postings(session, opportunity_id)
     latest = await repository.current_snapshot(session, opportunity_id)
@@ -118,13 +121,29 @@ async def current(session: AsyncSession, opportunity_id: UUID, snapshot_id: UUID
     decision = evaluate(
         rules,
         EvaluationInput(
-            company_name=company.name,
-            nature_code=company.nature_code,
-            industry_code=company.industry_code,
+            company_name=company.name if company else "",
+            nature_code=company.nature_code if company else None,
+            industry_code=company.industry_code if company else None,
             outsourcing_arrangement=job.outsourcing_arrangement,
             raw_jd=snapshot.raw_jd,
         ),
     )
+    preference = await session.scalar(select(ProfilePreference).limit(1))
+    frozen_preference = PreferenceRead.model_validate(preference).model_dump(mode="json") if preference else {}
+    _, hard_conflicts, hard_unknowns = strategy_conditions(
+        [],
+        {"preference": frozen_preference},
+        {"location": job.location, "employment_type": job.employment_type, **(job.work_terms or {})},
+        snapshot.raw_jd,
+    )
+    if hard_conflicts or hard_unknowns:
+        decision = Decision(
+            verdict="EXCLUDED" if decision.verdict == "EXCLUDED" or hard_conflicts else "REVIEW",
+            reasons=[
+                *decision.reasons,
+                *[ExclusionReason(kind="HARD_PREFERENCE", text=value) for value in hard_conflicts + hard_unknowns],
+            ],
+        )
     if snapshot.id != latest.id:
         decision = (
             Decision(
@@ -140,7 +159,7 @@ async def current(session: AsyncSession, opportunity_id: UUID, snapshot_id: UUID
             ExclusionException.opportunity_id == job.id,
             ExclusionException.snapshot_id == snapshot.id,
             ExclusionException.policy_version == (active.version if active else 0),
-            ExclusionException.company_version == company.version,
+            ExclusionException.company_version == (company.version if company else 0),
             ExclusionException.opportunity_version == job.version,
             ExclusionException.confirmed.is_(True),
         )
@@ -149,11 +168,14 @@ async def current(session: AsyncSession, opportunity_id: UUID, snapshot_id: UUID
     )
     if snapshot.id != latest.id:
         exception = None
+    if hard_conflicts or hard_unknowns:
+        # 旧例外没有绑定偏好版本，不能用它绕过新增或已变化的硬限制。
+        exception = None
     return EvaluationRead(
         opportunity_id=job.id,
         snapshot_id=snapshot.id,
         policy_version=active.version if active else 0,
-        company_version=company.version,
+        company_version=company.version if company else 0,
         opportunity_version=job.version,
         decision=decision,
         exception_active=exception is not None,

@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.core.responses import EditableRead, ORMModel
 
 from .enums import ClaimStatus, EvidenceSourceType, RemotePreference, SkillProficiency, VerificationStatus
+from .strategy_schemas import HardLimits, PriorityRule
 
 
 class ResourceRef(BaseModel):
@@ -367,6 +368,11 @@ class LanguageRead(EditableRead):
 class PreferenceUpsert(BaseModel):
     """创建或整体替换求职偏好的请求体。"""
 
+    target_roles: list[str] = Field(default_factory=list, max_length=30, description="本人声明的目标岗位方向。")
+    hard_limits: HardLimits = Field(default_factory=HardLimits, description="显式硬限制和薪资口径。")
+    priority_rules: list[PriorityRule] = Field(
+        default_factory=list[PriorityRule], max_length=100, description="优先关注，不抵消黑名单。"
+    )
     target_locations: list[str] = Field(default_factory=list[str], description="目标地点标签。")
     job_types: list[str] = Field(default_factory=list[str], description="职位类型标签。")
     salary_min: int | None = Field(default=None, ge=0, description="期望薪资下限，按月计。")
@@ -392,12 +398,30 @@ class PreferenceUpsert(BaseModel):
         """
         if self.salary_min is not None and self.salary_max is not None and self.salary_max < self.salary_min:
             raise ValueError("salary_max 不得小于 salary_min。")
+        if any(not value.strip() or len(value) > 100 for value in self.target_roles):
+            raise ValueError("目标方向不得空白或超过 100 字。")
+        if len({rule.id for rule in self.priority_rules}) != len(self.priority_rules):
+            raise ValueError("优先规则 ID 不得重复。")
+        if self.hard_limits.salary and (
+            self.salary_min is None or not self.salary_currency or not self.hard_limits.salary_basis
+        ):
+            raise ValueError("硬薪资限制须填写最低月薪、币种和税口径。")
+        for enabled, value in (
+            (self.hard_limits.location, self.target_locations),
+            (self.hard_limits.employment_type, self.job_types),
+            (self.hard_limits.remote, self.remote_preference),
+        ):
+            if enabled and not value:
+                raise ValueError("启用硬限制前请填写对应偏好。")
         return self
 
 
 class PreferenceRead(EditableRead):
     """求职偏好响应体。"""
 
+    target_roles: list[str] = Field(default_factory=list)
+    hard_limits: HardLimits = Field(default_factory=HardLimits)
+    priority_rules: list[PriorityRule] = Field(default_factory=list[PriorityRule])
     target_locations: list[str]
     job_types: list[str]
     salary_min: int | None

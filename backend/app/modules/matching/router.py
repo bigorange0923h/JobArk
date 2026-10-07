@@ -24,6 +24,7 @@ from app.modules.job.models import JobSnapshot
 from app.modules.profile.models import ProfileRevision
 from app.modules.resume.models import ResumeVersion
 
+from . import service as analysis_service
 from .models import MatchResult
 
 router = APIRouter(prefix="/matches", tags=["matching"])
@@ -36,6 +37,13 @@ class MatchCreate(BaseModel):
     job_snapshot_id: UUID
     profile_revision_id: UUID
     resume_version_id: UUID | None = None
+    parse_result_id: UUID | None = Field(default=None, description="新分析必须显式引用成功解析；省略沿用旧字面报告。")
+    engine: str = Field(default="LOCAL", pattern="^(LOCAL|AI)$", description="本地或经确认的模型条件评估。")
+    confirm_external: bool = Field(default=False, description="仅用于本次 JD 和必要履历摘要外发。")
+    expected_service: str | None = Field(
+        default=None, max_length=2048, description="确认时展示的服务商端点；变化拒绝外发。"
+    )
+    expected_model: str | None = Field(default=None, max_length=200, description="确认时展示的模型标识。")
 
 
 class MatchRead(ORMModel):
@@ -46,11 +54,13 @@ class MatchRead(ORMModel):
     job_snapshot_id: UUID
     profile_revision_id: UUID
     resume_version_id: UUID | None
+    parse_result_id: UUID | None = None
+    is_stale: bool | None = Field(default=None, description="新报告相对现有相关输入是否过期；旧报告未知。")
     match_kind: str
     engine_name: str
     engine_version: str
     input_fingerprint: str
-    report_json: dict[str, Any] = Field(description="条件、事实引用、缺口和未知项，不包含总分。")
+    report_json: dict[str, Any] = Field(description="版本化条件、事实引用、策略、参考范围与未知项；旧报告不回填分数。")
 
 
 def _evidence_titles(profile: dict[str, Any]) -> dict[str, str]:
@@ -65,10 +75,7 @@ def _evidence_titles(profile: dict[str, Any]) -> dict[str, str]:
     注意:
         只用于展示：报告不因为存在来源记录就改变命中判定。
     """
-    return {
-        str(evidence.get("id")): str(evidence.get("title") or "")
-        for evidence in profile.get("evidences", [])
-    }
+    return {str(evidence.get("id")): str(evidence.get("title") or "") for evidence in profile.get("evidences", [])}
 
 
 def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | None) -> dict[str, Any]:
@@ -146,7 +153,8 @@ def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | No
     "",
     summary="生成可解释匹配",
     description=(
-        "本地字面检索，不发送资料到外部；固定快照与修订，引用不存在返回 404，不一致返回 422。"
+        "固定快照与资料修订，引用不存在返回404，不一致返回422。省略解析引用沿用旧本地报告。"
+        "指定成功解析生成六维参考区间并冻结策略；AI 需本次外发确认，缺配置409，校验失败422。"
         "命中状态区分字面命中（`FACT_FOUND` 未挂来源记录、`EVIDENCE_ATTACHED` 另挂来源记录）与 `UNKNOWN`；"
         "两种命中都只是名称层面的对应，不代表能力、熟练度、年限或整项条件已核实，也不输出招聘概率。"
         "是否挂来源证据不影响命中判定。"
@@ -155,7 +163,22 @@ def build_report(jd: str, profile: dict[str, Any], document: dict[str, Any] | No
     status_code=201,
 )
 async def create_match(session: SessionDep, payload: MatchCreate) -> ApiResponse[MatchRead]:
-    """验证输入后保存不可变证据报告，无外部调用。"""
+    """校验固定输入并保存不可变报告；模型外发仅在明确确认且策略未排除时执行。"""
+    if payload.parse_result_id is not None:
+        entity = await analysis_service.create_analysis(
+            session,
+            payload.job_snapshot_id,
+            payload.profile_revision_id,
+            payload.resume_version_id,
+            payload.parse_result_id,
+            payload.engine,
+            payload.confirm_external,
+            payload.expected_service,
+            payload.expected_model,
+        )
+        return success(MatchRead.model_validate(entity))
+    if payload.engine == "AI":
+        raise ValidationFailedError("模型分析须选择成功的 JD 解析产物。")
     snapshot = await session.get(JobSnapshot, payload.job_snapshot_id)
     revision = await session.get(ProfileRevision, payload.profile_revision_id)
     if snapshot is None or revision is None:
@@ -195,4 +218,9 @@ async def create_match(session: SessionDep, payload: MatchCreate) -> ApiResponse
 async def list_matches(session: SessionDep) -> ApiResponse[list[MatchRead]]:
     """返回历史报告及输入引用。"""
     rows = await session.scalars(select(MatchResult).order_by(MatchResult.created_at.desc()))
-    return success([MatchRead.model_validate(row) for row in rows])
+    results: list[MatchRead] = []
+    for row in rows:
+        result = MatchRead.model_validate(row)
+        result.is_stale = await analysis_service.is_stale(session, row)
+        results.append(result)
+    return success(results)

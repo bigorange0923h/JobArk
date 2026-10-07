@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Literal
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
@@ -10,6 +11,31 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 from app.core.responses import EditableRead, ORMModel
 
 from .enums import JobSource, OpportunityStatus, PostingStatus, SnapshotParseStatus
+
+
+class SalaryTerms(BaseModel):
+    """明确薪资口径，缺少任一口径不做确定比较。"""
+
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+    currency: str | None = Field(default=None, min_length=3, max_length=3)
+    period: Literal["MONTH", "YEAR"] | None = None
+    basis: Literal["GROSS", "NET"] | None = None
+
+    @model_validator(mode="after")
+    def ordered(self) -> SalaryTerms:
+        """区间顺序非法返回校验错误，不猜测薪数或奖金。"""
+        if self.min is not None and self.max is not None and self.max < self.min:
+            raise ValueError("薪资上限不能低于下限。")
+        return self
+
+
+class WorkTerms(BaseModel):
+    """用户核对后的岗位安排；解析/模型不得自动写入。"""
+
+    model_config = ConfigDict(extra="forbid")
+    remote_mode: Literal["ONSITE", "HYBRID", "REMOTE"] | None = None
+    salary: SalaryTerms | None = None
 
 
 class CompanyCreate(BaseModel):
@@ -31,7 +57,7 @@ class JobManualCreate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    @field_validator("title", "raw_jd")
+    @field_validator("raw_jd")
     @classmethod
     def reject_blank(cls, value: str) -> str:
         """拒绝空白内容，同时原样保留 JD。"""
@@ -39,7 +65,8 @@ class JobManualCreate(BaseModel):
             raise ValueError("内容不得全部为空白。")
         return value
 
-    company: CompanyCreate
+    company: CompanyCreate | None = Field(default=None, description="已知公司；未知不建立公司记录。")
+    work_terms: WorkTerms = Field(default_factory=WorkTerms, description="用户明确核对的岗位安排。")
     channel_name: str | None = Field(
         default=None, min_length=1, max_length=80, description="用户声明的来源渠道；省略表示未指定，不代表平台采集。"
     )
@@ -50,7 +77,14 @@ class JobManualCreate(BaseModel):
         """渠道去除首尾空白，空白名称交给长度校验拒绝；旧请求允许省略。"""
         return value.strip() if isinstance(value, str) else value
 
-    title: str = Field(min_length=1, max_length=200, description="职位标题。")
+    title: str | None = Field(default=None, min_length=1, max_length=200, description="职位标题；可省略。")
+
+    @field_validator("title", mode="before")
+    @classmethod
+    def normalize_title(cls, value: object) -> object:
+        """空白标题统一为未知，JD 正文保持原样。"""
+        return value.strip() or None if isinstance(value, str) else value
+
     location: str | None = Field(default=None, max_length=200, description="职位地点。")
     employment_type: str | None = Field(default=None, max_length=80, description="雇佣类型。")
     notes: str | None = Field(default=None, max_length=10000, description="用户手工备注。")
@@ -63,6 +97,7 @@ class JobOpportunityUpdate(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
     version: int = Field(ge=1, description="当前乐观锁版本。")
+    work_terms: WorkTerms | None = None
     title: str | None = Field(default=None, min_length=1, max_length=200)
     location: str | None = Field(default=None, max_length=200)
     employment_type: str | None = Field(default=None, max_length=80)
@@ -74,8 +109,8 @@ class JobOpportunityUpdate(BaseModel):
         """禁止只提交 version 的无意义写入。"""
         if not self.model_fields_set - {"version"}:
             raise ValueError("至少提供一个需要更新的字段。")
-        if "title" in self.model_fields_set and (self.title is None or not self.title.strip()):
-            raise ValueError("职位标题不能为空。")
+        if self.title is not None and not self.title.strip():
+            raise ValueError("职位标题不得全为空白；未知请传 null。")
         if "status" in self.model_fields_set and self.status is None:
             raise ValueError("状态不能为空。")
         return self
@@ -140,8 +175,9 @@ class JobSnapshotRead(ORMModel):
 class JobOpportunityRead(EditableRead):
     """职位机会聚合响应。"""
 
-    company: CompanyRead
-    title: str
+    company: CompanyRead | None
+    work_terms: WorkTerms = Field(default_factory=WorkTerms)
+    title: str | None
     location: str | None
     employment_type: str | None
     status: OpportunityStatus
@@ -159,8 +195,8 @@ class JobOpportunityRead(EditableRead):
 class JobListItem(EditableRead):
     """职位列表项；保留当前快照摘要而不重复传输完整 JD。"""
 
-    company_name: str
-    title: str
+    company_name: str | None
+    title: str | None
     location: str | None
     employment_type: str | None
     status: OpportunityStatus

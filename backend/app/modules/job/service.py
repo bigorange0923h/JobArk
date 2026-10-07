@@ -26,6 +26,7 @@ from .schemas import (
     JobPostingRead,
     JobSnapshotCreate,
     JobSnapshotRead,
+    WorkTerms,
 )
 
 
@@ -41,25 +42,30 @@ def content_hash(raw_jd: str) -> str:
 
 async def create_manual_job(session: AsyncSession, payload: JobManualCreate) -> JobOpportunityRead:
     """原子创建公司、机会、手工页面与首份未解析 JD 快照。"""
-    company = await repository.add(
-        session,
-        Company(
-            name=payload.company.name.strip(),
-            name_normalized=normalize_company_name(payload.company.name),
-            website_url=str(payload.company.website_url) if payload.company.website_url else None,
-            industry=payload.company.industry,
-            description=payload.company.description,
-            location=payload.company.location,
-        ),
+    company = (
+        await repository.add(
+            session,
+            Company(
+                name=payload.company.name.strip(),
+                name_normalized=normalize_company_name(payload.company.name),
+                website_url=str(payload.company.website_url) if payload.company.website_url else None,
+                industry=payload.company.industry,
+                description=payload.company.description,
+                location=payload.company.location,
+            ),
+        )
+        if payload.company is not None
+        else None
     )
     opportunity = await repository.add(
         session,
         JobOpportunity(
-            company_id=company.id,
-            title=payload.title.strip(),
+            company_id=company.id if company else None,
+            title=payload.title.strip() if payload.title else None,
             location=payload.location,
             employment_type=payload.employment_type,
             notes=payload.notes,
+            work_terms=payload.work_terms.model_dump(),
         ),
     )
     posting = await repository.add(
@@ -99,7 +105,7 @@ async def get_opportunity_detail(session: AsyncSession, opportunity_id: uuid.UUI
     """读取职位聚合，按来源最近接收时间及 ID 选择明确指向的当前 JD。"""
     opportunity = await require_opportunity(session, opportunity_id)
     company = await repository.get_company(session, opportunity.company_id)
-    if company is None:
+    if company is None and opportunity.company_id is not None:
         raise ResourceNotFoundError("职位关联的公司不存在。")
     postings = await repository.list_postings(session, opportunity.id)
     latest = await repository.current_snapshot(session, opportunity.id)
@@ -111,7 +117,7 @@ async def list_jobs(session: AsyncSession) -> list[JobListItem]:
     items: list[JobListItem] = []
     for opportunity in await repository.list_opportunities(session):
         company = await repository.get_company(session, opportunity.company_id)
-        if company is None:
+        if company is None and opportunity.company_id is not None:
             raise ResourceNotFoundError("职位关联的公司不存在。")
         latest = await repository.current_snapshot(session, opportunity.id)
         items.append(
@@ -120,7 +126,7 @@ async def list_jobs(session: AsyncSession) -> list[JobListItem]:
                 created_at=opportunity.created_at,
                 updated_at=opportunity.updated_at,
                 version=opportunity.version,
-                company_name=company.name,
+                company_name=company.name if company else None,
                 title=opportunity.title,
                 location=opportunity.location,
                 employment_type=opportunity.employment_type,
@@ -138,7 +144,9 @@ async def update_opportunity(
     """使用乐观锁更新可编辑职位字段。"""
     opportunity = await require_opportunity(session, opportunity_id)
     updates = payload.model_dump(exclude={"version"}, exclude_unset=True)
-    if "title" in updates:
+    if "work_terms" in updates and updates["work_terms"] is None:
+        updates["work_terms"] = {}
+    if updates.get("title") is not None:
         updates["title"] = str(updates["title"]).strip()
     await apply_versioned_update(session, opportunity, payload.version, updates)
     await session.commit()
@@ -174,7 +182,10 @@ async def create_snapshot(
 
 
 def _read_opportunity(
-    opportunity: JobOpportunity, company: Company, postings: Sequence[JobPosting], latest_snapshot: JobSnapshot | None
+    opportunity: JobOpportunity,
+    company: Company | None,
+    postings: Sequence[JobPosting],
+    latest_snapshot: JobSnapshot | None,
 ) -> JobOpportunityRead:
     """把 ORM 聚合显式转换为响应模型，避免异步惰性加载。"""
     return JobOpportunityRead(
@@ -182,12 +193,13 @@ def _read_opportunity(
         created_at=opportunity.created_at,
         updated_at=opportunity.updated_at,
         version=opportunity.version,
-        company=CompanyRead.model_validate(company),
+        company=CompanyRead.model_validate(company) if company else None,
         title=opportunity.title,
         location=opportunity.location,
         employment_type=opportunity.employment_type,
         status=opportunity.status,
         notes=opportunity.notes,
+        work_terms=WorkTerms.model_validate(opportunity.work_terms),
         outsourcing_arrangement=opportunity.outsourcing_arrangement,
         postings=[JobPostingRead.model_validate(posting) for posting in postings],
         latest_snapshot=JobSnapshotRead.model_validate(latest_snapshot) if latest_snapshot else None,
