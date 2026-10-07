@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, requestV1 } from '@/shared/api/client'
 import { fetchJob, listJobs, listSnapshots } from '@/shared/api/job'
 import { listResumes } from '@/shared/api/resume'
+import { fetchProfile } from '@/shared/api/profile'
 
 import MatchingView from './MatchingView.vue'
 
@@ -29,14 +30,19 @@ vi.mock('@/shared/api/resume', async importOriginal => {
   return { ...actual, listResumes: vi.fn(), listVersions: vi.fn() }
 })
 
+vi.mock('@/shared/api/profile', () => ({ fetchProfile: vi.fn() }))
+vi.mock('vue-router', () => ({ useRoute: () => ({ query: {} }) }))
+
 beforeEach(() => {
   vi.clearAllMocks()
   noticeSpy.mockImplementation(() => undefined)
   vi.mocked(listJobs).mockResolvedValue([])
   vi.mocked(listResumes).mockResolvedValue([])
+  vi.mocked(fetchProfile).mockResolvedValue({} as never)
   vi.mocked(requestV1).mockImplementation(async path => {
     if (path === '/matches') return [] as never
     if (path === '/profile/revisions') return [] as never
+    if (path.includes('/parses')) return [] as never
     throw new Error(`未处理的请求：${path}`)
   })
 })
@@ -73,6 +79,8 @@ describe('MatchingView', () => {
       if (path === '/matches' && options?.init?.method === 'POST') {
         throw new ApiError({ code: 'NETWORK_ERROR', message: '无法连接到服务，请确认后端是否已启动。' })
       }
+      if (path === '/profile/revisions' && options?.init?.method === 'POST') return { id: 'revision' } as never
+      if (path.includes('/parses')) return { id: 'parse' } as never
       if (path === '/matches' || path === '/profile/revisions') return [] as never
       throw new Error(`未处理的请求：${path}`)
     })

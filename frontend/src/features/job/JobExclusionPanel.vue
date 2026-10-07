@@ -26,13 +26,13 @@ async function load(): Promise<void> {
   try {
     job.value = await fetchJob(props.jobId)
     evaluation.value = await previewExclusion(props.jobId)
-    nature.value = job.value.company.nature_code
-    industry.value = job.value.company.industry_code
+    nature.value = job.value.company?.nature_code ?? null
+    industry.value = job.value.company?.industry_code ?? null
     arrangement.value = job.value.outsourcing_arrangement
   } catch (cause) { error.value = parseServerError(cause).message }
 }
 async function saveFacts(): Promise<void> {
-  if (!job.value) return
+  if (!job.value?.company || busy.value) return
   busy.value = true; error.value = ''
   try {
     await confirmExclusionFacts(props.jobId, { company_version: job.value.company.version, opportunity_version: job.value.version, nature_code: nature.value, industry_code: industry.value, outsourcing_arrangement: arrangement.value, confirm: true })
@@ -64,7 +64,8 @@ onMounted(load)
   <a-card title="求职策略判定" class="section-gap">
     <a-alert v-if="error" type="error" show-icon :message="error" />
     <template v-if="job">
-      <p>历史行业文本：{{ job.company.industry || '无' }}。历史自由文本不会自动归类。</p>
+      <p>历史行业文本：{{ job.company?.industry || '无' }}。历史自由文本不会自动归类。</p>
+      <a-alert v-if="!job.company" type="info" message="公司身份缺失，公司分类暂不能确认；相关规则保持待核对。" />
       <div class="facts-row">
         <a-form-item label="已确认公司性质"><a-select v-model:value="nature" allow-clear :options="[
           { value: 'OUTSOURCING_PROVIDER', label: '外包服务商' }, { value: 'LABOR_DISPATCH', label: '人力派遣' },

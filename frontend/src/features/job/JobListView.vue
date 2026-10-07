@@ -25,7 +25,9 @@ const submitting = ref(false)
 const loadError = ref<ParsedServerError | null>(null)
 /** 保存失败：字段级原因内联展示，网络与超时等无字段信息的原因走全局通知。 */
 const actionError = ref<ParsedServerError | null>(null)
-const form = ref<ManualJobCreate>(emptyForm())
+type JobDraft = Omit<ManualJobCreate, 'company' | 'title'> & { company: NonNullable<ManualJobCreate['company']>; title: string }
+const form = ref<JobDraft>(emptyForm())
+const savedJobId = ref('')
 /** 渠道是用户声明，不触发平台访问；其他渠道可直接输入。 */
 const channelOptions = ['BOSS 直聘', 'LinkedIn', 'Indeed', '前程无忧', '公司官网'].map(value => ({ value, label: value }))
 const employmentTypeOptions = computed(() => [
@@ -56,7 +58,7 @@ const actionErrorDescription = computed(() => {
   return content.join(' ') || undefined
 })
 
-function emptyForm(): ManualJobCreate {
+function emptyForm(): JobDraft {
   return {
     company: { name: '', website_url: null, industry: null, location: null, description: null },
     channel_name: null,
@@ -77,15 +79,15 @@ function blankToNull(value: string | null): string | null {
 function payload(): ManualJobCreate {
   return {
     ...form.value,
-    company: {
+    company: form.value.company.name.trim() ? {
       ...form.value.company,
       name: form.value.company.name.trim(),
       website_url: blankToNull(form.value.company.website_url),
       industry: blankToNull(form.value.company.industry),
       location: blankToNull(form.value.company.location),
       description: blankToNull(form.value.company.description ?? null),
-    },
-    title: form.value.title.trim(),
+    } : null,
+    title: blankToNull(form.value.title),
     location: blankToNull(form.value.location),
     employment_type: blankToNull(form.value.employment_type),
     notes: blankToNull(form.value.notes),
@@ -116,11 +118,12 @@ async function load(): Promise<void> {
 
 async function submit(): Promise<void> {
   const input = payload()
-  if (input.company.name === '' || input.title === '' || !input.raw_jd.trim()) return
+  if (submitting.value || !input.raw_jd.trim()) return
   submitting.value = true
   actionError.value = null
   try {
-    await createManualJob(input)
+    const saved = await createManualJob(input)
+    savedJobId.value = saved.id
     form.value = emptyForm()
     await load()
   } catch (error: unknown) {
@@ -165,8 +168,8 @@ onMounted(() => void load())
       <a-form layout="vertical" @submit.prevent="submit">
         <div class="form-grid">
           <a-form-item label="来源渠道" extra="选择常用渠道，或直接输入其他渠道；留空表示未指定。"><a-auto-complete v-model:value="form.channel_name" :options="channelOptions" :maxlength="80" placeholder="选择或输入来源渠道" data-testid="job-channel" /></a-form-item>
-          <a-form-item label="公司" required><a-input v-model:value="form.company.name" :maxlength="200" data-testid="company-name" /></a-form-item>
-          <a-form-item label="职位" required><a-input v-model:value="form.title" :maxlength="200" data-testid="job-title" /></a-form-item>
+          <a-form-item label="公司（可选）"><a-input v-model:value="form.company.name" :maxlength="200" data-testid="company-name" /></a-form-item>
+          <a-form-item label="职位（可选）"><a-input v-model:value="form.title" :maxlength="200" data-testid="job-title" /></a-form-item>
           <a-form-item label="职位地点"><a-input v-model:value="form.location" :maxlength="200" /></a-form-item>
           <a-form-item label="雇佣类型" extra="优先选择常见类型；列表外的类型可直接输入。"><a-auto-complete v-model:value="form.employment_type" :options="employmentTypeOptions" :maxlength="80" placeholder="选择或输入雇佣类型" data-testid="job-employment-type" /></a-form-item>
           <a-form-item label="招聘页面 URL"><a-input v-model:value="form.canonical_url" :maxlength="2048" /></a-form-item>
@@ -177,7 +180,8 @@ onMounted(() => void load())
         <a-form-item label="公司介绍" extra="有公司介绍时可复制到这里；没有时可留空。自动提取可用时，请使用下方平台内容预览入口核对支持的字段。"><a-textarea v-model:value="form.company.description" :rows="3" :maxlength="10000" data-testid="company-description" /></a-form-item>
         <a-form-item label="JD 原文" required><a-textarea v-model:value="form.raw_jd" :rows="7" :maxlength="100000" data-testid="raw-jd" /></a-form-item>
         <a-form-item label="个人备注"><a-textarea v-model:value="form.notes" :rows="2" :maxlength="10000" /></a-form-item>
-        <a-button type="primary" :loading="submitting" :disabled="!form.company.name.trim() || !form.title.trim() || !form.raw_jd.trim()" data-testid="create-job" @click="submit">保存职位与 JD</a-button>
+        <a-button type="primary" :loading="submitting" :disabled="!form.raw_jd.trim()" data-testid="create-job" @click="submit">保存职位与 JD</a-button>
+        <p v-if="savedJobId" data-testid="jd-saved">JD 已保存。<RouterLink :to="{ path: '/matching', query: { job: savedJobId } }">继续分析</RouterLink>（解析和匹配失败不会撤销保存）</p>
       </a-form>
     </a-card>
 
@@ -190,7 +194,7 @@ onMounted(() => void load())
     </a-radio-group>
     <a-table v-if="!loadError" :columns="columns" :data-source="visibleJobs" :loading="loading" :pagination="false" row-key="id" class="job-table">
       <template #bodyCell="{ column, record }">
-        <RouterLink v-if="column.key === 'title'" :to="`/jobs/${record.id}`">{{ record.title }}</RouterLink>
+        <RouterLink v-if="column.key === 'title'" :to="`/jobs/${record.id}`">{{ record.title ?? '职位待补充' }}</RouterLink>
         <template v-else-if="column.key === 'status'">{{ statusLabel(record.status) }}</template>
         <template v-else-if="column.key === 'exclusion'">
           <a-tag :color="evaluations[record.id]?.decision.verdict === 'EXCLUDED' ? 'red' : evaluations[record.id]?.decision.verdict === 'ELIGIBLE' ? 'green' : 'orange'">

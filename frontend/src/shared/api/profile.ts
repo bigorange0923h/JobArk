@@ -119,6 +119,9 @@ export interface Language extends EditableResource {
 
 /** 求职偏好；属于可变规则，不是履历事实。 */
 export interface Preference extends EditableResource {
+  target_roles?: string[]
+  hard_limits?: HardLimits
+  priority_rules?: PriorityRule[]
   target_locations: string[]
   job_types: string[]
   salary_min: number | null
@@ -359,6 +362,9 @@ export interface LanguageInput {
 
 /** 求职偏好的整体替换请求体。 */
 export interface PreferenceInput {
+  target_roles?: string[]
+  hard_limits?: HardLimits
+  priority_rules?: PriorityRule[]
   target_locations?: string[]
   job_types?: string[]
   salary_min?: number | null
@@ -369,6 +375,11 @@ export interface PreferenceInput {
   /** 偏好已存在时必须提供；首次创建时省略。 */
   version?: number
 }
+
+/** 硬限制必须主动启用，历史偏好默认仍是软偏好。 */
+export interface HardLimits { location: boolean; employment_type: boolean; remote: boolean; salary: boolean; salary_basis: 'GROSS' | 'NET' | null }
+/** 优先关注不加分，也不覆盖排除规则。 */
+export interface PriorityRule { id: string; kind: 'COMPANY_NAME' | 'COMPANY_INDUSTRY' | 'JD_KEYWORD'; value: string; enabled: boolean }
 
 // --------------------------------------------------------------------------------------------
 // 通用事实接口

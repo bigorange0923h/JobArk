@@ -56,8 +56,8 @@ export interface JobSnapshot {
 }
 
 export interface JobListItem extends EditableResource {
-  company_name: string
-  title: string
+  company_name: string | null
+  title: string | null
   location: string | null
   employment_type: string | null
   status: OpportunityStatus
@@ -67,8 +67,9 @@ export interface JobListItem extends EditableResource {
 }
 
 export interface JobOpportunity extends EditableResource {
-  company: JobCompany
-  title: string
+  company: JobCompany | null
+  title: string | null
+  work_terms?: { remote_mode?: string | null; salary?: { min?: number | null; max?: number | null; currency?: string | null; period?: string | null; basis?: string | null } | null }
   location: string | null
   employment_type: string | null
   status: OpportunityStatus
@@ -99,9 +100,9 @@ export function confirmExclusionFacts(id: string, payload: { company_version: nu
 export function grantExclusionException(id: string, evaluation: ExclusionEvaluation, reason: string): Promise<ExclusionEvaluation> { return requestV1(`/jobs/${id}/exclusion/exception`, { init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshot_id: evaluation.snapshot_id, policy_version: evaluation.policy_version, company_version: evaluation.company_version, opportunity_version: evaluation.opportunity_version, reason, confirm: true }) } }) }
 
 export interface ManualJobCreate {
-  company: { name: string; website_url: string | null; industry: string | null; location: string | null; description?: string | null }
+  company: { name: string; website_url: string | null; industry: string | null; location: string | null; description?: string | null } | null
   channel_name?: string | null
-  title: string
+  title: string | null
   location: string | null
   employment_type: string | null
   notes: string | null
@@ -119,7 +120,7 @@ export function fetchJob(id: string): Promise<JobOpportunity> { return requestV1
 /** 读取不可变 JD 历史。 */
 export function listSnapshots(id: string): Promise<JobSnapshot[]> { return requestV1(`/jobs/${id}/snapshots`) }
 /** 按当前版本保存可编辑字段。 */
-export function updateJob(id: string, payload: { version: number; title: string; location: string | null; notes: string | null; status: OpportunityStatus }): Promise<JobOpportunity> { return requestV1(`/jobs/${id}`, { init: { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } }) }
+export function updateJob(id: string, payload: { version: number; title: string | null; location: string | null; notes: string | null; status: OpportunityStatus; work_terms?: JobOpportunity['work_terms'] }): Promise<JobOpportunity> { return requestV1(`/jobs/${id}`, { init: { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) } }) }
 /** 为页面保存新快照，原快照始终保留。 */
 export function saveSnapshot(id: string, postingId: string, raw_jd: string): Promise<JobSnapshot> { return requestV1(`/jobs/${id}/postings/${postingId}/snapshots`, { init: { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ raw_jd }) } }) }
 

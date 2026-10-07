@@ -110,6 +110,8 @@ async function load(): Promise<void> {
     const initial = job.value === null
     if (!initial && (job.value?.latest_snapshot?.id !== detail.latest_snapshot?.id || job.value?.latest_snapshot?.posting_id !== detail.latest_snapshot?.posting_id)) currentChanged.value = true
     job.value = detail
+    job.value.work_terms ??= { remote_mode: null, salary: { min: null, max: null, currency: null, period: null, basis: null } }
+    job.value.work_terms.salary ??= { min: null, max: null, currency: null, period: null, basis: null }
     snapshots.value = detail.latest_snapshot && !history.some(s => s.id === detail.latest_snapshot?.id) ? [detail.latest_snapshot, ...history] : history
     versions.value = materials
     if (initial) useCurrent()
@@ -124,7 +126,7 @@ async function action(kind: 'save' | 'snapshot' | 'apply', confirmRepeat = false
   busy.value = true; actionError.value = null
   const label = kind === 'save' ? '保存职位修改' : kind === 'snapshot' ? '保存 JD 快照' : '创建申请'
   try {
-    if (kind === 'save') { await updateJob(props.jobId, { version: job.value.version, title: job.value.title, location: job.value.location, notes: job.value.notes, status: job.value.status }); await load() }
+    if (kind === 'save') { await updateJob(props.jobId, { version: job.value.version, title: job.value.title?.trim() || null, location: job.value.location, notes: job.value.notes, status: job.value.status, work_terms: job.value.work_terms }); await load() }
     if (kind === 'snapshot') { const snapshot = await saveSnapshot(props.jobId, posting.value, newJd.value); selectedSnapshot.value = snapshot.id; newJd.value = ''; await load() }
     if (kind === 'apply') { await createApplication({ job_opportunity_id: props.jobId, job_snapshot_id: selectedSnapshot.value, resume_version_id: selectedVersion.value || null, confirm_repeat: confirmRepeat }); confirmRepeatOpen.value = false; await router.push({ name: 'applications' }) }
   } catch (error: unknown) {
@@ -138,7 +140,7 @@ onMounted(load)
 </script>
 <template>
   <section class="job-detail-view">
-    <header class="page-header"><div><RouterLink to="/jobs" class="back-link">← 返回职位列表</RouterLink><h1>{{ job?.title ?? '职位详情' }}</h1><p class="page-subtitle">{{ job?.company.name ?? '职位资料与 JD 历史' }}</p></div><a-tag v-if="job" :color="job.status === 'ACTIVE' ? 'blue' : 'default'">{{ job.status === 'ACTIVE' ? '处理中' : '已归档' }}</a-tag></header>
+    <header class="page-header"><div><RouterLink to="/jobs" class="back-link">← 返回职位列表</RouterLink><h1>{{ job?.title ?? '职位详情' }}</h1><p class="page-subtitle">{{ job?.company?.name ?? '职位资料与 JD 历史' }}</p></div><a-tag v-if="job" :color="job.status === 'ACTIVE' ? 'blue' : 'default'">{{ job.status === 'ACTIVE' ? '处理中' : '已归档' }}</a-tag></header>
     <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="loadErrorDescription" class="section-gap" data-testid="load-error" role="alert"><template #action><a-button size="small" data-testid="retry-load" @click="load">重新加载</a-button></template></a-alert>
     <a-alert v-if="actionError" type="error" show-icon closable :message="actionError.message" :description="actionErrorDescription" class="section-gap" data-testid="action-error" role="alert" @close="actionError = null" />
     <a-button data-testid="refresh-job" :loading="loading" :disabled="busy" class="section-gap" @click="load">刷新已保存内容</a-button>
@@ -148,11 +150,11 @@ onMounted(load)
       <div class="detail-grid">
         <div class="primary-column">
           <a-card title="公司资料" data-testid="company-info" class="section-gap">
-            <p>公司：{{ job.company.name }}</p>
-            <p>官网：{{ job.company.website_url ?? '未填写' }}</p>
-            <p>行业：{{ job.company.industry ?? '未填写' }}</p>
-            <p>所在地：{{ job.company.location ?? '未填写' }}</p>
-            <p style="white-space: pre-wrap">公司介绍：{{ job.company.description ?? '未填写' }}</p>
+            <p>公司：{{ job.company?.name ?? '待补充（未建立公司记录）' }}</p>
+            <p>官网：{{ job.company?.website_url ?? '未填写' }}</p>
+            <p>行业：{{ job.company?.industry ?? '未填写' }}</p>
+            <p>所在地：{{ job.company?.location ?? '未填写' }}</p>
+            <p style="white-space: pre-wrap">公司介绍：{{ job.company?.description ?? '未填写' }}</p>
           </a-card>
           <JobExclusionPanel :job-id="jobId" />
           <a-card title="当前保存 JD" data-testid="current-jd" class="section-gap">
@@ -170,10 +172,15 @@ onMounted(load)
           </a-card>
           <a-card title="职位信息" class="section-gap">
             <a-form layout="vertical" @submit.prevent="action('save')">
-              <div class="form-grid"><a-form-item label="职位" required><a-input v-model:value="job.title" :maxlength="200" /></a-form-item><a-form-item label="地点"><a-input v-model:value="job.location" :maxlength="200" /></a-form-item></div>
+              <div class="form-grid"><a-form-item label="职位（可选）"><a-input v-model:value="job.title" :maxlength="200" /></a-form-item><a-form-item label="地点"><a-input v-model:value="job.location" :maxlength="200" /></a-form-item></div>
               <a-form-item label="备注"><a-textarea v-model:value="job.notes" :rows="3" :maxlength="10000" /></a-form-item>
+              <template v-if="job.work_terms?.salary">
+                <a-form-item label="确认工作方式" extra="仅填写 JD 明确给出的安排；未知留空。"><a-select v-model:value="job.work_terms.remote_mode" allow-clear :options="[{ value: 'ONSITE', label: '现场办公' }, { value: 'HYBRID', label: '混合' }, { value: 'REMOTE', label: '远程' }]" /></a-form-item>
+                <p>薪资只记录已核对的范围和口径，区间上界不是保底金额。</p>
+                <div class="form-grid"><a-form-item label="薪资下界"><a-input-number v-model:value="job.work_terms.salary.min" :min="0" /></a-form-item><a-form-item label="薪资上界"><a-input-number v-model:value="job.work_terms.salary.max" :min="0" /></a-form-item><a-form-item label="币种"><a-input v-model:value="job.work_terms.salary.currency" :maxlength="3" /></a-form-item><a-form-item label="周期"><a-select v-model:value="job.work_terms.salary.period" allow-clear :options="[{ value: 'MONTH', label: '月' }, { value: 'YEAR', label: '年' }]" /></a-form-item><a-form-item label="税口径"><a-select v-model:value="job.work_terms.salary.basis" allow-clear :options="[{ value: 'GROSS', label: '税前' }, { value: 'NET', label: '税后' }]" /></a-form-item></div>
+              </template>
               <a-form-item label="状态"><a-select v-model:value="job.status" :options="[{ value: 'ACTIVE', label: '处理中' }, { value: 'ARCHIVED', label: '已归档' }]" /></a-form-item>
-              <a-button type="primary" :loading="busy" :disabled="loading || !job.title.trim()" @click="action('save')">保存修改</a-button>
+              <a-button type="primary" :loading="busy" :disabled="loading" @click="action('save')">保存修改</a-button>
             </a-form>
           </a-card>
           <a-card title="JD 历史" class="section-gap">

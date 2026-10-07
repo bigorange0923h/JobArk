@@ -60,7 +60,7 @@ onMounted(() => { void load() })
       type="info"
       show-icon
       class="strategy-notice"
-      message="目标地点、薪资等偏好尚未用于职位匹配；下方结构化排除规则用于当前职位筛选。"
+      message="偏好用于新条件分析；硬限制须主动开启，未知信息先核对。优先名单不抵消排除规则。"
       data-testid="strategy-scope-notice"
     />
     <a-alert

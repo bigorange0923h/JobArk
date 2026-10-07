@@ -34,6 +34,16 @@ beforeEach(() => {
 enableAutoUnmount(afterEach)
 
 describe('JobListView', () => {
+  it('只有 JD 即可保存，公司标题为空不建立占位事实，并提供继续分析入口', async () => {
+    vi.mocked(createManualJob).mockResolvedValue({ id: 'saved' } as JobOpportunity)
+    const wrapper = mount(JobListView)
+    await flushPromises()
+    await wrapper.find('[data-testid="raw-jd"]').setValue('只提供 JD')
+    await wrapper.find('[data-testid="create-job"]').trigger('click')
+    await flushPromises()
+    expect(createManualJob).toHaveBeenCalledWith(expect.objectContaining({ company: null, title: null, canonical_url: null, raw_jd: '只提供 JD' }))
+    expect(wrapper.find('[data-testid="jd-saved"]').text()).toContain('JD 已保存')
+  })
   it('复制 JD 入口优先，渠道和手动公司介绍一起保存且不要求链接', async () => {
     const wrapper = mount(JobListView)
     await flushPromises()

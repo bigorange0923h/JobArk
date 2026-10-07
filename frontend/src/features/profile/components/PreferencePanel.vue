@@ -14,7 +14,7 @@
 
 import { computed, ref, watch } from 'vue'
 
-import { savePreference, type Preference, type PreferenceInput, type RemotePreference } from '@/shared/api/profile'
+import { savePreference, type Preference, type PreferenceInput, type RemotePreference, type HardLimits, type PriorityRule } from '@/shared/api/profile'
 import { isGlobalFailure, notifyFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 
@@ -41,6 +41,17 @@ const salaryMax = ref<number | null>(null)
 const salaryCurrency = ref('')
 const remotePreference = ref<string | null>(null)
 const exclusions = ref<string[]>([])
+const targetRoles = ref<string[]>([])
+const hardLimits = ref<HardLimits>({ location: false, employment_type: false, remote: false, salary: false, salary_basis: null })
+const priorityRules = ref<PriorityRule[]>([])
+const priorityValue = ref('')
+const priorityKind = ref<PriorityRule['kind']>('COMPANY_NAME')
+/** 只创建完整名称、行业代码或关键词，不开放自由正则。 */
+function addPriority(): void {
+  if (!priorityValue.value.trim()) return
+  priorityRules.value.push({ id: crypto.randomUUID(), kind: priorityKind.value, value: priorityValue.value.trim(), enabled: true })
+  priorityValue.value = ''
+}
 const fieldErrors = ref<Record<string, string>>({})
 const panelError = ref<ParsedServerError | null>(null)
 const saving = ref(false)
@@ -72,6 +83,9 @@ watch(
     salaryCurrency.value = preference?.salary_currency ?? ''
     remotePreference.value = preference?.remote_preference ?? null
     exclusions.value = preference?.exclusions ?? []
+    targetRoles.value = [...(preference?.target_roles ?? [])]
+    hardLimits.value = { location: false, employment_type: false, remote: false, salary: false, salary_basis: null, ...preference?.hard_limits }
+    priorityRules.value = (preference?.priority_rules ?? []).map(rule => ({ ...rule }))
     fieldErrors.value = {}
     panelError.value = null
   },
@@ -79,6 +93,7 @@ watch(
 )
 
 async function submit(): Promise<void> {
+  if (saving.value) return
   fieldErrors.value = {}
   panelError.value = null
   saving.value = true
@@ -91,6 +106,9 @@ async function submit(): Promise<void> {
       salary_currency: salaryCurrency.value.trim() === '' ? null : salaryCurrency.value.trim(),
       remote_preference: (remotePreference.value as RemotePreference | null) ?? null,
       exclusions: exclusions.value,
+      target_roles: targetRoles.value,
+      hard_limits: hardLimits.value,
+      priority_rules: priorityRules.value,
     }
     // 已存在时必须带版本号；首次创建时带上会被后端拒绝（避免"以为在更新其实在创建"）。
     if (props.preference !== null) {
@@ -135,6 +153,15 @@ async function submit(): Promise<void> {
     />
 
     <a-form layout="vertical">
+      <a-form-item label="目标方向 / 岗位关键词" extra="本人明确声明；留空不从履历推测职业意愿。"><a-select v-model:value="targetRoles" mode="tags" data-testid="target-roles" /></a-form-item>
+      <a-form-item label="硬限制（默认关闭）" extra="开启后未知信息须先确认；旧偏好保持软偏好。">
+        <a-space wrap><a-checkbox v-model:checked="hardLimits.location">地点</a-checkbox><a-checkbox v-model:checked="hardLimits.employment_type">雇佣类型</a-checkbox><a-checkbox v-model:checked="hardLimits.remote">工作方式</a-checkbox><a-checkbox v-model:checked="hardLimits.salary">最低月薪</a-checkbox></a-space>
+      </a-form-item>
+      <a-form-item label="薪资比较口径" extra="税口径未知不做确定比较。"><a-select v-model:value="hardLimits.salary_basis" allow-clear :options="[{ value: 'GROSS', label: '税前' }, { value: 'NET', label: '税后' }]" /></a-form-item>
+      <a-form-item label="优先名单" extra="任一命中表示优先关注；不增加适配分，也不抵消黑名单。">
+        <a-space wrap><a-select v-model:value="priorityKind" :options="[{ value: 'COMPANY_NAME', label: '完整公司名' }, { value: 'COMPANY_INDUSTRY', label: '确认行业代码' }, { value: 'JD_KEYWORD', label: '岗位关键词' }]" /><a-input v-model:value="priorityValue" :maxlength="200" /><a-button @click="addPriority">添加优先规则</a-button></a-space>
+        <div v-for="(rule, index) in priorityRules" :key="rule.id"><a-checkbox v-model:checked="rule.enabled">{{ rule.value }}</a-checkbox><a-button type="link" @click="priorityRules.splice(index, 1)">移除</a-button></div>
+      </a-form-item>
       <a-form-item
         label="目标地点"
         :help="fieldErrors['target_locations'] ?? '按省份选择多个城市；旧称、其他地区或海外城市可手动添加。'"

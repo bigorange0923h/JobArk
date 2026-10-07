@@ -42,7 +42,7 @@ describe('当前保存 JD', () => {
     const data = fixture()
     data.postings[1]!.source = 'MANUAL'
     data.postings[1]!.channel_name = '公司官网'
-    data.company.description = '用户复制的公司介绍'
+    data.company!.description = '用户复制的公司介绍'
     vi.mocked(fetchJob).mockResolvedValue(data)
     const w = await open()
     expect(w.find('[data-testid="current-jd"]').text()).toContain('公司官网（手工录入）')
