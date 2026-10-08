@@ -18,6 +18,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.core.responses import EditableRead, ORMModel
 
+from .education_types import DegreeLevel, StudyMode
 from .enums import ClaimStatus, EvidenceSourceType, RemotePreference, SkillProficiency, VerificationStatus
 from .strategy_schemas import HardLimits, PriorityRule
 
@@ -280,6 +281,8 @@ class EducationCreate(BaseModel):
     school: str = Field(min_length=1, max_length=200)
     major: str | None = Field(default=None, max_length=200)
     degree: str | None = Field(default=None, max_length=64)
+    degree_level: DegreeLevel | None = Field(default=None, description="本人确认的学历层次；不从旧文本回填。")
+    study_mode: StudyMode | None = Field(default=None, description="本人确认的学习形式；空值为未知。")
     start_date: date | None = None
     end_date: date | None = None
     source_evidence_id: UUID | None = None
@@ -307,6 +310,8 @@ class EducationUpdate(BaseModel):
     school: str | None = Field(default=None, min_length=1, max_length=200)
     major: str | None = Field(default=None, max_length=200)
     degree: str | None = Field(default=None, max_length=64)
+    degree_level: DegreeLevel | None = Field(default=None, description="本人确认的学历层次；不从旧文本回填。")
+    study_mode: StudyMode | None = Field(default=None, description="本人确认的学习形式；空值为未知。")
     start_date: date | None = None
     end_date: date | None = None
     source_evidence_id: UUID | None = None
@@ -321,6 +326,8 @@ class EducationRead(EditableRead):
     school: str
     major: str | None
     degree: str | None
+    degree_level: DegreeLevel | None = Field(default=None, description="本人确认的学历层次；不从旧文本回填。")
+    study_mode: StudyMode | None = Field(default=None, description="本人确认的学习形式；空值为未知。")
     start_date: date | None
     end_date: date | None
     source_evidence_id: UUID | None
@@ -369,6 +376,10 @@ class PreferenceUpsert(BaseModel):
     """创建或整体替换求职偏好的请求体。"""
 
     target_roles: list[str] = Field(default_factory=list, max_length=30, description="本人声明的目标岗位方向。")
+    role_keywords: list[str] = Field(
+        default_factory=list, max_length=30, description="方向的补充技术或职责关键词，不代替目标方向。"
+    )
+    acceptable_salary_min: int | None = Field(default=None, ge=0, description="最低可接受月薪；独立于期望区间。")
     hard_limits: HardLimits = Field(default_factory=HardLimits, description="显式硬限制和薪资口径。")
     priority_rules: list[PriorityRule] = Field(
         default_factory=list[PriorityRule], max_length=100, description="优先关注，不抵消黑名单。"
@@ -398,12 +409,22 @@ class PreferenceUpsert(BaseModel):
         """
         if self.salary_min is not None and self.salary_max is not None and self.salary_max < self.salary_min:
             raise ValueError("salary_max 不得小于 salary_min。")
-        if any(not value.strip() or len(value) > 100 for value in self.target_roles):
+        if (
+            self.acceptable_salary_min is not None
+            and self.salary_min is not None
+            and self.acceptable_salary_min > self.salary_min
+        ):
+            raise ValueError("最低可接受月薪不得高于期望下限。")
+        if self.hard_limits.remote and self.remote_preference == RemotePreference.ANY:
+            raise ValueError("工作方式不限不能启用硬限制。")
+        if any(not value.strip() or len(value) > 100 for value in self.target_roles + self.role_keywords):
             raise ValueError("目标方向不得空白或超过 100 字。")
         if len({rule.id for rule in self.priority_rules}) != len(self.priority_rules):
             raise ValueError("优先规则 ID 不得重复。")
         if self.hard_limits.salary and (
-            self.salary_min is None or not self.salary_currency or not self.hard_limits.salary_basis
+            (self.acceptable_salary_min is None and self.salary_min is None)
+            or not self.salary_currency
+            or not self.hard_limits.salary_basis
         ):
             raise ValueError("硬薪资限制须填写最低月薪、币种和税口径。")
         for enabled, value in (
@@ -420,6 +441,8 @@ class PreferenceRead(EditableRead):
     """求职偏好响应体。"""
 
     target_roles: list[str] = Field(default_factory=list)
+    role_keywords: list[str] = Field(default_factory=list)
+    acceptable_salary_min: int | None = Field(default=None)
     hard_limits: HardLimits = Field(default_factory=HardLimits)
     priority_rules: list[PriorityRule] = Field(default_factory=list[PriorityRule])
     target_locations: list[str]

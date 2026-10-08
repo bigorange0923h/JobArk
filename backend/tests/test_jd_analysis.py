@@ -50,7 +50,7 @@ def test_not_applicable_and_deduplication() -> None:
     """福利不评分，重复摘录不增加条件权重；准入维度不适用可归一。"""
     rows = conditions(parse_jd("熟悉 Python\n熟悉 Python\n福利：五险一金"))
     assert len([row for row in rows if row.dimension == "SKILL"]) == 1
-    assert any(row.dimension == "ADMISSION" and row.status == "NOT_APPLICABLE" for row in rows)
+    assert any(row.dimension == "ADMISSION" and row.status == "UNKNOWN" for row in rows)
     assert sum(row["weight"] for row in score(rows)["conditions"]) == pytest.approx(10)
 
 
@@ -79,7 +79,7 @@ def test_salary_interval_and_basis(
     rows, conflicts, unknowns = strategy_conditions(
         [], pref, {"salary": {"min": low, "max": high, "currency": currency, "period": period, "basis": basis}}, ""
     )
-    assert next(row for row in rows if row.dimension == "SALARY").ratio == expected
+    assert next(row for row in rows if row.id == "strategy-salary_floor").ratio == expected
     assert bool(conflicts) == (expected == 0)
     assert bool(unknowns) == (expected is None)
 

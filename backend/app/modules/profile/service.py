@@ -73,7 +73,7 @@ CONTENT_FIELDS_BY_MODEL: dict[type[Base], tuple[str, ...]] = {
         "achievements",
     ),
     ProfileProject: ("name", "role", "description", "achievements", "tech_stack", "url", "start_date", "end_date"),
-    ProfileEducation: ("school", "major", "degree", "start_date", "end_date"),
+    ProfileEducation: ("school", "major", "degree", "degree_level", "study_mode", "start_date", "end_date"),
     ProfileLanguage: ("language", "level", "note"),
 }
 
@@ -191,6 +191,8 @@ def build_profile_snapshot(profile: PersonalProfile) -> dict[str, Any]:
                 "school": item.school,
                 "major": item.major,
                 "degree": item.degree,
+                "degree_level": item.degree_level,
+                "study_mode": item.study_mode,
                 "start_date": item.start_date.isoformat() if item.start_date else None,
                 "end_date": item.end_date.isoformat() if item.end_date else None,
                 "source_evidence_id": str(item.source_evidence_id) if item.source_evidence_id else None,
@@ -923,6 +925,8 @@ async def create_education(session: AsyncSession, payload: EducationCreate) -> P
         school=payload.school,
         major=payload.major,
         degree=payload.degree,
+        degree_level=payload.degree_level,
+        study_mode=payload.study_mode,
         start_date=payload.start_date,
         end_date=payload.end_date,
         source_evidence_id=payload.source_evidence_id,
@@ -1102,6 +1106,8 @@ async def upsert_preference(session: AsyncSession, payload: PreferenceUpsert) ->
     values: dict[str, Any] = {
         "target_locations": payload.target_locations,
         "target_roles": [value.strip() for value in payload.target_roles],
+        "role_keywords": [value.strip() for value in payload.role_keywords],
+        "acceptable_salary_min": payload.acceptable_salary_min,
         "hard_limits": payload.hard_limits.model_dump(),
         "priority_rules": [rule.model_dump() for rule in payload.priority_rules],
         "job_types": payload.job_types,

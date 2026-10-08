@@ -28,6 +28,7 @@ from app.core.errors import ConflictError, ValidationFailedError
 from app.core.responses import ErrorDetail
 
 from . import repository as repo
+from .education_types import DegreeLevel, StudyMode
 from .enums import ClaimStatus, EvidenceSourceType, VerificationStatus
 from .import_fixture import FIXTURE_SOURCE_HASH, FIXTURE_TEXT, mock_extract_profile
 from .models import (
@@ -117,9 +118,7 @@ class SourcedItemBase(BaseModel):
         if self.origin == "RESUME" and quote == "":
             raise ValueError("origin 为 RESUME 的条目必须提供 source_quote。")
         if self.origin == "MANUAL" and quote != "":
-            raise ValueError(
-                "origin 为 MANUAL 的条目不接受 source_quote：请勿用摘录给本人填写的内容做来源背书。"
-            )
+            raise ValueError("origin 为 MANUAL 的条目不接受 source_quote：请勿用摘录给本人填写的内容做来源背书。")
         return self
 
 
@@ -172,6 +171,8 @@ class SourcedEducation(SourcedItemBase):
     school: str = Field(min_length=1, max_length=200)
     major: str | None = Field(default=None, max_length=200)
     degree: str | None = Field(default=None, max_length=64)
+    degree_level: DegreeLevel | None = Field(default=None, description="本人确认的学历层次；不从旧文本回填。")
+    study_mode: StudyMode | None = Field(default=None, description="本人确认的学习形式；空值为未知。")
     start_date: date | None = None
     end_date: date | None = None
 
@@ -415,7 +416,14 @@ def _item_field_values(
             ("url", item.url),
             *[(f"tech_stack.{position}", value) for position, value in enumerate(item.tech_stack)],
         ]
-    return [("school", item.school), ("major", item.major), ("degree", item.degree)]
+    # 结构化字段只有用户明确选择才使用；非原文编码在确认阶段转本人陈述。
+    return [
+        ("school", item.school),
+        ("major", item.major),
+        ("degree", item.degree),
+        ("degree_level", item.degree_level),
+        ("study_mode", item.study_mode),
+    ]
 
 
 def _check_sourced_item(
@@ -988,6 +996,17 @@ def _parse_preview_candidate(
                             message="这些字段未能在项目原文摘录中逐字定位，未作为简历事实导入；可由本人补充。",
                         )
                     )
+            if isinstance(item, SourcedEducation) and (item.degree_level or item.study_mode):
+                item = item.model_copy(update={"degree_level": None, "study_mode": None})
+                warnings.append(
+                    ImportPreviewWarning(
+                        group=collection,
+                        index=index,
+                        code="FIELD_NOT_IN_QUOTE",
+                        fields=["degree_level", "study_mode"],
+                        message="学历层次和学习形式由本人明确确认，未采用模型推断；原学历描述保留。",
+                    )
+                )
             try:
                 _check_sourced_item(group_names[collection], index, item, text, allow_deviation=False)
             except ValidationFailedError:
@@ -1046,12 +1065,8 @@ def _parse_preview_candidate(
             },
         )
     valid_item_count = sum(len(items) for items in accepted.values())
-    unmapped_field_count = sum(
-        len(warning.fields) for warning in warnings if warning.code == "UNMAPPED_MODEL_FIELD"
-    )
-    excluded_field_count = sum(
-        len(warning.fields) for warning in warnings if warning.code == "FIELD_NOT_IN_QUOTE"
-    )
+    unmapped_field_count = sum(len(warning.fields) for warning in warnings if warning.code == "UNMAPPED_MODEL_FIELD")
+    excluded_field_count = sum(len(warning.fields) for warning in warnings if warning.code == "FIELD_NOT_IN_QUOTE")
     completeness = ImportPreviewCompleteness(
         status="PARTIAL" if rejected or warnings else "COMPLETE",
         valid_item_count=valid_item_count,
@@ -1406,9 +1421,7 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
         if not created_profile
         else set()
     )
-    existing_projects: set[str] = (
-        {item.name.casefold() for item in profile.projects} if not created_profile else set()
-    )
+    existing_projects: set[str] = {item.name.casefold() for item in profile.projects} if not created_profile else set()
     existing_educations: set[tuple[str, str]] = (
         {(item.school.casefold(), (item.major or "").casefold()) for item in profile.educations}
         if not created_profile
@@ -1492,6 +1505,8 @@ async def apply(session: AsyncSession, payload: ImportConfirmRequest) -> ImportA
                 school=item.school,
                 major=item.major,
                 degree=item.degree,
+                degree_level=item.degree_level,
+                study_mode=item.study_mode,
                 start_date=item.start_date,
                 end_date=item.end_date,
                 source_evidence_id=source_evidence("education", index),

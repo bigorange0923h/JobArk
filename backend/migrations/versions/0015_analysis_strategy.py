@@ -46,9 +46,9 @@ def downgrade() -> None:
     op.execute("""DO $$ BEGIN
         IF EXISTS (SELECT 1 FROM profile_preferences WHERE target_roles <> '[]'::jsonb
             OR priority_rules <> '[]'::jsonb OR hard_limits NOT IN ('{}'::jsonb,
-            '{"location":false,"employment_type":false,"remote":false,"salary":false,"salary_basis":null}'::jsonb))
+            jsonb_build_object('location', false, 'employment_type', false, 'remote', false, 'salary', false, 'salary_basis', NULL)))
             OR EXISTS (SELECT 1 FROM match_results WHERE parse_result_id IS NOT NULL)
-            OR EXISTS (SELECT 1 FROM job_opportunities WHERE work_terms NOT IN ('{}'::jsonb, '{"remote_mode":null,"salary":null}'::jsonb)) THEN
+            OR EXISTS (SELECT 1 FROM job_opportunities WHERE work_terms NOT IN ('{}'::jsonb, jsonb_build_object('remote_mode', NULL, 'salary', NULL))) THEN
             RAISE EXCEPTION 'analysis inputs exist; downgrade refused';
         END IF;
     END $$""")

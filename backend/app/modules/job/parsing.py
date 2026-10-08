@@ -16,7 +16,7 @@ from app.core.errors import AppError, ConflictError, ResourceNotFoundError, Vali
 from app.core.responses import ApiResponse, ORMModel, success
 
 from . import strategy
-from .analysis import JDAnalysis, parse_jd
+from .analysis import PARSER_VERSION, JDAnalysis, parse_jd, validate_source
 from .models import JobParseResult, JobPosting, JobSnapshot
 
 router = APIRouter(prefix="/job-snapshots", tags=["job"])
@@ -84,17 +84,13 @@ async def parse_snapshot(session: SessionDep, snapshot_id: UUID, payload: ParseR
                     JDAnalysis.model_json_schema(),
                 )
             )
-        if any(
-            not item.source_quote.strip() or item.source_quote not in raw or item.text != item.source_quote
-            for item in result.requirements
-        ):
-            raise ValueError("unverified quote")
+        validate_source(result, raw)
     except AppError, ValidationError, ValueError:
         failure = "JD_PARSE_FAILED"
         result = None
     entity = JobParseResult(
         job_snapshot_id=snapshot_id,
-        parser_version="literal-lines-v2" if payload.engine == "LOCAL" else "ai-quotes-v1",
+        parser_version=PARSER_VERSION if payload.engine == "LOCAL" else "ai-conditions-v2",
         status="FAILED" if failure else "PARSED",
         result_json=result.model_dump() if result else None,
         failure_code=failure,

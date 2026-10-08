@@ -11,7 +11,7 @@ from app.core.errors import ValidationFailedError
 from app.modules.job.analysis import JDAnalysis
 from app.modules.job.exclusions import EvaluationInput, ExclusionRule, evaluate, normalize_name
 
-SCORING_VERSION = "six-dimensions-v1"
+SCORING_VERSION = "six-dimensions-v2"
 DIMENSIONS = Literal["SKILL", "RESPONSIBILITY", "ADMISSION", "SALARY", "LOCATION", "DIRECTION"]
 WEIGHTS: dict[DIMENSIONS, float] = {
     "SKILL": 3.0,
@@ -95,6 +95,10 @@ class Condition(BaseModel):
     status: Literal["KNOWN", "UNKNOWN", "NOT_APPLICABLE"] = "UNKNOWN"
     ratio: float | None = None
     fact_ids: list[str] = Field(default_factory=list)
+    fact_quotes: list[str] = Field(default_factory=list, description="与事实 ID 对齐的判断摘录。")
+    relation: Literal["SINGLE", "AND", "OR"] = "SINGLE"
+    source_start: int | None = None
+    source_end: int | None = None
     explanation: str = "缺少足够资料；未知不等于不满足。"
 
     @model_validator(mode="after")
@@ -163,12 +167,12 @@ def conditions(parsed: JDAnalysis) -> list[Condition]:
         if item.kind == "BENEFIT" or item.category in {"SALARY", "LOCATION"}:
             continue
         dimension: DIMENSIONS = (
-            "RESPONSIBILITY"
+            "ADMISSION"
+            if item.category in {"EDUCATION", "EXPERIENCE", "ADMISSION"}
+            else "RESPONSIBILITY"
             if item.kind == "RESPONSIBILITY"
             else "SKILL"
             if item.category == "SKILL"
-            else "ADMISSION"
-            if item.category in {"EDUCATION", "EXPERIENCE", "ADMISSION"}
             else "RESPONSIBILITY"
         )
         identity = (dimension, normalize_name(item.source_quote))
@@ -183,6 +187,9 @@ def conditions(parsed: JDAnalysis) -> list[Condition]:
                 source_quote=item.source_quote,
                 importance="REQUIRED" if item.hard else "BONUS" if item.kind == "BONUS" else "NORMAL",
                 hard=item.hard,
+                relation=item.relation,
+                source_start=item.source_start,
+                source_end=item.source_end,
             )
         )
     for dimension in WEIGHTS:
@@ -192,8 +199,12 @@ def conditions(parsed: JDAnalysis) -> list[Condition]:
                     id=f"c{len(rows)}",
                     dimension=dimension,
                     text=f"{dimension} 信息",
-                    status="NOT_APPLICABLE" if dimension == "ADMISSION" else "UNKNOWN",
-                    explanation="当次解析未识别明确准入要求。" if dimension == "ADMISSION" else "JD 或策略信息缺失。",
+                    status="NOT_APPLICABLE"
+                    if dimension == "ADMISSION" and parsed.admission_status == "NONE"
+                    else "UNKNOWN",
+                    explanation="原文明确无准入要求。"
+                    if dimension == "ADMISSION" and parsed.admission_status == "NONE"
+                    else "JD 或策略信息缺失；解析未识别不等于明确不存在。",
                 )
             )
     return rows
@@ -246,6 +257,9 @@ def apply_assessments(
         ):
             # 技能记录无法独立证明职责、熟练度或年限；仅名称对应最多支持相关背景。
             item = item.model_copy(update={"ratio": 0.25})
+        if row.relation == "OR":
+            # 本轮没有实现组内替代项的独立证明，不能把整体低分当作硬冲突。
+            item = item.model_copy(update={"ratio": None, "explanation": "替代条件需逐项核对，当前保持未知。"})
         updates[item.condition_id] = item
     return [
         row.model_copy(
@@ -253,6 +267,7 @@ def apply_assessments(
                 "ratio": updates[row.id].ratio,
                 "status": "KNOWN" if updates[row.id].ratio is not None else "UNKNOWN",
                 "fact_ids": updates[row.id].fact_ids,
+                "fact_quotes": updates[row.id].fact_quotes,
                 "explanation": updates[row.id].explanation,
             }
         )
@@ -291,32 +306,56 @@ def strategy_conditions(
             ratio = employment_ratio(str(actual) if actual else None, [str(value) for value in options])
         checks.append(("LOCATION", name, ratio, bool(hard.get(name))))
     salary: dict[str, Any] = job.get("salary") or {}
-    minimum = preference.get("salary_min")
-    ratio = None
-    if (
-        minimum is not None
-        and salary.get("currency") == preference.get("salary_currency")
+    target = preference.get("salary_min")
+    floor = preference.get("acceptable_salary_min")
+    # 原硬限制以 salary_min 为底线；新增独立底线为空时保留原行为，不改写旧偏好。
+    if floor is None and hard.get("salary"):
+        floor = target
+    comparable = (
+        salary.get("currency") == preference.get("salary_currency")
+        and bool(preference.get("salary_currency"))
         and salary.get("period") == "MONTH"
-        and salary.get("basis")
+        and bool(salary.get("basis"))
         and salary.get("basis") == hard.get("salary_basis")
-    ):
-        if salary.get("max") is not None and salary["max"] < minimum:
-            ratio = 0.0
-        elif salary.get("min") is not None and salary["min"] >= minimum:
-            ratio = 1.0
-    checks.append(("SALARY", "salary", ratio, bool(hard.get("salary"))))
-    roles: list[str] = preference.get("target_roles") or []
-    role_decision = (
-        evaluate(
-            [ExclusionRule(id=f"r{i}", kind="JD_KEYWORD", value=value) for i, value in enumerate(roles)],
-            EvaluationInput(
-                company_name="", nature_code=None, industry_code=None, outsourcing_arrangement=None, raw_jd=jd
-            ),
-        )
-        if roles
-        else None
     )
-    direction = 0.25 if role_decision and role_decision.verdict == "EXCLUDED" else None
+    low, high = salary.get("min"), salary.get("max")
+    floor_ratio = None
+    if comparable and floor is not None:
+        if high is not None and high < floor:
+            floor_ratio = 0.0
+        elif low is not None and low >= floor:
+            floor_ratio = 1.0
+    ratio = None
+    if comparable and target is not None:
+        if low is not None and low >= target:
+            ratio = 1.0
+        elif high is not None and high < target:
+            ratio = 0.5 if floor_ratio == 1 else 0.0 if floor is None or floor_ratio == 0 else None
+    checks.append(("SALARY", "salary", ratio, False))
+    if hard.get("salary"):
+        checks.append(("SALARY", "salary_floor", floor_ratio, True))
+    roles: list[str] = preference.get("target_roles") or []
+    keywords: list[str] = preference.get("role_keywords") or []
+    title = str(job.get("title") or "")
+
+    def matching_terms(terms: list[str], content: str) -> list[str]:
+        """复用边界与否定处理，只保留确定的字面方向线索。"""
+        return [
+            term
+            for i, term in enumerate(terms)
+            if evaluate(
+                [ExclusionRule(id=f"r{i}", kind="JD_KEYWORD", value=term)],
+                EvaluationInput(
+                    company_name="", nature_code=None, industry_code=None, outsourcing_arrangement=None, raw_jd=content
+                ),
+            ).verdict
+            == "EXCLUDED"
+        ]
+
+    title_hits = matching_terms(roles, title)
+    body_hits = matching_terms(roles, jd)
+    keyword_hits = matching_terms(keywords, jd)
+    direction = 0.75 if title_hits else 0.5 if body_hits else 0.25 if roles and keyword_hits else None
     checks.append(("DIRECTION", "target_roles", direction, False))
     retained = [row for row in rows if row.dimension not in {"LOCATION", "SALARY", "DIRECTION"}]
     for dimension, name, ratio, is_hard in checks:
@@ -329,13 +368,39 @@ def strategy_conditions(
             Condition(
                 id=f"strategy-{name}",
                 dimension=dimension,
-                text=name,
+                text={
+                    "location": "目标地点",
+                    "employment_type": "雇佣类型",
+                    "remote": "工作方式",
+                    "salary": "期望月薪区间",
+                    "salary_floor": "最低可接受月薪",
+                    "target_roles": "职业方向",
+                }[name],
                 hard=is_hard,
                 status="NOT_APPLICABLE" if not_applicable else "KNOWN" if ratio is not None else "UNKNOWN",
                 ratio=ratio,
-                explanation="依据已保存字段与当次策略比较；职业方向仅为字面对应。"
-                if ratio is not None
-                else "缺少同口径或已确认信息。",
+                explanation=(
+                    f"职位标题方向线索：{', '.join(title_hits)}；仍需核对具体职责。"
+                    if name == "target_roles" and title_hits
+                    else f"JD 方向线索：{', '.join(body_hits)}；不能证明完整方向适合。"
+                    if name == "target_roles" and body_hits
+                    else f"仅补充关键词线索：{', '.join(keyword_hits)}。"
+                    if name == "target_roles" and roles and keyword_hits
+                    else "达到最低可接受月薪，低于期望区间。"
+                    if name == "salary" and ratio == 0.5
+                    else "同口径月薪达到期望下限；高于期望上界不扣分。"
+                    if name == "salary" and ratio == 1
+                    else "同口径月薪低于期望下限；这是软偏好比较，不自动排除。"
+                    if name == "salary" and ratio == 0
+                    else "依据已保存字段与当次策略比较。"
+                    if ratio is not None
+                    else "缺少同口径或已确认信息；区间跨底线也需确认。"
+                )
+                + (
+                    f" 期望月薪区间：{target}–{preference.get('salary_max') or '未设上界'}。"
+                    if name == "salary"
+                    else ""
+                ),
             )
         )
     return retained, conflicts, unknowns
