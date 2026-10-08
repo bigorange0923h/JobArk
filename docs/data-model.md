@@ -290,3 +290,11 @@ AI 配置是基础设施子域而不是业务事实，独立于 Profile/Resume/J
 ## 2026-10-07 分析范围修订
 
 本轮以 [JD 分析正式需求](requirements/jd-analysis.md) 和 ADR 0007 为准。允许新 schema 的可解释 10 分参考区间；旧 overall_score 保持 null，不回填。未知不计零，硬限制优先，禁止录用概率、无依据总分和自动淘汰。JobOpportunity.company_id/title 可空，Company.name 仍必填，不建占位公司。ProfilePreference 增加有版本的目标方向、显式硬限制口径和优先名单；旧偏好不升级为硬限制。MatchResult 增加可空成功解析引用，报告 JSON 冻结必要策略、条件与算法/模型版本并记录内容指纹。公司公开报告及来源归 Job，独立不可变，不改变确认分类或能力分。外发确认和事务边界沿用既有约束；自动采集、调度、外部投递不在本轮实现范围。本文是后续范围决策，不是实现或真实运行验收声明。
+
+## 2026-10-07 JD 可靠性增量
+
+迁移 0017：profile_educations 新增可空 degree_level（HIGH_SCHOOL/ASSOCIATE/BACHELOR/MASTER/DOCTOR/OTHER）及 study_mode（FULL_TIME/PART_TIME/OTHER），旧 degree 原文不修改。结构化学历只来自用户确认，不自动拆分历史文本；导入预览不采用模型猜测，用户补录转本人陈述。新字段进入 ProfileRevision，修改仍按既有内容归因规则执行。
+
+profile_preferences 新增 role_keywords JSONB 默认 []、acceptable_salary_min 可空非负整数。target_roles 表示意愿，role_keywords 表示补充线索；期望 salary_min/max 与最低可接受月薪不同，独立底线不得高于期望下限。原硬薪资限制未设置独立底线时继续以 salary_min 比较。学习形式、底线、技术栈与工作关联不自动填写。
+
+JobParseResult.result_json 增加 admission_status、source_start/end、relation/group_id、experience_subject；保留旧解析兼容。MatchResult 继续 report schema jd-analysis-v2，通过 scoring/prompt/parser 版本区分计算逻辑，新增事实 fact_quotes、source_support 与 data_warnings。不新增报告表或修改历史报告。0017 新字段已有数据时拒绝 downgrade，空值时可退回 0016。

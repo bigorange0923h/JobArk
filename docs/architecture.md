@@ -231,3 +231,9 @@ JobArk/
 ## 2026-10-07 分析范围修订
 
 本轮以 [JD 分析正式需求](requirements/jd-analysis.md) 和 ADR 0007 为准。允许新 schema 的可解释 10 分参考区间；旧 overall_score 保持 null，不回填。未知不计零，硬限制优先，禁止录用概率、无依据总分和自动淘汰。JobOpportunity.company_id/title 可空，Company.name 仍必填，不建占位公司。ProfilePreference 增加有版本的目标方向、显式硬限制口径和优先名单；旧偏好不升级为硬限制。MatchResult 增加可空成功解析引用，报告 JSON 冻结必要策略、条件与算法/模型版本并记录内容指纹。公司公开报告及来源归 Job，独立不可变，不改变确认分类或能力分。外发确认和事务边界沿用既有约束；自动采集、调度、外部投递不在本轮实现范围。本文是后续范围决策，不是实现或真实运行验收声明。
+
+## JD 可靠性调整（2026-10-07）
+
+Job 的 literal-conditions-v3 只做保守条件拆分和位置记录；OR 作为整体待确认，未提取准入不能推断不适用。Matching 的 six-dimensions-v2 继续固定六维权重，独立比较薪资期望与可接受底线，方向分别记录标题/正文/补充关键词线索。模型不得修改方向/薪资门禁，也不能把总工龄变成特定技术工龄。
+
+Profile 拥有显式 degree_level/study_mode 和策略 role_keywords/acceptable_salary_min；0017 增量迁移不回填旧内容。学历确认通过 API、导入候选的本人填写、日常表单和修订贯通。来源支持与独立核验分开，报告保存逐项事实摘录、来源支持程度和可行动资料提示；历史报告保持不可变。修改计划见 implementation/jd-analysis-refinement-plan.md。
