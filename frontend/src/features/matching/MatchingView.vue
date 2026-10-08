@@ -11,7 +11,7 @@ import { resolveActionFailure } from '@/shared/feedback/failureNotice'
 import { parseServerError, type ParsedServerError } from '@/shared/forms/serverErrors'
 import CompanyResearchPanel from '@/features/job/CompanyResearchPanel.vue'
 import { listAiProviders } from '@/shared/api/ai'
-interface Report { id: string; created_at: string; match_kind: string; job_snapshot_id: string; profile_revision_id: string; resume_version_id: string | null; is_stale?: boolean | null; report_json: { reference_score?: { lower: number; upper: number; coverage: number; single_score: number | null; recommendation: string; conditions: { id: string; dimension: string; text: string; status: string; ratio: number | null; weight: number; explanation: string }[] }; decision?: { verdict: string }; priority?: { matched: boolean }; preparation?: string[]; questions?: string[]; requirements: { text: string; hard: boolean; status: string; explanation: string; evidence: { fact_id: string; name: string; claim_status: string; evidence_title?: string }[] }[]; uncertainties: string[] } }
+interface Report { id: string; created_at: string; match_kind: string; job_snapshot_id: string; profile_revision_id: string; resume_version_id: string | null; is_stale?: boolean | null; report_json: { reference_score?: { lower: number; upper: number; coverage: number; single_score: number | null; recommendation: string; conditions: { id: string; dimension: string; text: string; status: string; ratio: number | null; weight: number; explanation: string }[] }; decision?: { verdict: string }; priority?: { matched: boolean }; preparation?: string[]; questions?: string[]; data_warnings?: string[]; requirements: { text: string; hard: boolean; status: string; explanation: string; evidence: { fact_id: string; name: string; claim_status: string; evidence_title?: string; fact_quote?: string | null; source_support?: string }[] }[]; uncertainties: string[] } }
 interface ParseResult { id: string; status: string }
 const route = useRoute()
 const useSavedProfile = ref(true)
@@ -173,7 +173,7 @@ watch(snapshotId, async selected => {
 <template>
   <section class="matching-view">
     <header class="page-header"><div><p class="page-eyebrow">MATCHING</p><h1>匹配分析</h1><p class="page-subtitle">逐条核对职位条件、证据与未知项。</p></div><a-button data-testid="reload" @click="load">刷新</a-button></header>
-    <a-alert type="info" show-icon message="匹配报告是辅助判断" description="当前使用本地字面检索：命中的只说明档案里有这条技能事实（其中包含本人填写、未验证的内容），不代表能力、熟练度、年限或整项条件已核实，也不代表录用概率。" class="section-gap" data-testid="matching-boundary" />
+    <a-alert type="info" show-icon message="匹配报告是辅助判断" description="本地分析提供有限字面线索；大模型逐项评估也需核对事实出处。缺记录不等于不满足，引用不代表独立核验，参考区间不代表录用概率。" class="section-gap" data-testid="matching-boundary" />
     <a-alert v-if="loadError" type="error" show-icon :message="loadError.message" :description="loadErrorDescription" class="section-gap" data-testid="load-error" role="alert"><template #action><a-button size="small" data-testid="retry-load" @click="load">重新加载</a-button></template></a-alert>
     <a-alert v-if="actionError" type="error" show-icon closable :message="actionError.message" :description="actionErrorDescription" class="section-gap" data-testid="action-error" role="alert" @close="actionError = null" />
     <a-card title="生成报告" class="section-gap">
@@ -199,6 +199,7 @@ watch(snapshotId, async selected => {
           <a-alert v-if="report.is_stale" type="warning" message="相关输入已变化，这是历史报告；请重新分析。" />
           <template v-if="report.report_json.reference_score">
             <h3>{{ report.report_json.reference_score.recommendation }}</h3>
+            <a-alert v-if="report.report_json.data_warnings?.length" type="info" message="建议补充资料（选填缺失不代表能力不足）" data-testid="data-warnings"><template #description><ul><li v-for="note in report.report_json.data_warnings" :key="note">{{ note }}</li></ul><RouterLink to="/profile">补充个人资料</RouterLink> · <RouterLink to="/strategy">核对求职策略</RouterLink></template></a-alert>
             <p data-testid="reference-score">{{ report.report_json.reference_score.single_score === null ? '暂不能可靠给出单一分数' : `参考分 ${report.report_json.reference_score.single_score.toFixed(1)} / 10` }} · 范围 {{ report.report_json.reference_score.lower.toFixed(1) }}–{{ report.report_json.reference_score.upper.toFixed(1) }} / 10 · 覆盖率 {{ (report.report_json.reference_score.coverage * 100).toFixed(0) }}%</p>
             <p>策略：{{ report.report_json.decision?.verdict }} · {{ report.report_json.priority?.matched ? '优先名单命中（不抵消限制、不加分）' : '未命中优先名单' }}</p>
             <a-list :data-source="report.report_json.reference_score.conditions"><template #renderItem="{ item }"><a-list-item>{{ item.dimension }} · {{ item.text }} · 权重 {{ item.weight.toFixed(2) }} · {{ item.status === 'UNKNOWN' ? '待确认' : item.ratio }}：{{ item.explanation }}</a-list-item></template></a-list>
@@ -206,13 +207,15 @@ watch(snapshotId, async selected => {
           </template>
           <a-table :columns="requirementColumns" :data-source="report.report_json.requirements" :pagination="false" size="small" :row-key="(_row: unknown, index: number) => index">
             <template #bodyCell="{ column, record }">
-              <template v-if="column.key === 'text'"><a-tag v-if="record.hard" color="orange">硬性条件</a-tag>{{ record.text }}</template>
+              <template v-if="column.key === 'text'"><a-tag v-if="record.hard" color="orange">硬性条件</a-tag><a-tag v-if="record.relation === 'OR'">替代条件（待确认）</a-tag>{{ record.text }}<div v-if="record.source_start != null" class="muted">原文字符位置：{{ record.source_start }}–{{ record.source_end }}</div></template>
               <template v-else-if="column.key === 'evidence'">
                 <span v-if="!record.evidence.length" class="muted">未找到档案事实</span>
                 <!-- 命中事实的状态与来源逐条显示：读者据此判断可信度，而不是把它当作已核实。 -->
                 <div v-for="e in record.evidence" v-else :key="e.fact_id" class="matched-fact">
                   <div>{{ e.name }} · {{ claimStatusLabel(e.claim_status) }}</div>
                   <div class="muted">{{ evidenceSourceLabel(e) }}</div>
+                  <div v-if="e.fact_quote" class="muted">判断摘录：{{ e.fact_quote }}</div>
+                  <div v-if="e.source_support" class="muted">{{ e.source_support === 'EXCERPT_SUPPORTED' ? '来源摘录支持这一片段，能力仍未独立核验' : e.source_support === 'SOURCE_ATTACHED' ? '有关联来源，当前摘录未覆盖这一判断' : '本人陈述' }}</div>
                 </div>
               </template>
               <template v-else-if="column.key === 'explanation'">

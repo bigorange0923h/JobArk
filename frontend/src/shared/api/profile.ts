@@ -34,6 +34,11 @@ export type VerificationStatus = 'VERIFIED' | 'UNVERIFIED' | 'UNCERTAIN'
 /** 技能熟练度，仅用于展示与排序，不构成事实主张。 */
 export type SkillProficiency = 'BASIC' | 'INTERMEDIATE' | 'ADVANCED' | 'EXPERT'
 
+/** 本人确认的学历层次，旧文本不自动回填。 */
+export type DegreeLevel = 'HIGH_SCHOOL' | 'ASSOCIATE' | 'BACHELOR' | 'MASTER' | 'DOCTOR' | 'OTHER'
+/** 本人确认的学习形式；留空表示未知。 */
+export type StudyMode = 'FULL_TIME' | 'PART_TIME' | 'OTHER'
+
 /** 远程工作偏好。 */
 export type RemotePreference = 'ANY' | 'ONSITE' | 'HYBRID' | 'REMOTE'
 
@@ -104,6 +109,8 @@ export interface Education extends EditableResource {
   school: string
   major: string | null
   degree: string | null
+  degree_level?: DegreeLevel | null
+  study_mode?: StudyMode | null
   start_date: string | null
   end_date: string | null
   source_evidence_id: string | null
@@ -120,6 +127,8 @@ export interface Language extends EditableResource {
 /** 求职偏好；属于可变规则，不是履历事实。 */
 export interface Preference extends EditableResource {
   target_roles?: string[]
+  role_keywords?: string[]
+  acceptable_salary_min?: number | null
   hard_limits?: HardLimits
   priority_rules?: PriorityRule[]
   target_locations: string[]
@@ -207,6 +216,8 @@ export interface SourcedEducation {
   school: string
   major: string | null
   degree: string | null
+  degree_level?: DegreeLevel | null
+  study_mode?: StudyMode | null
   start_date: string | null
   end_date: string | null
 }
@@ -347,6 +358,8 @@ export interface EducationInput {
   school: string
   major?: string | null
   degree?: string | null
+  degree_level?: DegreeLevel | null
+  study_mode?: StudyMode | null
   start_date?: string | null
   end_date?: string | null
   source_evidence_id?: string | null
@@ -363,6 +376,8 @@ export interface LanguageInput {
 /** 求职偏好的整体替换请求体。 */
 export interface PreferenceInput {
   target_roles?: string[]
+  role_keywords?: string[]
+  acceptable_salary_min?: number | null
   hard_limits?: HardLimits
   priority_rules?: PriorityRule[]
   target_locations?: string[]

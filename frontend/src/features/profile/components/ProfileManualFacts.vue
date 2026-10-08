@@ -108,6 +108,8 @@ function payloadFor(key: ProfileFactKey, item: FactItem): SkillInput | Experienc
   }
   return {
     school: text(item, 'school'), major: optional(item, 'major'), degree: optional(item, 'degree'),
+    degree_level: item['degree_level'] as EducationInput['degree_level'] ?? null,
+    study_mode: item['study_mode'] as EducationInput['study_mode'] ?? null,
     start_date: optional(item, 'start_date'), end_date: optional(item, 'end_date'),
     source_evidence_id: optional(item, 'source_evidence_id'),
   }
@@ -149,8 +151,11 @@ async function saveItem(key: ProfileFactKey, item: FactItem): Promise<void> {
     const api = apiFor(key)
     const payload = payloadFor(key, item) as unknown as Record<string, unknown>
     const id = item['id']
+    // 新学历确认字段由本人填写；更新时让后端重新归因，不能用旧摘录给新确认内容背书。
+    const updatePayload = { ...payload }
+    if (key === 'educations') delete updatePayload['source_evidence_id']
     const persisted = typeof id === 'string'
-      ? await api.update(id, { ...payload, version: Number(item['version']) })
+      ? await api.update(id, { ...updatePayload, version: Number(item['version']) })
       : await api.create(payload)
     if (!rows.value[key].includes(item)) return
     item['id'] = persisted['id']

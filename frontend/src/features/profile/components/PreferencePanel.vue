@@ -42,6 +42,8 @@ const salaryCurrency = ref('')
 const remotePreference = ref<string | null>(null)
 const exclusions = ref<string[]>([])
 const targetRoles = ref<string[]>([])
+const roleKeywords = ref<string[]>([])
+const acceptableSalaryMin = ref<number | null>(null)
 const hardLimits = ref<HardLimits>({ location: false, employment_type: false, remote: false, salary: false, salary_basis: null })
 const priorityRules = ref<PriorityRule[]>([])
 const priorityValue = ref('')
@@ -84,6 +86,8 @@ watch(
     remotePreference.value = preference?.remote_preference ?? null
     exclusions.value = preference?.exclusions ?? []
     targetRoles.value = [...(preference?.target_roles ?? [])]
+    roleKeywords.value = [...(preference?.role_keywords ?? [])]
+    acceptableSalaryMin.value = preference?.acceptable_salary_min ?? null
     hardLimits.value = { location: false, employment_type: false, remote: false, salary: false, salary_basis: null, ...preference?.hard_limits }
     priorityRules.value = (preference?.priority_rules ?? []).map(rule => ({ ...rule }))
     fieldErrors.value = {}
@@ -107,6 +111,8 @@ async function submit(): Promise<void> {
       remote_preference: (remotePreference.value as RemotePreference | null) ?? null,
       exclusions: exclusions.value,
       target_roles: targetRoles.value,
+      role_keywords: roleKeywords.value,
+      acceptable_salary_min: acceptableSalaryMin.value,
       hard_limits: hardLimits.value,
       priority_rules: priorityRules.value,
     }
@@ -153,11 +159,13 @@ async function submit(): Promise<void> {
     />
 
     <a-form layout="vertical">
-      <a-form-item label="目标方向 / 岗位关键词" extra="本人明确声明；留空不从履历推测职业意愿。"><a-select v-model:value="targetRoles" mode="tags" data-testid="target-roles" /></a-form-item>
+      <a-form-item label="目标岗位方向" :help="fieldErrors['target_roles']" :validate-status="fieldErrors['target_roles'] === undefined ? undefined : 'error'" extra="本人明确声明，例如 AI应用开发、Java后端；结合职位标题和职责核对，留空不推测意愿。"><a-select v-model:value="targetRoles" mode="tags" data-testid="target-roles" /></a-form-item>
+      <a-form-item label="补充方向关键词" :help="fieldErrors['role_keywords']" :validate-status="fieldErrors['role_keywords'] === undefined ? undefined : 'error'" extra="例如 RAG、Agent；只作为方向线索，不代替目标岗位。"><a-select v-model:value="roleKeywords" mode="tags" data-testid="role-keywords" /></a-form-item>
+      <a-form-item label="最低可接受月薪（选填）" :validate-status="fieldErrors['acceptable_salary_min'] === undefined ? undefined : 'error'" :help="fieldErrors['acceptable_salary_min'] ?? '独立于期望区间；留空且启用硬限制时沿用原期望下限。'"><a-input-number v-model:value="acceptableSalaryMin" :min="0" data-testid="acceptable-salary-min" /></a-form-item>
       <a-form-item label="硬限制（默认关闭）" extra="开启后未知信息须先确认；旧偏好保持软偏好。">
         <a-space wrap><a-checkbox v-model:checked="hardLimits.location">地点</a-checkbox><a-checkbox v-model:checked="hardLimits.employment_type">雇佣类型</a-checkbox><a-checkbox v-model:checked="hardLimits.remote">工作方式</a-checkbox><a-checkbox v-model:checked="hardLimits.salary">最低月薪</a-checkbox></a-space>
       </a-form-item>
-      <a-form-item label="薪资比较口径" extra="税口径未知不做确定比较。"><a-select v-model:value="hardLimits.salary_basis" allow-clear :options="[{ value: 'GROSS', label: '税前' }, { value: 'NET', label: '税后' }]" /></a-form-item>
+      <a-form-item label="薪资比较口径" :help="fieldErrors['hard_limits.salary_basis']" :validate-status="fieldErrors['hard_limits.salary_basis'] === undefined ? undefined : 'error'" extra="税口径未知不做确定比较。"><a-select v-model:value="hardLimits.salary_basis" allow-clear :options="[{ value: 'GROSS', label: '税前' }, { value: 'NET', label: '税后' }]" /></a-form-item>
       <a-form-item label="优先名单" extra="任一命中表示优先关注；不增加适配分，也不抵消黑名单。">
         <a-space wrap><a-select v-model:value="priorityKind" :options="[{ value: 'COMPANY_NAME', label: '完整公司名' }, { value: 'COMPANY_INDUSTRY', label: '确认行业代码' }, { value: 'JD_KEYWORD', label: '岗位关键词' }]" /><a-input v-model:value="priorityValue" :maxlength="200" /><a-button @click="addPriority">添加优先规则</a-button></a-space>
         <div v-for="(rule, index) in priorityRules" :key="rule.id"><a-checkbox v-model:checked="rule.enabled">{{ rule.value }}</a-checkbox><a-button type="link" @click="priorityRules.splice(index, 1)">移除</a-button></div>
@@ -193,7 +201,7 @@ async function submit(): Promise<void> {
       <a-row :gutter="16">
         <a-col :xs="24" :md="8">
           <a-form-item
-            label="薪资下限（月）"
+            label="期望月薪下限"
             :help="fieldErrors['salary_min']"
             :validate-status="fieldErrors['salary_min'] === undefined ? undefined : 'error'"
           >
@@ -202,7 +210,7 @@ async function submit(): Promise<void> {
         </a-col>
         <a-col :xs="24" :md="8">
           <a-form-item
-            label="薪资上限（月）"
+            label="期望月薪上限（更高不扣分）"
             :help="fieldErrors['salary_max']"
             :validate-status="fieldErrors['salary_max'] === undefined ? undefined : 'error'"
           >

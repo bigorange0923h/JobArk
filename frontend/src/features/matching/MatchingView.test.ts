@@ -48,6 +48,29 @@ beforeEach(() => {
 })
 
 describe('MatchingView', () => {
+  it('新报告展示补充入口和出处支持程度，不把关联来源当作独立核验', async () => {
+    vi.mocked(requestV1).mockImplementation(async path => {
+      if (path === '/matches') return [{ id: 'report', created_at: '2026-01-01', match_kind: 'PROFILE',
+        job_snapshot_id: 'snapshot', profile_revision_id: 'revision', resume_version_id: null,
+        report_json: { reference_score: { lower: 2, upper: 8, coverage: 0.3, single_score: null,
+          recommendation: '先补充/确认信息', conditions: [] }, data_warnings: ['请确认薪资口径'],
+          requirements: [{ text: '本科或相关经验', relation: 'OR', source_start: 0, source_end: 8, hard: false,
+            status: 'UNKNOWN', explanation: '需核对', evidence: [{ fact_id: 'fact', name: '项目',
+              claim_status: 'UNVERIFIED', evidence_title: '简历摘录', fact_quote: '核心开发', source_support: 'SOURCE_ATTACHED' }] }],
+          uncertainties: [] } }] as never
+      return [] as never
+    })
+    const wrapper = mount(MatchingView, { global: { stubs: { RouterLink: { props: ['to'], template: '<a :href="to"><slot /></a>' } } } })
+    await flushPromises()
+    await wrapper.get('.ant-collapse-header').trigger('click')
+    await flushPromises()
+    expect(wrapper.get('[data-testid="data-warnings"]').text()).toContain('请确认薪资口径')
+    expect(wrapper.text()).toContain('有关联来源，当前摘录未覆盖这一判断')
+    expect(wrapper.text()).toContain('替代条件（待确认）')
+    expect(wrapper.find('a[href="/profile"]').exists()).toBe(true)
+    expect(wrapper.find('a[href="/strategy"]').exists()).toBe(true)
+    wrapper.unmount()
+  })
   it('默认明确当前 JD，当前缺失时不以历史首项兜底', async () => {
     vi.mocked(fetchJob).mockResolvedValue({ latest_snapshot: { id: 'current', posting_id: 'source', captured_at: '2026-01-01T00:00:00Z' } } as never)
     vi.mocked(listSnapshots).mockResolvedValue([{ id: 'history', captured_at: '2026-02-01T00:00:00Z' }, { id: 'current', captured_at: '2026-01-01T00:00:00Z' }] as never)

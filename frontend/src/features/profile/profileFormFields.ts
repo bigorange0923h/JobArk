@@ -7,7 +7,7 @@ export type ProfileFactKey = 'skills' | 'experiences' | 'projects' | 'educations
  * 日固定为 1——与既有约定（原文只写年月时，缺失的月/日以 1 补位）保持一致，
  * 后端与数据库无需改动。
  */
-export type ProfileFactFieldKind = 'text' | 'textarea' | 'date' | 'month' | 'degree' | 'experience' | 'tags'
+export type ProfileFactFieldKind = 'text' | 'textarea' | 'date' | 'month' | 'degree' | 'experience' | 'tags' | 'select'
 
 export interface ProfileFactField {
   name: string
@@ -15,6 +15,7 @@ export interface ProfileFactField {
   kind: ProfileFactFieldKind
   required?: boolean
   wide?: boolean
+  options?: { value: string; label: string }[]
 }
 
 export interface ProfileFactSection {
@@ -68,7 +69,15 @@ export const PROFILE_FACT_SECTIONS: readonly ProfileFactSection[] = [
     fields: [
       { name: 'school', label: '学校', kind: 'text', required: true },
       { name: 'major', label: '专业', kind: 'text' },
-      { name: 'degree', label: '学历/学位', kind: 'degree' },
+      { name: 'degree', label: '学历/学位原文', kind: 'degree' },
+      { name: 'degree_level', label: '确认学历层次（可留空）', kind: 'select', options: [
+        { value: 'HIGH_SCHOOL', label: '高中/中专' }, { value: 'ASSOCIATE', label: '大专' },
+        { value: 'BACHELOR', label: '本科' }, { value: 'MASTER', label: '硕士' },
+        { value: 'DOCTOR', label: '博士' }, { value: 'OTHER', label: '其他' },
+      ] },
+      { name: 'study_mode', label: '确认学习形式（可留空）', kind: 'select', options: [
+        { value: 'FULL_TIME', label: '全日制' }, { value: 'PART_TIME', label: '非全日制' }, { value: 'OTHER', label: '其他' },
+      ] },
       { name: 'start_date', label: '开始日期', kind: 'date' },
       { name: 'end_date', label: '结束日期', kind: 'date' },
     ],

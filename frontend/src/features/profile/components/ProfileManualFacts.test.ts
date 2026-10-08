@@ -3,10 +3,34 @@
 import { enableAutoUnmount, flushPromises, mount } from '@vue/test-utils'
 import { afterEach, expect, it, vi } from 'vitest'
 import { nextTick } from 'vue'
-import { projectsApi, skillsApi, type Profile, type Skill } from '@/shared/api/profile'
+import type { ComponentPublicInstance } from 'vue'
+import { educationsApi, projectsApi, skillsApi, type Profile, type Skill } from '@/shared/api/profile'
 import ProfileManualFacts from './ProfileManualFacts.vue'
 
 enableAutoUnmount(afterEach)
+
+it('学历层次与学习形式保存时保留旧描述，更新不借用旧来源', async () => {
+  const value = profile()
+  value.educations = [{ id: 'edu', version: 1, created_at: '', updated_at: '', school: '学校',
+    major: null, degree: '本科（非全日制）', degree_level: null, study_mode: null,
+    start_date: null, end_date: null, source_evidence_id: 'old-source' }]
+  const update = vi.spyOn(educationsApi, 'update').mockResolvedValue({ ...value.educations[0]!, version: 2,
+    degree_level: 'BACHELOR', study_mode: 'PART_TIME', source_evidence_id: 'manual-source' })
+  const wrapper = mount(ProfileManualFacts, { props: { profile: value } })
+  await flushPromises()
+  const level = wrapper.getComponent<ComponentPublicInstance>('[data-testid="fact-educations-0-degree_level"]')
+  level.vm.$emit('update:value', 'BACHELOR')
+  const mode = wrapper.getComponent<ComponentPublicInstance>('[data-testid="fact-educations-0-study_mode"]')
+  mode.vm.$emit('update:value', 'PART_TIME')
+  await nextTick()
+  mode.vm.$emit('change', 'PART_TIME')
+  await flushPromises()
+  expect(update).toHaveBeenCalledWith('edu', expect.objectContaining({
+    degree: '本科（非全日制）', degree_level: 'BACHELOR', study_mode: 'PART_TIME', version: 1,
+  }))
+  expect(update.mock.calls[0]?.[1]).not.toHaveProperty('source_evidence_id')
+  update.mockRestore()
+})
 
 function profile(skills: Skill[] = []): Profile {
   return {

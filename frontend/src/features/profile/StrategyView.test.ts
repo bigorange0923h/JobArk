@@ -42,6 +42,44 @@ beforeEach(() => {
 })
 enableAutoUnmount(afterEach)
 
+it('方向关键词与独立薪资底线回填后保存，不把期望下限改成底线', async () => {
+  const value = fixture()
+  value.preference = { ...value.preference!, target_roles: ['AI应用开发'], role_keywords: ['RAG'],
+    salary_min: 25000, salary_max: 35000, acceptable_salary_min: 20000 }
+  vi.mocked(fetchProfile).mockResolvedValue(value)
+  const wrapper = mountView()
+  await flushPromises()
+  expect(wrapper.find('[data-testid="acceptable-salary-min"]').exists()).toBe(true)
+  expect(wrapper.find('[data-testid="role-keywords"]').exists()).toBe(true)
+  await wrapper.get('[data-testid="save-preference"]').trigger('click')
+  await flushPromises()
+  expect(savePreference).toHaveBeenCalledWith(expect.objectContaining({
+    target_roles: ['AI应用开发'], role_keywords: ['RAG'], salary_min: 25000,
+    salary_max: 35000, acceptable_salary_min: 20000,
+  }))
+})
+
+it('新增策略字段的校验失败定位到对应输入框', async () => {
+  vi.mocked(savePreference).mockRejectedValueOnce(new ApiError({
+    code: 'VALIDATION_ERROR', message: '请检查输入。', status: 422,
+    details: [
+      { field: 'target_roles', reason: '方向过长。' },
+      { field: 'role_keywords', reason: '关键词过长。' },
+      { field: 'acceptable_salary_min', reason: '底线不能高于期望下限。' },
+      { field: 'hard_limits.salary_basis', reason: '请确认税口径。' },
+    ],
+  }))
+  const wrapper = mountView()
+  await flushPromises()
+  await wrapper.get('[data-testid="save-preference"]').trigger('click')
+  await flushPromises()
+  const errors = wrapper.findAll('.ant-form-item-has-error')
+  expect(errors).toHaveLength(4)
+  expect(errors.map(item => item.text()).join(' ')).toContain('底线不能高于期望下限。')
+  expect(errors.map(item => item.text()).join(' ')).toContain('请确认税口径。')
+  expect(fetchProfile).toHaveBeenCalledTimes(1)
+})
+
 it('独立页面回填既有偏好，保存沿用版本号并重新读取', async () => {
   const wrapper = mountView()
   await flushPromises()
